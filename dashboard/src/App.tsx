@@ -3,8 +3,10 @@ import { Link, Route, Routes } from 'react-router-dom'
 import { api, Metrics } from './api'
 import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
+import { DemoControls } from './components/DemoControls'
 import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
+import { Toasts } from './components/Toast'
 import { Inbox } from './pages/Inbox'
 import { LeadPage } from './pages/Lead'
 
@@ -28,10 +30,12 @@ export default function App() {
           <Link to="/" className="hover:text-zinc-100">Leads</Link>
           <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
         </nav>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <LocalBadge metrics={metrics} />
+          <DemoControls />
         </div>
       </header>
+      <Toasts />
 
       <ReminderBanner />
 

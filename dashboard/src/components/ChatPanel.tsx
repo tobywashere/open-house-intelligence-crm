@@ -19,8 +19,8 @@ export function ChatPanel() {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
   }, [msgs, thinking])
 
-  const send = async () => {
-    const message = input.trim()
+  const send = async (preset?: string) => {
+    const message = (preset ?? input).trim()
     if (!message || thinking) return
     setInput('')
     setMsgs((m) => [...m, { role: 'user', content: message }])
@@ -44,6 +44,25 @@ export function ChatPanel() {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {msgs.length === 0 && !thinking && (
+          <div className="space-y-2">
+            <div className="text-xs text-zinc-600">Try one of the demo prompts:</div>
+            {[
+              'Add Minh Nguyen, 425-555-0198, buyer interested in Kirkland and Redmond',
+              'Which active buyers need a follow-up?',
+              'Show me everything we know about Sarah',
+            ].map((p) => (
+              <button
+                key={p}
+                onClick={() => send(p)}
+                className="block w-full text-left rounded-lg border border-zinc-800 hover:border-zinc-600
+                           px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
         {msgs.map((m, i) => (
           <div
             key={i}
@@ -73,7 +92,7 @@ export function ChatPanel() {
                      placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500"
         />
         <button
-          onClick={send}
+          onClick={() => send()}
           disabled={thinking}
           className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-2 text-sm"
         >

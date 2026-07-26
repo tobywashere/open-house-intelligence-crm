@@ -3,3 +3,12 @@
 body {
   @apply bg-zinc-950 text-zinc-100 antialiased;
 }
+
+/* new audit rows flash on arrival — makes agent activity feel live */
+@keyframes rowflash {
+  from { background-color: rgb(16 185 129 / 0.18); }
+  to { background-color: transparent; }
+}
+.row-flash {
+  animation: rowflash 1.6s ease-out;
+}
