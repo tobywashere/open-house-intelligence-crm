@@ -1,0 +1,67 @@
+{
+  "date": "2026-07-26",
+  "realtor_name": "Alex",
+  "appointments": [
+    {
+      "start": "10:00",
+      "end": "10:45",
+      "customer": "Michael Rodriguez",
+      "location": "Medina",
+      "travel_minutes": 30,
+      "profile_url": "/leads/1",
+      "persona": "Luxury Executive",
+      "lead_score": 98,
+      "remember": [
+        "Cash buyer",
+        "Referred by Tom Wilson",
+        "Prefers evidence over opinions"
+      ],
+      "prepare": [
+        "Luxury comparable sales",
+        "Waterfront inventory",
+        "Privacy details"
+      ]
+    },
+    {
+      "start": "14:00",
+      "end": "14:45",
+      "customer": "Sarah Chen",
+      "location": "Issaquah",
+      "travel_minutes": 35,
+      "profile_url": "/leads/2",
+      "persona": "Growing Family",
+      "lead_score": 94,
+      "remember": [
+        "Two young children",
+        "School district is the main priority",
+        "Gets overwhelmed by too many options"
+      ],
+      "prepare": [
+        "Issaquah school guide",
+        "Three listings only",
+        "Commute comparison"
+      ]
+    }
+  ],
+  "priority_contacts": [
+    {
+      "name": "Ryan Miller",
+      "location": "Bothell",
+      "why_now": "Mortgage rates were his main concern and he has not been contacted in six days.",
+      "suggested_text": "Hey Ryan, I remember mortgage rates were one of your biggest concerns. I wanted to check in and see whether it would be useful to revisit the numbers together. Happy to run updated payment scenarios whenever you're ready."
+    },
+    {
+      "name": "Jessica Brown",
+      "location": "Mercer Island",
+      "why_now": "She asked you to reconnect around this time and prefers meeting at Cafe Vita.",
+      "suggested_text": "Hi Jessica! You mentioned reconnecting around this time, so I wanted to check in. I'd love to catch up over coffee at Cafe Vita and hear how things are going. Are you free sometime next week?"
+    }
+  ],
+  "outstanding_responses": [
+    {
+      "type": "email",
+      "from": "Emily Davis",
+      "summary": "Asked whether she should get pre-approved before touring condos."
+    }
+  ]
+}
