@@ -1,0 +1,123 @@
+import { useEffect, useState } from 'react'
+import { api, Appointment, fmtSlotDay, fmtSlotTime, icsUrl } from '../api'
+
+interface Slot {
+  start_ts: string
+  end_ts: string
+}
+
+function nextTuesday(): string {
+  const d = new Date()
+  d.setDate(d.getDate() + ((2 - d.getDay() + 7) % 7 || 7))
+  return d.toISOString().slice(0, 10)
+}
+
+export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: () => void }) {
+  const [date, setDate] = useState(nextTuesday())
+  const [slots, setSlots] = useState<Slot[]>([])
+  const [selected, setSelected] = useState<Slot | null>(null)
+  const [location, setLocation] = useState('')
+  const [booked, setBooked] = useState<Appointment | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const loadSlots = (d: string) => {
+    setSelected(null)
+    setError(null)
+    api.availability(d).then(setSlots).catch(() => setSlots([]))
+  }
+  useEffect(() => {
+    loadSlots(date)
+  }, [date])
+
+  const book = async () => {
+    if (!selected) return
+    setBusy(true)
+    setError(null)
+    try {
+      const appt = await api.book(leadId, selected.start_ts, selected.end_ts, location || undefined)
+      setBooked(appt)
+      onBooked()
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('409')) {
+        setError('That slot just got taken — pick another.')
+        loadSlots(date)
+      } else {
+        setError('Booking failed — is the backend running?')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (booked) {
+    return (
+      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm space-y-1">
+        <div className="text-emerald-400 font-medium">✓ Tour booked</div>
+        <div>
+          {fmtSlotDay(booked.start_ts)} · {fmtSlotTime(booked.start_ts)}–{fmtSlotTime(booked.end_ts)}
+          {booked.location ? ` · ${booked.location}` : ''}
+        </div>
+        <a href={icsUrl(booked.id)} className="inline-block text-emerald-400 hover:underline">
+          Download .ics ↓
+        </a>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
+      <div className="flex items-center gap-3">
+        <h2 className="text-sm font-semibold">Book a tour</h2>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="ml-auto rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1 text-sm
+                     [color-scheme:dark] focus:outline-none focus:border-emerald-500"
+        />
+      </div>
+
+      {slots.length === 0 ? (
+        <div className="text-sm text-zinc-500">No free slots this day — try another date.</div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {slots.map((s) => (
+            <button
+              key={s.start_ts}
+              onClick={() => setSelected(s)}
+              className={`rounded-md px-3 py-1.5 text-sm border transition-colors ${
+                selected?.start_ts === s.start_ts
+                  ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300'
+                  : 'border-zinc-700 hover:border-zinc-500'
+              }`}
+            >
+              {fmtSlotTime(s.start_ts)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {selected && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <input
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            placeholder="Location (optional)"
+            className="flex-1 min-w-40 rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5
+                       text-sm placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500"
+          />
+          <button
+            onClick={book}
+            disabled={busy}
+            className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-1.5 text-sm font-medium"
+          >
+            {busy ? 'Booking…' : `Book ${fmtSlotDay(selected.start_ts)} ${fmtSlotTime(selected.start_ts)}`}
+          </button>
+        </div>
+      )}
+
+      {error && <div className="text-sm text-amber-400">{error}</div>}
+    </div>
+  )
+}

@@ -112,8 +112,19 @@ export const api = {
     req<{ neglected: Lead[] }>('/demo/advance-time', { method: 'POST', body: JSON.stringify({ days }) }),
 }
 
+export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`
+
 export const fmtMoney = (n: number | null) =>
   n == null ? '—' : n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}k`
+
+// Appointment/slot timestamps are naive local time — format WITHOUT UTC conversion.
+export const fmtLocal = (iso: string, opts: Intl.DateTimeFormatOptions) =>
+  new Date(iso).toLocaleString(undefined, opts)
+
+export const fmtSlotTime = (iso: string) => fmtLocal(iso, { hour: 'numeric', minute: '2-digit' })
+
+export const fmtSlotDay = (iso: string) =>
+  fmtLocal(iso, { weekday: 'short', month: 'short', day: 'numeric' })
 
 export const fmtDate = (iso: string) =>
   new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleString(undefined, {

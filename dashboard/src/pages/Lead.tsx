@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, fmtDate, fmtMoney, LeadProfile } from '../api'
+import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, LeadProfile } from '../api'
+import { BookingCard } from '../components/BookingCard'
 import { ScoreBadge } from './Inbox'
 
 export function LeadPage() {
@@ -106,12 +107,18 @@ export function LeadPage() {
         <section>
           <h2 className="text-sm font-semibold text-zinc-400 mb-2">Appointments</h2>
           {lead.appointments.map((a) => (
-            <div key={a.id} className="text-sm text-zinc-300">
-              📅 {fmtDate(a.start_ts)} — {a.location ?? 'location TBD'}
+            <div key={a.id} className="text-sm text-zinc-300 flex items-center gap-2">
+              📅 {fmtSlotDay(a.start_ts)} · {fmtSlotTime(a.start_ts)}–{fmtSlotTime(a.end_ts)} —{' '}
+              {a.location ?? 'location TBD'}
+              <a href={icsUrl(a.id)} className="text-emerald-400 hover:underline text-xs">
+                .ics ↓
+              </a>
             </div>
           ))}
         </section>
       )}
+
+      {lead.status !== 'closed' && <BookingCard leadId={leadId} onBooked={load} />}
 
       <section>
         <h2 className="text-sm font-semibold text-zinc-400 mb-2">Activity timeline</h2>
