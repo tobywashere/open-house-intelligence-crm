@@ -32,9 +32,14 @@ browser (any teammate, via Tailscale)
 ## 2. Run the product (every boot / demo)
 
 ```bash
-export AGENT_GATEWAY_TOKEN=<openclaw gateway token>
+# the token lives in OpenClaw's config (~/.openclaw/openclaw.json → gateway.auth.token):
+export AGENT_GATEWAY_TOKEN=$(python3 -c "import json,os; print(json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))['gateway']['auth']['token'])")
 bash scripts/gb10.sh
 ```
+
+If there's no `gateway.auth` block yet, K sets one (`gateway.auth.mode: "token"` + a random
+token, e.g. `openssl rand -hex 24`) — the gateway requires auth for non-loopback binds,
+and the GB10 is on Tailscale.
 
 That script: venv + deps → seed if no DB → `npm run build` → uvicorn on
 `0.0.0.0:8000` with `AGENT_MODE=openclaw`. The backend serves the built
