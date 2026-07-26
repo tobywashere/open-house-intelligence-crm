@@ -1,5 +1,8 @@
 // Typed client for the backend contract (docs/CONTRACT.md).
-const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api'
+// Dev: vite on :5173 talks to the backend on :8000. Production (GB10): the
+// backend serves the built dashboard, so the API is same-origin at /api.
+const BASE =
+  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000/api' : '/api')
 
 export interface Lead {
   id: number
@@ -126,6 +129,7 @@ export const api = {
   advanceTime: (days = 3) =>
     req<{ neglected: Lead[] }>('/demo/advance-time', { method: 'POST', body: JSON.stringify({ days }) }),
   briefing: <T>(date: string) => req<T>(`/briefing?date=${date}`),
+  summary: <T>(date: string) => req<T>(`/summary?date=${date}`),
 }
 
 export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`

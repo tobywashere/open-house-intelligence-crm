@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { Briefing, fetchBriefing } from '../briefing'
 
 interface Msg {
   role: string
@@ -32,12 +31,10 @@ export function ChatPanel() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
-  const [brief, setBrief] = useState<Briefing | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     api.chatHistory().then(setMsgs).catch(() => {})
-    fetchBriefing().then(setBrief).catch(() => {})
   }, [])
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
@@ -68,17 +65,6 @@ export function ChatPanel() {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {brief && (
-          <Link
-            to="/briefing"
-            className="block rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-2.5
-                       hover:border-emerald-500/50 transition-colors"
-          >
-            <div className="text-xs text-emerald-400 mb-0.5">☀️ Morning briefing</div>
-            <div className="text-xs text-zinc-300">{brief.greeting}</div>
-            <div className="text-xs text-emerald-400 mt-1">View full briefing →</div>
-          </Link>
-        )}
         {msgs.length === 0 && !thinking && (
           <div className="space-y-2">
             <div className="text-xs text-zinc-600">Try one of the demo prompts:</div>

@@ -3,6 +3,7 @@ import { Link, Route, Routes } from 'react-router-dom'
 import { api, Metrics } from './api'
 import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
+import { DailySummaryOverlay } from './components/DailySummaryOverlay'
 import { DemoControls } from './components/DemoControls'
 import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
@@ -15,6 +16,15 @@ import { LeadPage } from './pages/Lead'
 export default function App() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
+  // auto-open the daily summary once per day; reopenable any time from the header
+  const [summaryOpen, setSummaryOpen] = useState(() => {
+    const today = new Date().toISOString().slice(0, 10)
+    return localStorage.getItem('ohi-summary-seen') !== today
+  })
+  const closeSummary = () => {
+    localStorage.setItem('ohi-summary-seen', new Date().toISOString().slice(0, 10))
+    setSummaryOpen(false)
+  }
 
   useEffect(() => {
     const load = () => api.metrics().then(setMetrics).catch(() => {})
@@ -36,6 +46,13 @@ export default function App() {
           <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
         </nav>
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setSummaryOpen(true)}
+            className="rounded-full border border-zinc-700 hover:border-emerald-500/60 px-3 py-1.5
+                       text-xs text-zinc-300 hover:text-emerald-300 transition-colors"
+          >
+            ☀️ Daily summary
+          </button>
           <LocalBadge metrics={metrics} />
           <DemoControls />
         </div>
@@ -80,6 +97,8 @@ export default function App() {
           💬
         </button>
       )}
+      {summaryOpen && <DailySummaryOverlay onClose={closeSummary} />}
+
       {chatOpen && (
         <div className="lg:hidden fixed inset-0 z-50 bg-zinc-950 flex flex-col">
           <div className="flex justify-end border-b border-zinc-800 px-2 py-1.5">
