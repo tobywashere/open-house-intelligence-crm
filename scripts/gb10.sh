@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # GB10 production launcher: builds the dashboard, seeds the DB if missing, and
 # serves everything on one port with the real OpenClaw agent.
-# The whole product is then at http://<gb10-tailscale-name>:8000
+# The whole product is then at http://<gb10-tailscale-name>:$PORT (default 8080;
+# 8000 on the GB10 belongs to the vLLM server that backs the agent).
 set -e
 cd "$(dirname "$0")/.."
 
+PORT="${PORT:-8080}"
 # AGENT_MODE=mock bash scripts/gb10.sh → full hosted product with the mock agent
 # (useful for testing the GB10 deployment before OpenClaw is configured)
 export AGENT_MODE="${AGENT_MODE:-openclaw}"
 export AGENT_GATEWAY_URL="${AGENT_GATEWAY_URL:-http://localhost:18789}"
-if [ "$AGENT_MODE" = "openclaw" ] && [ -z "$AGENT_GATEWAY_TOKEN" ]; then
-  echo "⚠  AGENT_GATEWAY_TOKEN is not set — chat relay will 401. export it first." >&2
-fi
+# AGENT_GATEWAY_TOKEN is only needed when the gateway runs with
+# gateway.auth.mode = "token"/"password". On the GB10 it is "none", so unset is fine.
 
 if [ ! -d .venv ]; then
   python3 -m venv .venv
@@ -25,7 +26,7 @@ fi
 (cd dashboard && npm run build)
 
 echo "──────────────────────────────────────────────"
-echo " Open House Intelligence → http://0.0.0.0:8000"
+echo " Open House Intelligence → http://0.0.0.0:$PORT"
 echo " agent: openclaw @ $AGENT_GATEWAY_URL"
 echo "──────────────────────────────────────────────"
-cd backend && exec ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+cd backend && exec ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$PORT"

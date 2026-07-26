@@ -26,10 +26,14 @@ class OpenClawDriver(AgentDriver):
     name = "openclaw"
 
     async def _send(self, message: str, session_id: str = "backend") -> str:
+        # Gateways running gateway.auth.mode="none" take no credential, and httpx
+        # rejects a bare "Bearer " as an illegal header value — so send it only
+        # when a token is actually configured.
+        headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(
                 GATEWAY_URL.rstrip("/") + CHAT_PATH,
-                headers={"Authorization": f"Bearer {TOKEN}"},
+                headers=headers,
                 json={
                     "model": "openclaw",
                     "user": session_id,
