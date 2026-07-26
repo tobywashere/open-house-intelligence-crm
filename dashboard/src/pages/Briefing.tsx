@@ -135,6 +135,25 @@ export function BriefingPage() {
         </div>
 
         <aside className="space-y-6">
+          {briefing.insight_headlines && briefing.insight_headlines.length > 0 && (
+            <section className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-4" style={{ animationDelay: '150ms' }}>
+              <h2 className="text-sm font-semibold text-zinc-400 mb-3">Pipeline insights</h2>
+              <div className="space-y-2.5">
+                {briefing.insight_headlines.map((h) => (
+                  <div key={h.headline} className="flex gap-2 text-sm">
+                    <span className={h.severity === 'warn' ? 'text-amber-400' : h.severity === 'good' ? 'text-emerald-400' : 'text-zinc-500'}>
+                      {h.severity === 'warn' ? '▲' : h.severity === 'good' ? '●' : '○'}
+                    </span>
+                    <span className="text-zinc-300">{h.headline}</span>
+                  </div>
+                ))}
+              </div>
+              <Link to="/insights" className="mt-3 inline-block text-xs text-emerald-400 hover:underline">
+                All insights →
+              </Link>
+            </section>
+          )}
+
           <section className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-4" style={{ animationDelay: '180ms' }}>
             <h2 className="text-sm font-semibold text-zinc-400 mb-3">Suggested actions</h2>
             <div className="space-y-3">

@@ -2,6 +2,7 @@
 // until K+Toby ship it, a client-side mock derives a plausible briefing from live CRM data
 // so the page is fully demoable today and flips to real content with zero UI changes.
 import { api, Appointment, fmtMoney, Lead } from './api'
+import { computeInsights } from './insights'
 
 export interface ScheduleBlock {
   start: string // "HH:MM"
@@ -37,6 +38,8 @@ export interface Briefing {
   schedule: ScheduleBlock[]
   meeting_briefs: MeetingBrief[]
   suggested_actions: SuggestedAction[]
+  // top insights (AI purpose #4, Johaan's engine) — input for the summary narrative
+  insight_headlines?: { severity: 'info' | 'good' | 'warn'; headline: string }[]
   mock?: boolean
 }
 
@@ -46,8 +49,12 @@ export async function fetchBriefing(): Promise<Briefing> {
   try {
     return await api.briefing<Briefing>(date)
   } catch {
-    const [leads, appts] = await Promise.all([api.leads(), api.appointments()])
-    return mockBriefing(date, leads, appts)
+    const [leads, appts, audit] = await Promise.all([api.leads(), api.appointments(), api.audit(200)])
+    const briefing = mockBriefing(date, leads, appts)
+    briefing.insight_headlines = computeInsights(leads, appts, audit)
+      .insights.slice(0, 3)
+      .map(({ severity, headline }) => ({ severity, headline }))
+    return briefing
   }
 }
 

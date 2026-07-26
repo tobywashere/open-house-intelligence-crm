@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, fmtDate, fmtMoney, Lead } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
+import { daysIdle } from '../insights'
 import { Skeleton } from '../components/Skeleton'
 
 const STATUS_STYLE: Record<string, string> = {
@@ -13,8 +14,6 @@ const STATUS_STYLE: Record<string, string> = {
 
 // Urgency = days idle × score. Client-side for now; if Toby exposes an official
 // urgency field/sort later (additive change), swap the computation for the field.
-const daysIdle = (l: Lead) =>
-  Math.max(0, Math.floor((Date.now() - new Date(l.last_activity_at + 'Z').getTime()) / 86_400_000))
 const urgency = (l: Lead) => daysIdle(l) * ((l.score ?? 30) / 100)
 
 export function Inbox() {

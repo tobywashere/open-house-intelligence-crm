@@ -9,6 +9,7 @@ import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { BriefingPage } from './pages/Briefing'
 import { Inbox } from './pages/Inbox'
+import { InsightsPage } from './pages/Insights'
 import { LeadPage } from './pages/Lead'
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
         <nav className="flex gap-3 text-sm text-zinc-400">
           <Link to="/" className="hover:text-zinc-100">Briefing</Link>
           <Link to="/leads" className="hover:text-zinc-100">Leads</Link>
+          <Link to="/insights" className="hover:text-zinc-100">Insights</Link>
           <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
         </nav>
         <div className="ml-auto flex items-center gap-2">
@@ -57,6 +59,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<BriefingPage />} />
             <Route path="/leads" element={<Inbox />} />
+            <Route path="/insights" element={<InsightsPage />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>
