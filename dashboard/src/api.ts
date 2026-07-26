@@ -106,6 +106,16 @@ export const api = {
   chatHistory: () => req<{ role: string; content: string; id: number }[]>('/chat/history'),
   audit: (limit = 30) => req<AuditRow[]>(`/audit?limit=${limit}`),
   metrics: () => req<Metrics>('/metrics'),
+  addEvent: (lead_id: number, type: string, content: string) =>
+    req<LeadEvent>(`/leads/${lead_id}/events`, {
+      method: 'POST',
+      body: JSON.stringify({ type, content }),
+    }),
+  scheduleReminder: (lead_id: number, due_ts: string, note?: string) =>
+    req<Reminder>('/reminders', {
+      method: 'POST',
+      body: JSON.stringify({ lead_id, due_ts, note }),
+    }),
   dueReminders: () => req<Reminder[]>('/reminders?due=1'),
   completeReminder: (id: number) => req<Reminder>(`/reminders/${id}`, { method: 'PATCH' }),
   advanceTime: (days = 3) =>

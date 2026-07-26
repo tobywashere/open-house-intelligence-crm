@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, LeadProfile } from '../api'
 import { BookingCard } from '../components/BookingCard'
+import { NoteBox } from '../components/NoteBox'
 import { ScoreBadge } from './Inbox'
 
 export function LeadPage() {
@@ -118,7 +119,12 @@ export function LeadPage() {
         </section>
       )}
 
-      {lead.status !== 'closed' && <BookingCard leadId={leadId} onBooked={load} />}
+      {lead.status !== 'closed' && (
+        <>
+          <NoteBox leadId={leadId} onSaved={load} />
+          <BookingCard leadId={leadId} onBooked={load} />
+        </>
+      )}
 
       <section>
         <h2 className="text-sm font-semibold text-zinc-400 mb-2">Activity timeline</h2>
