@@ -13,6 +13,7 @@ import { LeadPage } from './pages/Lead'
 
 export default function App() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
+  const [chatOpen, setChatOpen] = useState(false)
 
   useEffect(() => {
     const load = () => api.metrics().then(setMetrics).catch(() => {})
@@ -64,6 +65,33 @@ export default function App() {
           <ChatPanel />
         </aside>
       </div>
+
+      {/* small screens: chat becomes a floating button + full-screen overlay */}
+      {!chatOpen && (
+        <button
+          onClick={() => setChatOpen(true)}
+          className="lg:hidden fixed bottom-4 right-4 z-40 h-12 w-12 rounded-full bg-emerald-600
+                     hover:bg-emerald-500 shadow-xl text-lg"
+          title="Chat with your agent"
+        >
+          💬
+        </button>
+      )}
+      {chatOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 bg-zinc-950 flex flex-col">
+          <div className="flex justify-end border-b border-zinc-800 px-2 py-1.5">
+            <button
+              onClick={() => setChatOpen(false)}
+              className="text-sm text-zinc-400 hover:text-zinc-100 px-2 py-1"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="flex-1 flex flex-col min-h-0">
+            <ChatPanel />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

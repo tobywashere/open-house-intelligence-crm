@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Briefing as BriefingData, fetchBriefing, PERSONA_STYLE, ScheduleBlock } from '../briefing'
+import { Skeleton } from '../components/Skeleton'
 import { toast } from '../components/Toast'
 
 export function BriefingPage() {
@@ -31,7 +32,24 @@ export function BriefingPage() {
     }
   }
 
-  if (!briefing) return <div className="text-zinc-500">Preparing your briefing…</div>
+  if (!briefing)
+    return (
+      <div className="max-w-5xl space-y-8">
+        <div>
+          <Skeleton className="h-4 w-32 mb-3" />
+          <Skeleton className="h-8 w-96" />
+        </div>
+        <div className="grid lg:grid-cols-[1fr_300px] gap-8">
+          <div className="space-y-2">
+            {Array.from({ length: 6 }, (_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+            <Skeleton className="h-48 w-full mt-6" />
+          </div>
+          <Skeleton className="h-64 w-full" />
+        </div>
+      </div>
+    )
 
   const dateLabel = new Date(briefing.date + 'T12:00:00').toLocaleDateString(undefined, {
     weekday: 'long',

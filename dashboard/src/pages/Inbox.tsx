@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, fmtDate, fmtMoney, Lead } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
+import { Skeleton } from '../components/Skeleton'
 
 const STATUS_STYLE: Record<string, string> = {
   new: 'bg-sky-500/15 text-sky-300',
@@ -12,10 +13,16 @@ const STATUS_STYLE: Record<string, string> = {
 
 export function Inbox() {
   const [leads, setLeads] = useState<Lead[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [note, setNote] = useState('')
   const [adding, setAdding] = useState(false)
 
-  const load = () => api.leads().then(setLeads).catch(() => {})
+  const load = () =>
+    api
+      .leads()
+      .then(setLeads)
+      .catch(() => {})
+      .finally(() => setLoaded(true))
   useEffect(() => {
     load()
     const t = setInterval(load, 5000)
@@ -68,6 +75,25 @@ export function Inbox() {
           </tr>
         </thead>
         <tbody>
+          {!loaded &&
+            Array.from({ length: 8 }, (_, i) => (
+              <tr key={`s${i}`} className="border-b border-zinc-900">
+                <td className="py-3 pr-3"><Skeleton className="h-5 w-10" /></td>
+                <td className="py-3 pr-3"><Skeleton className="h-4 w-40" /></td>
+                <td className="py-3 pr-3"><Skeleton className="h-4 w-20" /></td>
+                <td className="py-3 pr-3"><Skeleton className="h-4 w-12" /></td>
+                <td className="py-3 pr-3"><Skeleton className="h-4 w-16" /></td>
+                <td className="py-3 pr-3"><Skeleton className="h-4 w-16" /></td>
+                <td className="py-3"><Skeleton className="h-4 w-20" /></td>
+              </tr>
+            ))}
+          {loaded && !leads.length && (
+            <tr>
+              <td colSpan={7} className="py-12 text-center text-zinc-600">
+                No leads yet — paste a note above and let the agent extract the details.
+              </td>
+            </tr>
+          )}
           {leads.map((l) => (
             <tr key={l.id} className="border-b border-zinc-900 hover:bg-zinc-900/50">
               <td className="py-2.5 pr-3">
