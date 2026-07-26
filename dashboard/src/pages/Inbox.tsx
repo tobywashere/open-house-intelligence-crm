@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, fmtDate, fmtMoney, Lead } from '../api'
+import { PERSONA_STYLE, personaOf } from '../briefing'
 
 const STATUS_STYLE: Record<string, string> = {
   new: 'bg-sky-500/15 text-sky-300',
@@ -76,6 +77,13 @@ export function Inbox() {
                 <Link to={`/lead/${l.id}`} className="font-medium hover:text-emerald-400">
                   {l.name}
                 </Link>
+                <span
+                  className={`ml-2 hidden md:inline-block rounded-full border px-1.5 py-px text-[10px] align-middle ${
+                    PERSONA_STYLE[personaOf(l)] ?? PERSONA_STYLE['Home Buyer']
+                  }`}
+                >
+                  {personaOf(l)}
+                </span>
                 {l.is_neglected === 1 && (
                   <span className="ml-2 text-xs text-amber-400">⚠ neglected</span>
                 )}

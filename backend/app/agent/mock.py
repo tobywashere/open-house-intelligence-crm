@@ -17,14 +17,15 @@ class MockDriver(AgentDriver):
         m = message.lower()
         if "neglect" in m or "follow up" in m:
             return ("[mock] I checked the pipeline — 2 leads haven't been touched in "
-                    "3+ days. Top one: Marcus Webb (score 74). Want me to draft a follow-up?")
+                    "3+ days. Top one: [Marcus Webb](lead:3) (score 97). Want me to "
+                    "draft a follow-up?")
         if "book" in m or "appointment" in m or "meeting" in m:
             return ("[mock] Tuesday 6:00–6:45pm is free. I can book it and mark the "
                     "lead as meeting_booked — confirm?")
         if "sarah" in m:
-            return ("[mock] Sarah Chen: Bellevue buyer, $1.1M budget, relocating on a "
-                    "6-week timeline, husband wants to tour. Score 92 — highest priority "
-                    "in the pipeline. Draft follow-up is ready on her profile.")
+            return ("[mock] [Sarah Chen](lead:1): Bellevue buyer, $1.1M budget, relocating "
+                    "on a 6-week timeline, husband wants to tour. High priority — "
+                    "draft follow-up is ready on her profile.")
         return ("[mock] I'm the placeholder agent (AGENT_MODE=mock). On the GB10 this "
                 "reply comes from the local model via OpenClaw. Ask about Sarah, "
                 "booking, or neglected leads for canned demo replies.")

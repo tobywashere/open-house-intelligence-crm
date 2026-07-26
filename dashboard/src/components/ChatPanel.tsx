@@ -1,19 +1,43 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { Briefing, fetchBriefing } from '../briefing'
 
 interface Msg {
   role: string
   content: string
 }
 
+// Agent replies may contain [Name](lead:12) — render those as profile links.
+// (Syntax documented in docs/BRIEFING-UI.md; Toby's prompts emit it.)
+function renderWithLinks(text: string) {
+  const re = /\[([^\]]+)\]\(lead:(\d+)\)/g
+  const parts: (string | JSX.Element)[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    parts.push(
+      <Link key={m.index} to={`/lead/${m[2]}`} className="text-emerald-400 underline hover:text-emerald-300">
+        {m[1]}
+      </Link>,
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts
+}
+
 export function ChatPanel() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
+  const [brief, setBrief] = useState<Briefing | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     api.chatHistory().then(setMsgs).catch(() => {})
+    fetchBriefing().then(setBrief).catch(() => {})
   }, [])
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
@@ -44,6 +68,17 @@ export function ChatPanel() {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {brief && (
+          <Link
+            to="/"
+            className="block rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-2.5
+                       hover:border-emerald-500/50 transition-colors"
+          >
+            <div className="text-xs text-emerald-400 mb-0.5">☀️ Morning briefing</div>
+            <div className="text-xs text-zinc-300">{brief.greeting}</div>
+            <div className="text-xs text-emerald-400 mt-1">View full briefing →</div>
+          </Link>
+        )}
         {msgs.length === 0 && !thinking && (
           <div className="space-y-2">
             <div className="text-xs text-zinc-600">Try one of the demo prompts:</div>
@@ -72,7 +107,7 @@ export function ChatPanel() {
                 : 'bg-zinc-800/80 text-zinc-200'
             }`}
           >
-            {m.content}
+            {renderWithLinks(m.content)}
           </div>
         ))}
         {thinking && (
