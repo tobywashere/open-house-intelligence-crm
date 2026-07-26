@@ -4,6 +4,10 @@ A local-first real estate sales agent that manages leads from first contact thro
 
 **Read [`PLAN.md`](PLAN.md) for the full plan and [`docs/CONTRACT.md`](docs/CONTRACT.md) for the frozen schema/API/tool contract before writing code.**
 
+## Architecture
+
+![Architecture sketch: Client text UI → Virtual AI assistant → OpenClaw harness ↔ Client DB (SQLite), with scheduled reminders flowing back to the UI](docs/images/architecture-sketch.png)
+
 ## One-command startup
 
 ```bash
