@@ -1,0 +1,77 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  phone TEXT,
+  email TEXT,
+  source TEXT DEFAULT 'note',           -- form | text | note | referral
+  status TEXT NOT NULL DEFAULT 'new'
+    CHECK (status IN ('new','contacted','meeting_booked','closed')),
+  score INTEGER,                        -- 0-100, deterministic formula
+  score_reason TEXT,                    -- LLM-written explanation
+  budget INTEGER,                       -- dollars
+  area TEXT,
+  timeline TEXT,
+  preferences TEXT NOT NULL DEFAULT '[]',    -- JSON array
+  intent TEXT DEFAULT 'unknown',        -- buy | sell | browse | unknown
+  missing_fields TEXT NOT NULL DEFAULT '[]', -- JSON array
+  is_neglected INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  last_activity_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- activity timeline; type: note | form | text | call | merge | status_change | agent_action
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL REFERENCES leads(id),
+  type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS appointments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL REFERENCES leads(id),
+  start_ts TEXT NOT NULL,
+  end_ts TEXT NOT NULL,
+  location TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- weekday: 0=Monday .. 6=Sunday; times as 'HH:MM'
+CREATE TABLE IF NOT EXISTS availability (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  weekday INTEGER NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL
+);
+
+-- scheduled follow-ups; the dashboard polls for due ones and surfaces them
+CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL REFERENCES leads(id),
+  due_ts TEXT NOT NULL,
+  note TEXT,
+  done INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- every agent/tool action lands here; powers the dashboard activity stream
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  actor TEXT NOT NULL,                  -- agent | user | cron
+  tool TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  output TEXT NOT NULL DEFAULT '{}',
+  lead_id INTEGER REFERENCES leads(id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL,                   -- user | agent
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
