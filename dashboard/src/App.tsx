@@ -80,7 +80,15 @@ export default function App() {
         <nav className="flex gap-1 text-sm">
           <NavLink to="/leads" className={navCls}>Leads</NavLink>
         </nav>
-        <div className="ml-auto flex items-center gap-2">
+        {/* live KPIs live in the navbar now that it has the room */}
+        {kpis && (
+          <div className="hidden xl:flex flex-1 items-center justify-center gap-6 min-w-0">
+            {kpis.map((k, i) => (
+              <HeaderStat key={k.label} kpi={k} accent={i === kpis.length - 1} />
+            ))}
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-2 shrink-0">
           <button
             onClick={() => setSummaryOpen(true)}
             className="rounded-full border border-line hover:border-accent/60 px-3 py-1.5
@@ -110,8 +118,9 @@ export default function App() {
 
       <ReminderBanner />
 
+      {/* small screens only — on xl+ the KPIs sit in the navbar */}
       {kpis && (
-        <div className="shrink-0 grid grid-cols-3 sm:grid-cols-6 border-b border-tile bg-surface/40 divide-x divide-tile/60">
+        <div className="xl:hidden shrink-0 grid grid-cols-3 sm:grid-cols-6 border-b border-tile bg-surface/40 divide-x divide-tile/60">
           {kpis.map((k, i) => (
             <Tile key={k.label} kpi={k} accent={i === 5} />
           ))}
@@ -175,6 +184,22 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function HeaderStat({ kpi, accent }: { kpi: Kpi; accent?: boolean }) {
+  return (
+    <div className="text-center leading-none shrink-0" title={kpi.delta ?? kpi.label}>
+      <div className={`text-[15px] font-semibold tabular-nums ${accent ? 'text-accent' : 'text-ink'}`}>
+        {kpi.value}
+        {kpi.up !== undefined && (
+          <span className={`ml-1 text-[9px] align-middle ${kpi.up ? 'text-accent' : 'text-alert'}`}>
+            {kpi.up ? '▲' : '▼'}
+          </span>
+        )}
+      </div>
+      <div className="text-[9px] uppercase tracking-wider text-sub/60 mt-1 whitespace-nowrap">{kpi.label}</div>
     </div>
   )
 }
