@@ -167,52 +167,53 @@ export function FunnelPage() {
   )
 }
 
-const ROW_H = 50
-const ROW_GAP = 5
+const ROW_H = 54
+const ROW_GAP = 8
 
 function FunnelChart({ data }: { data: FunnelData }) {
   const n = data.stages.length
-  const max = Math.max(...data.stages.map((s) => s.count), 1)
 
-  // continuous silhouette: monotonic widths, each layer's top edge = previous
-  // layer's bottom edge, so the funnel reads as one shape instead of loose bars
-  const widths: number[] = []
-  data.stages.forEach((s, i) => {
-    const raw = Math.max((s.count / max) * 92, 16)
-    widths.push(i === 0 ? raw : Math.min(raw, widths[i - 1]))
-  })
-  const bottomOf = (i: number) => (i < n - 1 ? widths[i + 1] : Math.max(widths[i] * 0.62, 10))
+  // reference-style geometry: widths step down by a CONSTANT amount per layer
+  // (the numbers carry the data; the shape stays perfectly even)
+  const W_TOP = 96
+  const W_BOTTOM = 50
+  const step = (W_TOP - W_BOTTOM) / (n - 1)
   const height = n * ROW_H + (n - 1) * ROW_GAP
 
   return (
     <div className="flex gap-4">
       <div className="flex-1 relative min-w-0" style={{ height }}>
-        {/* soft glow behind the whole silhouette */}
-        <div
-          className="absolute inset-x-[10%] inset-y-2 rounded-full pointer-events-none"
-          style={{ background: 'radial-gradient(closest-side, rgba(14,165,233,0.13), transparent)' }}
-        />
         {data.stages.map((s, i) => {
-          const top = widths[i]
-          const bot = bottomOf(i)
-          const t = i / (n - 1)
+          const w = W_TOP - step * i
           return (
             <div
               key={s.key}
-              className="rise absolute inset-x-0 flex flex-col items-center justify-center
-                         hover:brightness-125 transition-[filter] cursor-default"
+              className="rise absolute"
               style={{
                 top: i * (ROW_H + ROW_GAP),
                 height: ROW_H,
+                left: `${(100 - w) / 2}%`,
+                width: `${w}%`,
                 animationDelay: `${i * 70}ms`,
-                clipPath: `polygon(${(100 - top) / 2}% 0, ${(100 + top) / 2}% 0, ${(100 + bot) / 2}% 100%, ${(100 - bot) / 2}% 100%)`,
-                background: `linear-gradient(180deg, rgba(56,189,248,${(0.26 + 0.2 * t).toFixed(2)}), rgba(2,132,199,${(0.10 + 0.14 * t).toFixed(2)}))`,
-                filter: 'drop-shadow(0 2px 8px rgba(14,165,233,0.18))',
               }}
               title={`${s.label}: ${s.count}`}
             >
-              <span className="text-[11px] text-ink2/80 leading-none">{s.label}</span>
-              <span className="text-lg font-semibold text-ink leading-tight tabular-nums">{s.count}</span>
+              {/* rounded rectangle tipped in perspective → gently curved trapezoid
+                  that keeps its rounded corners, 1px outline, and glow */}
+              <div
+                className="h-full w-full rounded-[12px] border border-accent/40 flex flex-col items-center
+                           justify-center hover:brightness-125 transition-[filter] cursor-default"
+                style={{
+                  transform: 'perspective(340px) rotateX(-10deg)',
+                  background:
+                    'radial-gradient(130% 120% at 50% -10%, rgba(56,189,248,0.42), rgba(23,49,89,0.85) 52%, rgba(13,25,46,0.92) 100%)',
+                  boxShadow:
+                    '0 0 20px rgba(14,165,233,0.22), inset 0 1px 10px rgba(125,211,252,0.25)',
+                }}
+              >
+                <span className="text-[11px] text-ink2/85 leading-none">{s.label}</span>
+                <span className="text-lg font-semibold text-ink leading-tight tabular-nums">{s.count}</span>
+              </div>
             </div>
           )
         })}

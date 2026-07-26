@@ -167,7 +167,7 @@ export function ChatPanel() {
           m.role === 'user' ? (
             // user turn: right-aligned bubble, like ChatGPT
             <div key={i} className="group flex flex-col items-end">
-              <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-tile px-4 py-2 text-sm text-ink2 whitespace-pre-wrap">
+              <div className="max-w-[85%] rounded-xl rounded-br-md bg-tile px-4 py-2 text-sm text-ink2 whitespace-pre-wrap">
                 {m.content}
               </div>
               <MsgActions
@@ -203,7 +203,7 @@ export function ChatPanel() {
       </div>
 
       <div className="shrink-0 p-3 border-t border-tile bg-bg">
-        <div className="flex items-center gap-2 rounded-[26px] border border-line/70 bg-surface pl-4 pr-1.5 py-1.5
+        <div className="flex items-center gap-2 rounded-xl border border-line/70 bg-surface pl-4 pr-1.5 py-1.5
                         focus-within:border-line transition-colors shadow-sm">
           <input
             value={input}
