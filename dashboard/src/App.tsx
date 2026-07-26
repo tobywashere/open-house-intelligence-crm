@@ -1,0 +1,71 @@
+import { useEffect, useState } from 'react'
+import { Link, Route, Routes } from 'react-router-dom'
+import { api, Metrics } from './api'
+import { AuditLog } from './components/AuditLog'
+import { ChatPanel } from './components/ChatPanel'
+import { LocalBadge } from './components/LocalBadge'
+import { ReminderBanner } from './components/ReminderBanner'
+import { Inbox } from './pages/Inbox'
+import { LeadPage } from './pages/Lead'
+
+export default function App() {
+  const [metrics, setMetrics] = useState<Metrics | null>(null)
+
+  useEffect(() => {
+    const load = () => api.metrics().then(setMetrics).catch(() => {})
+    load()
+    const t = setInterval(load, 5000)
+    return () => clearInterval(t)
+  }, [])
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <header className="border-b border-zinc-800 px-6 py-3 flex items-center gap-4">
+        <Link to="/" className="text-lg font-semibold tracking-tight">
+          Open House <span className="text-emerald-400">Intelligence</span>
+        </Link>
+        <nav className="flex gap-3 text-sm text-zinc-400">
+          <Link to="/" className="hover:text-zinc-100">Leads</Link>
+          <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
+        </nav>
+        <div className="ml-auto">
+          <LocalBadge metrics={metrics} />
+        </div>
+      </header>
+
+      <ReminderBanner />
+
+      {metrics && (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-px bg-zinc-800 border-b border-zinc-800">
+          <Tile label="Active leads" value={metrics.active_leads} />
+          <Tile label="High priority" value={metrics.high_priority} accent />
+          <Tile label="Follow-ups due" value={metrics.followups_due} />
+          <Tile label="Appointments" value={metrics.appointments_booked} />
+          <Tile label="Avg response" value={`${metrics.avg_response_minutes}m`} />
+        </div>
+      )}
+
+      <div className="flex flex-1 min-h-0">
+        <main className="flex-1 overflow-y-auto p-6">
+          <Routes>
+            <Route path="/" element={<Inbox />} />
+            <Route path="/lead/:id" element={<LeadPage />} />
+            <Route path="/activity" element={<AuditLog full />} />
+          </Routes>
+        </main>
+        <aside className="w-96 border-l border-zinc-800 hidden lg:flex flex-col">
+          <ChatPanel />
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+function Tile({ label, value, accent }: { label: string; value: number | string; accent?: boolean }) {
+  return (
+    <div className="bg-zinc-950 px-4 py-3">
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className={`text-xl font-semibold ${accent ? 'text-emerald-400' : ''}`}>{value}</div>
+    </div>
+  )
+}
