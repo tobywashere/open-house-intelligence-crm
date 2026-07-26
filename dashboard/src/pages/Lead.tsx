@@ -95,7 +95,7 @@ export function LeadPage() {
           ← Back
         </button>
         <span className="text-zinc-700">/</span>
-        <Link to="/" className="hover:text-zinc-200">Briefing</Link>
+        <Link to="/" className="hover:text-zinc-200">Insights</Link>
         <span className="text-zinc-700">/</span>
         <span className="text-zinc-300">{lead.name}</span>
       </nav>

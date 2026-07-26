@@ -17,6 +17,8 @@ export interface Insight {
   headline: string
   detail: string
   data: InsightDatum[]
+  // leads this insight is about — rendered as profile links on the card
+  related?: { name: string; lead_id: number }[]
 }
 
 export interface Insights {
@@ -131,6 +133,7 @@ function pipelineValue(open: Lead[]): Insight {
             .join(', ')}) idle 2+ days. Total open pipeline: ${fmtMoney(sum(open))}.`
         : `Every high-score lead has been touched in the last 2 days.`,
     data: byStage.map((r) => ({ ...r, display: fmtMoney(r.value) })),
+    related: atRisk.slice(0, 4).map((l) => ({ name: l.name, lead_id: l.id })),
   }
 }
 
@@ -178,6 +181,10 @@ function aging(open: Lead[]): Insight {
       { label: 'Touched < 2d', value: active.length - stale.length },
       { label: 'Idle 2+ days', value: stale.length },
     ],
+    related: stale
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, 4)
+      .map((l) => ({ name: l.name, lead_id: l.id })),
   }
 }
 

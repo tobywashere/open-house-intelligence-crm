@@ -148,7 +148,7 @@ export function BriefingPage() {
                   </div>
                 ))}
               </div>
-              <Link to="/insights" className="mt-3 inline-block text-xs text-emerald-400 hover:underline">
+              <Link to="/" className="mt-3 inline-block text-xs text-emerald-400 hover:underline">
                 All insights →
               </Link>
             </section>

@@ -30,9 +30,9 @@ export default function App() {
           Open House <span className="text-emerald-400">Intelligence</span>
         </Link>
         <nav className="flex gap-3 text-sm text-zinc-400">
-          <Link to="/" className="hover:text-zinc-100">Briefing</Link>
+          <Link to="/" className="hover:text-zinc-100">Insights</Link>
+          <Link to="/briefing" className="hover:text-zinc-100">Briefing</Link>
           <Link to="/leads" className="hover:text-zinc-100">Leads</Link>
-          <Link to="/insights" className="hover:text-zinc-100">Insights</Link>
           <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
         </nav>
         <div className="ml-auto flex items-center gap-2">
@@ -57,9 +57,9 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <main className="flex-1 overflow-y-auto p-6">
           <Routes>
-            <Route path="/" element={<BriefingPage />} />
+            <Route path="/" element={<InsightsPage />} />
+            <Route path="/briefing" element={<BriefingPage />} />
             <Route path="/leads" element={<Inbox />} />
-            <Route path="/insights" element={<InsightsPage />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>

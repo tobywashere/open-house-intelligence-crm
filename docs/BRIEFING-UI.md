@@ -57,9 +57,10 @@ event. Mock mode just acknowledges.
 ## Dashboard information architecture
 
 ```
-/            → Briefing (new home page — the product IS the morning briefing)
-/leads       → Prioritized inbox (current home moves here)
-/lead/:id    → Profile (upgraded, breadcrumb + back)
+/            → Insights (home — the dashboard IS insights-first, links to profiles, chat at hand)
+/briefing    → Morning briefing
+/leads       → Prioritized inbox
+/lead/:id    → Profile (breadcrumb + back)
 /activity    → Agent audit stream
 ```
 

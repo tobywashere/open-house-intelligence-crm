@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { computeInsights, Insight, Insights } from '../insights'
 import { Skeleton } from '../components/Skeleton'
@@ -68,6 +69,20 @@ function InsightCard({ insight, delay }: { insight: Insight; delay: number }) {
       <div className="text-lg font-semibold mt-2">{insight.headline}</div>
       <p className="text-xs text-zinc-500 mt-1">{insight.detail}</p>
       {insight.data.length > 0 && <BarList data={insight.data} />}
+      {insight.related && insight.related.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {insight.related.map((r) => (
+            <Link
+              key={r.lead_id}
+              to={`/lead/${r.lead_id}`}
+              className="rounded-full border border-zinc-700 hover:border-emerald-500/60 px-2.5 py-0.5
+                         text-xs text-zinc-300 hover:text-emerald-300 transition-colors"
+            >
+              {r.name} →
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
