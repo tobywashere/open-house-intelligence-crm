@@ -13,9 +13,33 @@ import { Inbox } from './pages/Inbox'
 import { InsightsPage } from './pages/Insights'
 import { LeadPage } from './pages/Lead'
 
+const CHAT_W_KEY = 'ohi-chat-width'
+const clampChatW = (w: number) =>
+  Math.min(Math.max(w, 320), Math.min(860, Math.round(window.innerWidth * 0.7)))
+
 export default function App() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
+  // resizable chat rail — drag the divider between main content and chat
+  const [chatW, setChatW] = useState(() => clampChatW(Number(localStorage.getItem(CHAT_W_KEY)) || 384))
+  const startChatResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+    const onMove = (ev: PointerEvent) => setChatW(clampChatW(window.innerWidth - ev.clientX))
+    const onUp = () => {
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      setChatW((w) => {
+        localStorage.setItem(CHAT_W_KEY, String(w))
+        return w
+      })
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
   // auto-open the daily summary once per day; reopenable any time from the header
   const [summaryOpen, setSummaryOpen] = useState(() => {
     const today = new Date().toISOString().slice(0, 10)
@@ -86,8 +110,22 @@ export default function App() {
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>
         </main>
+        {/* drag handle: widen/narrow the chat rail (double-click resets) */}
+        <div
+          onPointerDown={startChatResize}
+          onDoubleClick={() => {
+            setChatW(384)
+            localStorage.setItem(CHAT_W_KEY, '384')
+          }}
+          title="Drag to resize chat"
+          className="hidden lg:block w-1.5 -mr-1.5 shrink-0 cursor-col-resize z-10
+                     hover:bg-accent/50 active:bg-accent/70 transition-colors"
+        />
         {/* chat rail is viewport-fixed: the input is always visible, only messages scroll */}
-        <aside className="w-96 shrink-0 border-l border-tile hidden lg:flex flex-col min-h-0 bg-bg">
+        <aside
+          style={{ width: chatW }}
+          className="shrink-0 border-l border-tile hidden lg:flex flex-col min-h-0 bg-bg"
+        >
           <ChatPanel />
         </aside>
       </div>

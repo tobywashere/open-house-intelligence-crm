@@ -118,3 +118,16 @@ body {
 .md hr { border-color: var(--color-line); margin: 0.75em 0; }
 /* inline mode: short fields rendered after a label on the same line */
 .md-inline, .md-inline p { display: inline; margin: 0; }
+
+/* ChatGPT-style typing indicator (see ChatPanel.tsx) */
+.typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
