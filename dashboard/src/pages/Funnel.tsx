@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FunnelData, fetchFunnel } from '../funnel'
 import { Skeleton } from '../components/Skeleton'
@@ -170,53 +170,93 @@ export function FunnelPage() {
 const ROW_H = 54
 const ROW_GAP = 8
 
+// rounded trapezoid path: quadratic corners, sides may be slanted
+function roundedTrap(x1t: number, x2t: number, x1b: number, x2b: number, y0: number, y1: number, r: number) {
+  const dir = (ax: number, ay: number, bx: number, by: number) => {
+    const dx = bx - ax
+    const dy = by - ay
+    const len = Math.hypot(dx, dy) || 1
+    return { ux: dx / len, uy: dy / len }
+  }
+  const R = dir(x2t, y0, x2b, y1) // down the right side
+  const L = dir(x1b, y1, x1t, y0) // up the left side
+  return [
+    `M ${x1t + r} ${y0}`,
+    `L ${x2t - r} ${y0}`,
+    `Q ${x2t} ${y0} ${x2t + R.ux * r} ${y0 + R.uy * r}`,
+    `L ${x2b - R.ux * r} ${y1 - R.uy * r}`,
+    `Q ${x2b} ${y1} ${x2b - r} ${y1}`,
+    `L ${x1b + r} ${y1}`,
+    `Q ${x1b} ${y1} ${x1b + L.ux * r} ${y1 + L.uy * r}`,
+    `L ${x1t - L.ux * r} ${y0 - L.uy * r}`,
+    `Q ${x1t} ${y0} ${x1t + r} ${y0}`,
+    'Z',
+  ].join(' ')
+}
+
 function FunnelChart({ data }: { data: FunnelData }) {
   const n = data.stages.length
-
-  // reference-style geometry: widths step down by a CONSTANT amount per layer
-  // (the numbers carry the data; the shape stays perfectly even)
-  const W_TOP = 96
-  const W_BOTTOM = 50
-  const step = (W_TOP - W_BOTTOM) / (n - 1)
   const height = n * ROW_H + (n - 1) * ROW_GAP
+
+  // every layer's slanted sides sit on the SAME two funnel lines (96% wide at
+  // the very top → 46% at the very bottom), so the stack reads as one shape —
+  // like the reference. Gaps just skip along the same line.
+  const W_TOP = 96
+  const W_BOTTOM = 46
+
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [pw, setPw] = useState(0)
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver((es) => setPw(es[0].contentRect.width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const widthAt = (y: number) => ((W_TOP - (W_TOP - W_BOTTOM) * (y / height)) / 100) * pw
 
   return (
     <div className="flex gap-4">
-      <div className="flex-1 relative min-w-0" style={{ height }}>
-        {data.stages.map((s, i) => {
-          const w = W_TOP - step * i
-          return (
-            <div
-              key={s.key}
-              className="rise absolute"
-              style={{
-                top: i * (ROW_H + ROW_GAP),
-                height: ROW_H,
-                left: `${(100 - w) / 2}%`,
-                width: `${w}%`,
-                animationDelay: `${i * 70}ms`,
-              }}
-              title={`${s.label}: ${s.count}`}
-            >
-              {/* rounded rectangle tipped in perspective → gently curved trapezoid
-                  that keeps its rounded corners, 1px outline, and glow */}
-              <div
-                className="h-full w-full rounded-[12px] border border-accent/40 flex flex-col items-center
-                           justify-center hover:brightness-125 transition-[filter] cursor-default"
-                style={{
-                  transform: 'perspective(340px) rotateX(-10deg)',
-                  background:
-                    'radial-gradient(130% 120% at 50% -10%, rgba(56,189,248,0.42), rgba(23,49,89,0.85) 52%, rgba(13,25,46,0.92) 100%)',
-                  boxShadow:
-                    '0 0 20px rgba(14,165,233,0.22), inset 0 1px 10px rgba(125,211,252,0.25)',
-                }}
-              >
-                <span className="text-[11px] text-ink2/85 leading-none">{s.label}</span>
-                <span className="text-lg font-semibold text-ink leading-tight tabular-nums">{s.count}</span>
-              </div>
-            </div>
-          )
-        })}
+      <div ref={wrapRef} className="flex-1 relative min-w-0" style={{ height }}>
+        {pw > 0 && (
+          <svg
+            width={pw}
+            height={height}
+            className="rise absolute inset-0 overflow-visible"
+            style={{ filter: 'drop-shadow(0 0 12px rgba(14,165,233,0.22))' }}
+          >
+            {data.stages.map((s, i) => {
+              const y0 = i * (ROW_H + ROW_GAP)
+              const y1 = y0 + ROW_H
+              const tw = widthAt(y0)
+              const bw = widthAt(y1)
+              const d = roundedTrap((pw - tw) / 2, (pw + tw) / 2, (pw - bw) / 2, (pw + bw) / 2, y0, y1, 9)
+              return (
+                <path
+                  key={s.key}
+                  d={d}
+                  className="funnel-path"
+                  fill="rgba(30,58,102,0.62)"
+                  stroke="rgba(96,190,250,0.5)"
+                  strokeWidth="1"
+                >
+                  <title>{`${s.label}: ${s.count}`}</title>
+                </path>
+              )
+            })}
+          </svg>
+        )}
+        {data.stages.map((s, i) => (
+          <div
+            key={s.key}
+            className="absolute inset-x-0 flex flex-col items-center justify-center pointer-events-none"
+            style={{ top: i * (ROW_H + ROW_GAP), height: ROW_H }}
+          >
+            <span className="text-[11px] text-ink2/85 leading-none">{s.label}</span>
+            <span className="text-lg font-semibold text-ink leading-tight tabular-nums">{s.count}</span>
+          </div>
+        ))}
       </div>
       {/* conversion rail: each chip vertically centered on its stage boundary */}
       <div className="w-40 shrink-0 relative" style={{ height }}>
