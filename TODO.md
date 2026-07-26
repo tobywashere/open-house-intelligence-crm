@@ -39,16 +39,19 @@ in the 2026-07-26 handoff). The bridge is spawned by Brave as a native-messaging
   `journalctl --user -u openclaw-gateway -f` → no `[bundle-mcp] failed to start`; then a chat turn
   calling `get_windows_and_tabs` should succeed, and the next daily-brief run should list
   `cnbc-economy` under `sources_ok`
-- [ ] **K**: upgrade `mcp-chrome-bridge` past 1.0.31 once a release creates one Server per session
-  (well-known MCP SDK pitfall; the SDK reference example allocates per-transport). Until then ANY
-  client crash re-wedges the bridge until its process is replaced (toggle the extension at
-  brave://extensions, or kill the `mcp-chrome-bridge` node process and let Brave respawn it)
-- [ ] **K**: make the daily-brief cron tolerate the bridge being down — pre-flight
-  `curl -sf http://127.0.0.1:12306/mcp` and fall back per the skill's documented WebFetch path
-  (GeekWire headlines-only, CNBC logged under sources unavailable)
-- [ ] Optional hardening if upstream doesn't fix: vendor the package and patch `dist/server/index.js`
-  (per-session Server factory, `server.close()` in `transport.onclose`, stale-session reaper) —
-  note an in-place patch is overwritten by the next `npm i -g`
+- [x] **Vendored + patched the bridge** (2026-07-26; upstream 1.0.31 is still latest, no fix
+  released): live copy is `~/.openclaw/vendor/mcp-chrome-bridge` — patched for one MCP Server per
+  session (multiple concurrent clients verified: 3 simultaneous initializes all 200), connect
+  errors return clean MCP errors instead of Fastify 500s, `stop()` closes live sessions, and a
+  reaper closes sessions idle >30 min (crashed clients can no longer wedge anything). Both
+  native-messaging manifests (`~/.config/{google-chrome,BraveSoftware/Brave-Browser}/NativeMessagingHosts/com.chromemcp.nativehost.json`)
+  now point at the vendored `run_host.sh`. ⚠ `npm i -g mcp-chrome-bridge` updates do NOT reach
+  the live copy — to adopt an upstream fix, re-point the manifests back (or re-vendor) and
+  restart Brave.
+- [x] **daily-brief pre-flight** (2026-07-26): SKILL.md now starts with a bridge health check +
+  headless Brave-restart recovery command, then falls back to the documented degraded path
+  (GeekWire headlines-only, CNBC under sources unavailable). Canonical skill source:
+  `~/Downloads/agents/daily-brief` (edit there, run `sync.sh`).
 - [x] **Memory search now runs on local embeddings** (2026-07-26): installed
   `@openclaw/llama-cpp-provider` and set `agents.defaults.memorySearch = {provider: "local",
   local: {contextSize: 2048}}` in `~/.openclaw/openclaw.json` — GGUF model
