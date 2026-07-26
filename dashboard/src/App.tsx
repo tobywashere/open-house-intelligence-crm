@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Route, Routes } from 'react-router-dom'
+import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import { api, Metrics } from './api'
 import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
@@ -33,17 +33,22 @@ export default function App() {
     return () => clearInterval(t)
   }, [])
 
+  const navCls = ({ isActive }: { isActive: boolean }) =>
+    `rounded-md px-2.5 py-1 transition-colors ${
+      isActive ? 'bg-zinc-800/70 text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'
+    }`
+
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="border-b border-zinc-800 px-6 py-3 flex items-center gap-4">
-        <Link to="/" className="text-lg font-semibold tracking-tight">
+    <div className="h-screen flex flex-col overflow-hidden">
+      <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur px-6 py-2.5 flex items-center gap-5">
+        <Link to="/" className="text-[17px] font-semibold tracking-tight">
           Open House <span className="text-emerald-400">Intelligence</span>
         </Link>
-        <nav className="flex gap-3 text-sm text-zinc-400">
-          <Link to="/" className="hover:text-zinc-100">Insights</Link>
-          <Link to="/briefing" className="hover:text-zinc-100">Briefing</Link>
-          <Link to="/leads" className="hover:text-zinc-100">Leads</Link>
-          <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
+        <nav className="flex gap-1 text-sm">
+          <NavLink to="/" end className={navCls}>Insights</NavLink>
+          <NavLink to="/briefing" className={navCls}>Briefing</NavLink>
+          <NavLink to="/leads" className={navCls}>Leads</NavLink>
+          <NavLink to="/activity" className={navCls}>Agent activity</NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-2">
           <button
@@ -62,7 +67,7 @@ export default function App() {
       <ReminderBanner />
 
       {metrics && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-px bg-zinc-800 border-b border-zinc-800">
+        <div className="shrink-0 grid grid-cols-2 sm:grid-cols-5 border-b border-zinc-800/60 bg-zinc-900/20 divide-x divide-zinc-800/40">
           <Tile label="Active leads" value={metrics.active_leads} />
           <Tile label="High priority" value={metrics.high_priority} accent />
           <Tile label="Follow-ups due" value={metrics.followups_due} />
@@ -72,7 +77,7 @@ export default function App() {
       )}
 
       <div className="flex flex-1 min-h-0">
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-6 min-w-0">
           <Routes>
             <Route path="/" element={<InsightsPage />} />
             <Route path="/briefing" element={<BriefingPage />} />
@@ -81,7 +86,8 @@ export default function App() {
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>
         </main>
-        <aside className="w-96 border-l border-zinc-800 hidden lg:flex flex-col">
+        {/* chat rail is viewport-fixed: the input is always visible, only messages scroll */}
+        <aside className="w-96 shrink-0 border-l border-zinc-800 hidden lg:flex flex-col min-h-0 bg-zinc-950">
           <ChatPanel />
         </aside>
       </div>
@@ -120,9 +126,9 @@ export default function App() {
 
 function Tile({ label, value, accent }: { label: string; value: number | string; accent?: boolean }) {
   return (
-    <div className="bg-zinc-950 px-4 py-3">
-      <div className="text-xs text-zinc-500">{label}</div>
-      <div className={`text-xl font-semibold ${accent ? 'text-emerald-400' : ''}`}>{value}</div>
+    <div className="px-4 py-2.5">
+      <div className="text-[11px] uppercase tracking-wider text-zinc-600">{label}</div>
+      <div className={`text-lg font-semibold tabular-nums ${accent ? 'text-emerald-400' : ''}`}>{value}</div>
     </div>
   )
 }

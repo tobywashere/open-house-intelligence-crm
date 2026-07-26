@@ -58,13 +58,13 @@ export function ChatPanel() {
 
   return (
     <>
-      <div className="px-4 py-3 border-b border-zinc-800 text-sm font-semibold">
+      <div className="shrink-0 px-4 py-3 border-b border-zinc-800/80 text-sm font-semibold">
         Chat with your agent
         <div className="text-xs font-normal text-zinc-500">
           Same agent as Discord — ask about leads, bookings, follow-ups
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
         {msgs.length === 0 && !thinking && (
           <div className="space-y-2">
             <div className="text-xs text-zinc-600">Try one of the demo prompts:</div>
@@ -103,22 +103,26 @@ export function ChatPanel() {
         )}
         <div ref={bottom} />
       </div>
-      <div className="p-3 border-t border-zinc-800 flex gap-2">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="Which Bellevue buyers need a follow-up?"
-          className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm
-                     placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500"
-        />
-        <button
-          onClick={() => send()}
-          disabled={thinking}
-          className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-2 text-sm"
-        >
-          Send
-        </button>
+      <div className="shrink-0 p-3 border-t border-zinc-800/80 bg-zinc-950">
+        <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 pl-3 pr-1.5 py-1.5
+                        focus-within:border-emerald-500/60 transition-colors">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && send()}
+            placeholder="Which Bellevue buyers need a follow-up?"
+            className="flex-1 bg-transparent text-sm placeholder:text-zinc-600 focus:outline-none"
+          />
+          <button
+            onClick={() => send()}
+            disabled={thinking || !input.trim()}
+            aria-label="Send message"
+            className="h-8 w-8 shrink-0 rounded-lg bg-emerald-600 hover:bg-emerald-500
+                       disabled:opacity-40 disabled:hover:bg-emerald-600 text-sm font-semibold"
+          >
+            ↑
+          </button>
+        </div>
       </div>
     </>
   )

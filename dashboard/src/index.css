@@ -4,6 +4,31 @@ body {
   @apply bg-zinc-950 text-zinc-100 antialiased;
 }
 
+/* premium details: thin scrollbars, brand selection, visible focus */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+::selection {
+  background: rgb(16 185 129 / 0.3);
+}
+:where(button, a, input, textarea, select):focus-visible {
+  outline: 2px solid rgb(16 185 129 / 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* new audit rows flash on arrival — makes agent activity feel live */
 @keyframes rowflash {
   from { background-color: rgb(16 185 129 / 0.18); }
