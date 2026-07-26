@@ -2,19 +2,36 @@
 
 A local-first real estate sales agent that manages leads from first contact through booked appointment. All inference runs locally on the Dell Pro Max GB10 — client PII never leaves the machine.
 
-**Read [`PLAN.md`](PLAN.md) for the full plan and [`docs/CONTRACT.md`](docs/CONTRACT.md) for the frozen schema/API/tool contract before writing code.**
+**[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`PLAN.md`](PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
 
 ## Architecture
 
 ![Architecture sketch: Client text UI → Virtual AI assistant → OpenClaw harness ↔ Client DB (SQLite), with scheduled reminders flowing back to the UI](docs/images/architecture-sketch.png)
 
-## One-command startup
+## One-command startup (dev, mock agent)
 
 ```bash
 bash scripts/dev.sh
 ```
 
 Seeds the database and starts the backend (http://localhost:8000, mock agent mode) + dashboard (http://localhost:5173). API docs at http://localhost:8000/docs.
+
+## Production on the GB10 (real agent)
+
+```bash
+bash scripts/gb10.sh
+```
+
+Builds the dashboard and serves the whole product from **one port**: `http://<gb10-tailscale-name>:8080` (`:8000` on the GB10 belongs to the vLLM server). Runs with `AGENT_MODE=openclaw`, relaying chat to the OpenClaw gateway on `:18789`. Full wiring, skill install, and verification checklist: [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md).
+
+## What's in the dashboard
+
+- `/` — the dashboard: live KPI strip in the navbar, sales funnel (with derived Qualified / Offers Submitted stages), and the deterministic insights engine (`dashboard/src/insights.ts` — computed from DB data, never LLM-invented)
+- `/leads` — prioritized inbox with the "Needs attention" neglect section
+- `/lead/:id` — profile: persona chip + AI relationship summary, activity timeline, follow-up draft with closed-loop "Mark as sent", booking, client-safe export, merge review
+- `/activity` — agent audit stream (every tool call), reachable from the dev icon in the navbar
+- Global resizable **chat rail** — sessions, markdown rendering, `[Name](lead:12)` links into profiles
+- **Daily summary overlay** — auto-opens once per day; "↻ Refresh now" asks the agent (chat session `summary-trigger`) to re-run research and repost
 
 ## Manual setup
 
@@ -32,7 +49,7 @@ cd dashboard && npm install && npm run dev
 
 | Person | Owns | Start here |
 |---|---|---|
-| **K** | Agent & local inference on the GB10 (OpenClaw, Ollama, skills, prompts, cron) | `agent/`, `backend/app/agent/openclaw.py` is your relay target; mock behavior to replace is in `backend/app/agent/mock.py` |
+| **K** | Agent & local inference on the GB10 (OpenClaw, Qwen 3.6 35B-A3B, skills, prompts, cron) | `skills/` — the CRM skill (`db-operations-skill.md` + `tools.py`) and `daily-command-center/`; `prompts/`. The backend relay you answer through is `backend/app/agent/openclaw.py`; mock behavior to replace is `backend/app/agent/mock.py` |
 | **Toby** | Backend, SQLite, calendar & business logic | `backend/` — schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py` |
 | **Johaan** | Dashboard, integration, demo & pitch | `dashboard/src/` — typed API client in `src/api.ts` |
 
@@ -43,13 +60,25 @@ The contract (`docs/CONTRACT.md`) is frozen — breaking changes need all three 
 | Var | Default | Meaning |
 |---|---|---|
 | `AGENT_MODE` | `mock` | `mock` (dev, no GB10 needed) or `openclaw` (relay to the GB10) |
-| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway (GB10's Tailscale hostname) |
-| `AGENT_GATEWAY_TOKEN` | — | Gateway bearer token |
+| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway; `scripts/gb10.sh` overrides to `http://localhost:18789` since backend and gateway share the box |
+| `AGENT_GATEWAY_TOKEN` | — | Gateway bearer token — only needed if K enables token auth (currently `gateway.auth.mode: "none"`) |
 | `AGENT_CHAT_PATH` | `/v1/chat/completions` | Gateway chat endpoint path |
 | `DB_PATH` | `backend/data/crm.db` | SQLite location |
+| `PORT` | `8080` | Serve port for `scripts/gb10.sh` (dev mode uses 8000 + 5173) |
 | `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
+| `CRM_API_URL` | `http://localhost:8000/api` | Backend URL for the agent's `skills/tools.py` |
 
 Everyone develops locally in mock mode. For integration tests, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at the GB10 over Tailscale.
+
+## Docs index
+
+- [`docs/CONTRACT.md`](docs/CONTRACT.md) — frozen schema / API / agent tools (source of truth)
+- [`TODO.md`](TODO.md) — post-MVP work, tracked by owner
+- [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) — hosting the product on the GB10
+- [`docs/INSIGHTS.md`](docs/INSIGHTS.md) — deterministic insights engine
+- [`docs/BRIEFING-UI.md`](docs/BRIEFING-UI.md), [`docs/FUNNEL-UI.md`](docs/FUNNEL-UI.md) — briefing & funnel design docs (nav has since merged into `/`)
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) — approved specs (Google Calendar + Gmail integration)
+- [`PLAN.md`](PLAN.md) — original hackathon plan (historical)
 
 ## Demo helpers
 
