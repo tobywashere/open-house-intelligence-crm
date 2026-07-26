@@ -10,9 +10,8 @@ import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { fetchFunnel, Kpi } from './funnel'
 import { BriefingPage } from './pages/Briefing'
-import { FunnelPage } from './pages/Funnel'
+import { DashboardPage } from './pages/Dashboard'
 import { Inbox } from './pages/Inbox'
-import { InsightsPage } from './pages/Insights'
 import { LeadPage } from './pages/Lead'
 
 const CHAT_W_KEY = 'ohi-chat-width'
@@ -80,8 +79,6 @@ export default function App() {
           Open House <span className="brand-gradient">Intelligence</span>
         </Link>
         <nav className="flex gap-1 text-sm">
-          <NavLink to="/" end className={navCls}>Insights</NavLink>
-          <NavLink to="/funnel" className={navCls}>Funnel</NavLink>
           <NavLink to="/leads" className={navCls}>Leads</NavLink>
           <NavLink to="/briefing" className={navCls}>Briefing</NavLink>
           <NavLink to="/activity" className={navCls}>Agent activity</NavLink>
@@ -95,6 +92,20 @@ export default function App() {
             ☀️ Daily summary
           </button>
           <LocalBadge metrics={metrics} />
+          {/* dev-only: raw agent/tool audit stream, deliberately not a nav item */}
+          <NavLink
+            to="/activity"
+            title="Agent activity (dev)"
+            className={({ isActive }) =>
+              `h-8 w-8 rounded-full border flex items-center justify-center text-xs transition-colors ${
+                isActive
+                  ? 'border-accent/60 text-accent'
+                  : 'border-line text-sub/70 hover:text-accent hover:border-accent/60'
+              }`
+            }
+          >
+            {'</>'}
+          </NavLink>
           <DemoControls />
         </div>
       </header>
@@ -113,8 +124,7 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
           <Routes>
-            <Route path="/" element={<InsightsPage />} />
-            <Route path="/funnel" element={<FunnelPage />} />
+            <Route path="/" element={<DashboardPage />} />
             <Route path="/briefing" element={<BriefingPage />} />
             <Route path="/leads" element={<Inbox />} />
             <Route path="/lead/:id" element={<LeadPage />} />

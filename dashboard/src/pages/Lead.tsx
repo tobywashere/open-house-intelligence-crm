@@ -96,7 +96,7 @@ export function LeadPage() {
           ← Back
         </button>
         <span className="text-sub/40">/</span>
-        <Link to="/" className="hover:text-ink2">Insights</Link>
+        <Link to="/" className="hover:text-ink2">Dashboard</Link>
         <span className="text-sub/40">/</span>
         <span className="text-body">{lead.name}</span>
       </nav>

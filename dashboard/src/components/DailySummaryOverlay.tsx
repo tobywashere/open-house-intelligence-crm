@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { DailySummary, fetchDailySummary } from '../summary'
+import { BriefingSection } from './BriefingSection'
 import { Markdown } from './Markdown'
 import { Skeleton } from './Skeleton'
 import { toast } from './Toast'
 
-// Full-screen daily summary: market watch (web scrape) + AI-written insights.
+// Full-screen daily summary: morning briefing (schedule, meeting briefs,
+// suggested actions) + market watch (web scrape) + AI-written insights.
 // UI/UX only — content arrives from K's 7am cron via GET /api/summary (mock until then).
 export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
   const [summary, setSummary] = useState<DailySummary | null>(null)
@@ -102,6 +104,8 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </header>
+
+        <BriefingSection />
 
         {!summary ? (
           <div className="grid lg:grid-cols-2 gap-8 mt-10">

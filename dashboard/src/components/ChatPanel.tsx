@@ -16,8 +16,8 @@ const newSessionId = () => `dash-${Date.now().toString(36)}`
 export function ChatPanel() {
   const { pathname } = useLocation()
   const placeholder =
-    pathname === '/funnel'
-      ? 'Ask anything about your funnel…'
+    pathname === '/'
+      ? 'Ask anything about your pipeline…'
       : pathname.startsWith('/lead')
         ? 'Ask about this client…'
         : 'Ask anything about your leads'
