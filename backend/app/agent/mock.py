@@ -1,6 +1,6 @@
 """Deterministic stand-in for the real agent so dashboard/backend dev never blocks on the GB10.
 
-Toby: the real behavior replaces this behind the same AgentDriver interface —
+K: the real behavior replaces this behind the same AgentDriver interface —
 endpoints, response shapes, and the dashboard don't change.
 """
 import re

@@ -11,6 +11,12 @@ const STATUS_STYLE: Record<string, string> = {
   closed: 'bg-zinc-500/15 text-zinc-400',
 }
 
+// Urgency = days idle × score. Client-side for now; if Toby exposes an official
+// urgency field/sort later (additive change), swap the computation for the field.
+const daysIdle = (l: Lead) =>
+  Math.max(0, Math.floor((Date.now() - new Date(l.last_activity_at + 'Z').getTime()) / 86_400_000))
+const urgency = (l: Lead) => daysIdle(l) * ((l.score ?? 30) / 100)
+
 export function Inbox() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -42,8 +48,36 @@ export function Inbox() {
     }
   }
 
+  const attention = leads
+    .filter((l) => (l.status === 'new' || l.status === 'contacted') && (daysIdle(l) >= 2 || l.is_neglected === 1))
+    .sort((a, b) => urgency(b) - urgency(a))
+    .slice(0, 3)
+
   return (
     <div className="max-w-4xl space-y-4">
+      {attention.length > 0 && (
+        <section className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4">
+          <h2 className="text-sm font-semibold text-amber-300 mb-3">⚠ Needs attention</h2>
+          <div className="grid sm:grid-cols-3 gap-3">
+            {attention.map((l) => (
+              <Link
+                key={l.id}
+                to={`/lead/${l.id}`}
+                className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3 hover:border-amber-500/40 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <ScoreBadge score={l.score} />
+                  <span className="font-medium text-sm truncate">{l.name}</span>
+                </div>
+                <div className="text-xs text-zinc-500 mt-1.5">
+                  {daysIdle(l)}d idle × score {l.score ?? '—'} — too warm to go cold
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="flex gap-2">
         <input
           value={note}

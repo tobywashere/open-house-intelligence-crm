@@ -90,6 +90,8 @@ export const api = {
   lead: (id: number) => req<LeadProfile>(`/leads/${id}`),
   createLead: (raw_text: string, source = 'note') =>
     req<Lead>('/leads', { method: 'POST', body: JSON.stringify({ raw_text, source }) }),
+  patchLead: (id: number, fields: Partial<Lead>) =>
+    req<Lead>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
   processLead: (id: number) =>
     req<{ lead: Lead; followup_draft: string }>(`/leads/${id}/process`, { method: 'POST' }),
   duplicates: (id: number) =>

@@ -1,4 +1,4 @@
-"""Deterministic lead scoring. K owns the weights; the LLM only writes score_reason."""
+"""Deterministic lead scoring. Toby owns the weights; the LLM only writes score_reason."""
 
 
 def score_lead(lead: dict, event_count: int = 0) -> int:

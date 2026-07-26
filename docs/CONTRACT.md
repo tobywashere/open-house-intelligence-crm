@@ -2,8 +2,8 @@
 
 This file is the agreement between the three workstreams. **Change it only with all three people present.** Everything else in the repo can drift; this cannot.
 
-- Toby (agent/inference) writes tools that call the REST API below.
-- K (backend/data) implements the schema and API below.
+- K (agent/inference) writes tools that call the REST API below.
+- Toby (backend/data) implements the schema and API below.
 - Johaan (dashboard) renders the responses below.
 
 ## 1. SQLite schema
@@ -106,9 +106,9 @@ Curl examples for each live in [`agent/skills/openhouse-crm/SKILL.md`](../agent/
 
 ## 4. Division of change
 
-- **Backend behavior** (scoring formula weights, duplicate thresholds, conflict rules): K may change freely — they're implementation, not contract.
+- **Backend behavior** (scoring formula weights, duplicate thresholds, conflict rules): Toby may change freely — they're implementation, not contract.
 - **Response shapes, paths, table columns**: frozen. Additive changes (new optional field) need a message in the group chat; breaking changes need all three.
-- **LLM-filled fields** (`score_reason`, `intent`, `preferences`, `missing_fields`, drafts): Toby owns quality; shape stays as above.
+- **LLM-filled fields** (`score_reason`, `intent`, `preferences`, `missing_fields`, drafts): K owns quality; shape stays as above.
 
 ## 5. Environment variables
 

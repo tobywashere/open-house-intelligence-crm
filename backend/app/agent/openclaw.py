@@ -6,7 +6,7 @@ AGENT_CHAT_PATH if the installed OpenClaw version mounts it elsewhere.
 
 Extraction/drafting also route through chat with instruction prompts — the agent's
 system prompt + skill (see agent/prompts and agent/skills) make it answer with
-bare JSON / bare text. Toby owns prompt quality here.
+bare JSON / bare text. K owns prompt quality here.
 """
 import json
 import os

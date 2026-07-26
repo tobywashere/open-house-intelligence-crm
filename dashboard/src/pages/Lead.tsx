@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, LeadProfile } from '../api'
+import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, Lead, LeadProfile } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
 import { Skeleton } from '../components/Skeleton'
 import { BookingCard } from '../components/BookingCard'
+import { MergeReview } from '../components/MergeReview'
 import { NoteBox } from '../components/NoteBox'
+import { toast } from '../components/Toast'
+import { clientSafeMarkdown, downloadMarkdown } from '../export'
 import { ScoreBadge } from './Inbox'
 
 export function LeadPage() {
@@ -13,8 +16,10 @@ export function LeadPage() {
   const leadId = Number(id)
   const [lead, setLead] = useState<LeadProfile | null>(null)
   const [draft, setDraft] = useState<string | null>(null)
-  const [dupes, setDupes] = useState<{ lead: { id: number; name: string }; match_on: string }[]>([])
+  const [dupes, setDupes] = useState<{ lead: Lead; match_on: string }[]>([])
+  const [reviewing, setReviewing] = useState<Lead | null>(null)
   const [busy, setBusy] = useState(false)
+  const [merging, setMerging] = useState(false)
 
   const load = useCallback(() => {
     api.lead(leadId).then(setLead).catch(() => {})
@@ -35,9 +40,34 @@ export function LeadPage() {
     }
   }
 
-  const merge = async (dupId: number) => {
-    await api.merge(leadId, dupId)
-    setDupes([])
+  const confirmMerge = async () => {
+    if (!reviewing) return
+    setMerging(true)
+    try {
+      await api.merge(leadId, reviewing.id)
+      setDupes([])
+      setReviewing(null)
+      toast(`✓ Merged ${reviewing.name} into this profile`)
+      load()
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  const exportSummary = () => {
+    if (!lead) return
+    downloadMarkdown(`${lead.name.replace(/\s+/g, '-')}-summary.md`, clientSafeMarkdown(lead))
+    toast('✓ Client-safe summary downloaded (no scores or internal notes)')
+  }
+
+  const markSent = async () => {
+    if (!draft || !lead) return
+    await api.addEvent(leadId, 'text', `Follow-up sent: ${draft}`)
+    if (lead.status === 'new') await api.patchLead(leadId, { status: 'contacted' })
+    const due = new Date(Date.now() + 3 * 86_400_000)
+    await api.scheduleReminder(leadId, due.toISOString().slice(0, 19), `Check for a reply from ${lead.name}`)
+    toast('✓ Sent logged — status updated, reply check scheduled in 3 days')
+    setDraft(null)
     load()
   }
 
@@ -85,6 +115,13 @@ export function LeadPage() {
         <div className="ml-auto flex items-center gap-3">
           <ScoreBadge score={lead.score} />
           <button
+            onClick={exportSummary}
+            title="Download a client-safe markdown summary"
+            className="rounded-lg border border-zinc-700 hover:border-zinc-500 px-3 py-1.5 text-sm"
+          >
+            Export ↓
+          </button>
+          <button
             onClick={process}
             disabled={busy}
             className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-1.5 text-sm"
@@ -94,7 +131,7 @@ export function LeadPage() {
         </div>
       </div>
 
-      {dupes.length > 0 && (
+      {dupes.length > 0 && !reviewing && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
           <div className="text-amber-300 mb-1">Possible duplicates detected:</div>
           {dupes.map((d) => (
@@ -102,12 +139,22 @@ export function LeadPage() {
               <span>
                 {d.lead.name} <span className="text-zinc-500">(matched on {d.match_on})</span>
               </span>
-              <button onClick={() => merge(d.lead.id)} className="text-emerald-400 hover:underline">
-                Merge into this profile
+              <button onClick={() => setReviewing(d.lead)} className="text-emerald-400 hover:underline">
+                Review merge →
               </button>
             </div>
           ))}
         </div>
+      )}
+
+      {reviewing && (
+        <MergeReview
+          primary={lead}
+          duplicate={reviewing}
+          busy={merging}
+          onConfirm={confirmMerge}
+          onCancel={() => setReviewing(null)}
+        />
       )}
 
       {lead.relationship_summary && (
@@ -138,9 +185,20 @@ export function LeadPage() {
       )}
 
       {draft && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
-          <div className="text-xs text-emerald-400 mb-1">Suggested follow-up</div>
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm space-y-2">
+          <div className="text-xs text-emerald-400">Suggested follow-up</div>
           <p className="whitespace-pre-wrap">{draft}</p>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={markSent}
+              className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-medium"
+            >
+              Mark as sent ✓
+            </button>
+            <span className="text-xs text-zinc-500 self-center">
+              logs it, sets status, schedules a 3-day reply check
+            </span>
+          </div>
         </div>
       )}
 

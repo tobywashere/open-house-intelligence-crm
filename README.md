@@ -28,8 +28,8 @@ cd dashboard && npm install && npm run dev
 
 | Person | Owns | Start here |
 |---|---|---|
-| **Toby** | Agent & local inference on the GB10 (OpenClaw, Ollama, skills, prompts, cron) | `agent/`, `backend/app/agent/openclaw.py` is your relay target; mock behavior to replace is in `backend/app/agent/mock.py` |
-| **K** | Backend, SQLite, calendar & business logic | `backend/` — schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py` |
+| **K** | Agent & local inference on the GB10 (OpenClaw, Ollama, skills, prompts, cron) | `agent/`, `backend/app/agent/openclaw.py` is your relay target; mock behavior to replace is in `backend/app/agent/mock.py` |
+| **Toby** | Backend, SQLite, calendar & business logic | `backend/` — schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py` |
 | **Johaan** | Dashboard, integration, demo & pitch | `dashboard/src/` — typed API client in `src/api.ts` |
 
 The contract (`docs/CONTRACT.md`) is frozen — breaking changes need all three of us.

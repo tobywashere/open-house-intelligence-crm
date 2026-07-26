@@ -63,7 +63,7 @@ Lead statuses: `new → contacted → meeting_booked` (+ `neglected` flag from t
 
 Ownership ≠ only that person works on it. It means one person is responsible for getting it finished.
 
-### Toby — Agent & Local Inference (the "brain")
+### K — Agent & Local Inference (the "brain")
 
 Owns everything between the model and the tools.
 
@@ -71,19 +71,19 @@ Owns everything between the model and the tools.
 - Extraction pipeline: raw note → structured JSON (budget, timeline, preferences, intent, missing fields) with schema validation + one retry
 - Lead scoring (deterministic formula; LLM only writes the *explanation*)
 - Follow-up drafting
-- Duplicate-merge confirmation (rule-based matching lives in K's layer; the model only confirms borderline cases)
+- Duplicate-merge confirmation (rule-based matching lives in Toby's layer; the model only confirms borderline cases)
 - Agent loop / OpenClaw tool wiring — with a fixed-pipeline fallback (extract → score → draft as three explicit calls) ready if free-form tool-calling is flaky
 - Neglected-lead check logic + the scheduled job
 
 **Mid-hackathon deliverable:** `process_lead(raw_text) → structured lead + score + draft`, callable by anyone, working offline.
 
-### K — Backend, Data & Calendar (the "spine")
+### Toby — Backend, Data & Calendar (the "spine")
 
 Owns the contract itself and everything deterministic.
 
 - SQLite schema — **written and frozen in the first 30 minutes**
 - Backend (FastAPI or Node): lead CRUD, endpoints the dashboard reads, endpoints the agent tools call
-- Duplicate detection: exact phone/email match, fuzzy name as tiebreaker; borderline cases handed to Toby's model
+- Duplicate detection: exact phone/email match, fuzzy name as tiebreaker; borderline cases handed to K's model
 - Calendar adapter (`calendar/local_calendar.py` first, `google_calendar.py` only if time permits):
   - Availability + appointments in SQLite
   - Conflict detection
@@ -92,13 +92,13 @@ Owns the contract itself and everything deterministic.
 - **Seed script: ~15 realistic leads** with varied ages/statuses (dashboard must never demo empty)
 - **"Simulate 3 days passing" demo endpoint** — backdates timestamps so the neglected-lead check fires live on stage
 
-**Mid-hackathon deliverable:** running API with seeded data that Toby and Johaan can hit.
+**Mid-hackathon deliverable:** running API with seeded data that K and Johaan can hit.
 
 ### Johaan — Dashboard, Integration & Demo (the "face")
 
 Owns whether the whole thing demos.
 
-- React dashboard against K's API. Build order by demo value:
+- React dashboard against Toby's API. Build order by demo value:
   1. **Prioritized lead inbox** (score badges, status)
   2. **Lead profile** with merged sources + activity timeline
   3. **Agent audit log** — live stream of tool calls ("called `score_lead` → 87, called `check_availability` → Tue 6pm free"). This is the wow factor; do not leave it for last
@@ -106,10 +106,10 @@ Owns whether the whole thing demos.
   5. Metric tiles + the **"Inference: Local on Dell Pro Max GB10 / Cloud LLM requests: 0"** badge
   6. Calendar view — simplest thing that shows the Tuesday 6pm slot
 - Visible "agent thinking" state so local-inference latency reads as *working*, not *broken*
-- **Integration owner:** first to feel it when Toby's output shape and K's API drift — call it out and force fixes early
+- **Integration owner:** first to feel it when K's output shape and Toby's API drift — call it out and force fixes early
 - Demo script, Sarah Chen walkthrough, **backup video the night before (non-negotiable)**, pitch framing (local-first = client PII never leaves the office)
 
-**Mid-hackathon deliverable:** inbox + profile rendering seeded leads from the real API. Mock nothing — real data from K's seed script.
+**Mid-hackathon deliverable:** inbox + profile rendering seeded leads from the real API. Mock nothing — real data from Toby's seed script.
 
 ---
 
@@ -148,8 +148,8 @@ Owns whether the whole thing demos.
 ## Milestones
 
 **Hour 1, in parallel:**
-- Toby: model serving on GB10, JSON extraction validated on sample notes
-- K: schema frozen + seed data loaded
+- K: model serving on GB10, JSON extraction validated on sample notes
+- Toby: schema frozen + seed data loaded
 - Johaan: app shell hitting a stub endpoint
 
 **Flow 1 (first):**

@@ -3,9 +3,9 @@
 > Product vision: the CRM is the memory, the AI is the trusted assistant. Every morning the
 > realtor gets an AI-generated executive briefing: today's schedule, a brief for every meeting,
 > and the highest-impact suggested actions. Johaan owns everything visual here; the agent
-> (Toby) generates the content on a morning cron; the backend (K) stores and serves it.
+> (K) generates the content on a morning cron; the backend (Toby) stores and serves it.
 
-## Contract addition (proposed — K & Toby sign off)
+## Contract addition (proposed — Toby & K sign off)
 
 ### New endpoint pair
 
@@ -90,7 +90,7 @@ here's yesterday's" / mock).
 
 ## What Johaan needs from teammates (non-blocking, mock covers until then)
 
-- **K**: `briefing` table + GET/POST endpoints, `persona` + `relationship_summary` columns.
-- **Toby**: 7am cron on the GB10 — Qwen 3.6 35B-A3B composes the briefing JSON from leads,
+- **Toby**: `briefing` table + GET/POST endpoints, `persona` + `relationship_summary` columns.
+- **K**: 7am cron on the GB10 — Qwen 3.6 35B-A3B composes the briefing JSON from leads,
   events, and appointments, POSTs it to `/api/briefing`. (This is the "scheduled workflows"
   bullet from PLAN.md — same shape as the neglected-lead cron.)

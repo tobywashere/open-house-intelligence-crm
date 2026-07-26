@@ -100,7 +100,7 @@ def metrics():
         "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
         "followups_due": sum(1 for l in leads if l["is_neglected"]),
         "appointments_booked": appts,
-        "avg_response_minutes": 4,  # TODO(K): compute from events once real data flows
+        "avg_response_minutes": 4,  # TODO(Toby): compute from events once real data flows
         "agent_mode": os.environ.get("AGENT_MODE", "mock"),
         "cloud_llm_requests": 0,
     }
