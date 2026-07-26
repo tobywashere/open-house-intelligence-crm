@@ -9,7 +9,6 @@ import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { fetchFunnel, Kpi } from './funnel'
-import { BriefingPage } from './pages/Briefing'
 import { DashboardPage } from './pages/Dashboard'
 import { Inbox } from './pages/Inbox'
 import { LeadPage } from './pages/Lead'
@@ -80,8 +79,6 @@ export default function App() {
         </Link>
         <nav className="flex gap-1 text-sm">
           <NavLink to="/leads" className={navCls}>Leads</NavLink>
-          <NavLink to="/briefing" className={navCls}>Briefing</NavLink>
-          <NavLink to="/activity" className={navCls}>Agent activity</NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-2">
           <button
@@ -125,7 +122,6 @@ export default function App() {
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
           <Routes>
             <Route path="/" element={<DashboardPage />} />
-            <Route path="/briefing" element={<BriefingPage />} />
             <Route path="/leads" element={<Inbox />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/activity" element={<AuditLog full />} />
