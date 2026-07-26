@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { toast } from '../components/Toast'
 import { api, fmtDate, fmtMoney, Lead } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
 import { daysIdle } from '../insights'
@@ -42,6 +43,8 @@ export function Inbox() {
       await api.processLead(lead.id)
       setNote('')
       load()
+    } catch {
+      toast('⚠ Could not add the lead — is the backend running?')
     } finally {
       setAdding(false)
     }

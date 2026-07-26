@@ -52,6 +52,10 @@ class MergeIn(BaseModel):
     duplicate_id: int
 
 
+class LeadDelete(BaseModel):
+    reason: str = ""
+
+
 def fetch_lead(conn, lead_id: int) -> dict:
     row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
     if not row:
@@ -193,6 +197,8 @@ def merge_leads(body: MergeIn):
                      (body.primary_id, body.duplicate_id))
         conn.execute("UPDATE appointments SET lead_id = ? WHERE lead_id = ?",
                      (body.primary_id, body.duplicate_id))
+        conn.execute("UPDATE reminders SET lead_id = ? WHERE lead_id = ?",
+                     (body.primary_id, body.duplicate_id))
         conn.execute("UPDATE audit_log SET lead_id = ? WHERE lead_id = ?",
                      (body.primary_id, body.duplicate_id))
         conn.execute("DELETE FROM leads WHERE id = ?", (body.duplicate_id,))
@@ -211,32 +217,47 @@ def merge_leads(body: MergeIn):
 
 @router.post("/{lead_id}/process")
 async def process_lead(lead_id: int):
-    """Extract (if raw events exist) → score → draft. The core pipeline."""
+    """Extract (if raw events exist) → score → draft. The core pipeline.
+
+    Never hold a connection across the driver awaits: in openclaw mode each can
+    run minutes, and an open write transaction would lock out every other
+    writer (chat inserts, bookings) past busy_timeout."""
     driver = get_driver()
     with get_conn() as conn:
         lead = fetch_lead(conn, lead_id)
         event_count = conn.execute(
             "SELECT COUNT(*) c FROM events WHERE lead_id = ?", (lead_id,)).fetchone()["c"]
-
-        # re-extract from the latest raw note if fields are missing
+        latest = None
         if not lead.get("budget") or not lead.get("timeline"):
             latest = conn.execute(
                 "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text') "
                 "ORDER BY created_at DESC LIMIT 1", (lead_id,)).fetchone()
-            if latest:
-                extracted = await driver.extract(latest["content"])
-                fills = {k: extracted[k] for k in
-                         ("phone", "email", "budget", "area", "timeline", "intent")
-                         if not lead.get(k) and extracted.get(k) is not None}
-                if fills:
-                    sets = ", ".join(f"{k} = ?" for k in fills)
-                    conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
-                                 [*fills.values(), lead_id])
-                    lead = fetch_lead(conn, lead_id)
 
-        score = score_lead(lead, event_count)
-        reason = await driver.explain_score(lead, score)
-        draft = await driver.draft_followup(lead)
+    # re-extract from the latest raw note if fields are missing
+    if latest:
+        extracted = await driver.extract(latest["content"])
+        fills = {k: extracted[k] for k in
+                 ("phone", "email", "budget", "area", "timeline", "intent")
+                 if not lead.get(k) and extracted.get(k) is not None}
+        # the model may answer "1.1M" — a non-numeric budget breaks score_lead
+        # for this lead forever, so drop it rather than store it
+        if "budget" in fills and not isinstance(fills["budget"], (int, float)):
+            try:
+                fills["budget"] = int(float(str(fills["budget"]).replace(",", "").strip()))
+            except ValueError:
+                del fills["budget"]
+        if fills:
+            with get_conn() as conn:
+                sets = ", ".join(f"{k} = ?" for k in fills)
+                conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
+                             [*fills.values(), lead_id])
+                lead = fetch_lead(conn, lead_id)
+
+    score = score_lead(lead, event_count)
+    reason = await driver.explain_score(lead, score)
+    draft = await driver.draft_followup(lead)
+
+    with get_conn() as conn:
         conn.execute("UPDATE leads SET score = ?, score_reason = ? WHERE id = ?",
                      (score, reason, lead_id))
         audit(conn, "agent", "score_lead", {"lead_id": lead_id},
@@ -245,3 +266,21 @@ async def process_lead(lead_id: int):
               {"draft": draft}, lead_id)
         lead = fetch_lead(conn, lead_id)
     return {"lead": lead, "followup_draft": draft}
+
+
+@router.delete("/{lead_id}")
+def delete_lead(lead_id: int, body: LeadDelete = None):
+    """Delete a lead and its linked rows. events/appointments/reminders have
+    NOT NULL lead_id columns, so they are removed with the lead; audit_log rows
+    are kept (lead_id set NULL) so the paper trail survives the delete."""
+    with get_conn() as conn:
+        old = fetch_lead(conn, lead_id)
+        for table in ("events", "appointments", "reminders"):
+            conn.execute(f"DELETE FROM {table} WHERE lead_id = ?", (lead_id,))
+        conn.execute("UPDATE audit_log SET lead_id = NULL WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+        # lead_id=None: the row is gone, an FK reference to it would be rejected
+        audit(conn, "agent", "delete_lead",
+              {"lead_id": lead_id, "reason": (body.reason if body else "")},
+              {"name": old.get("name")}, None)
+    return {"deleted": True, "lead_id": lead_id, "name": old.get("name")}

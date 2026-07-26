@@ -2,7 +2,7 @@
 // existing endpoints. Two stage conventions (group-chat noted, no schema change):
 //   Qualified       = reached contacted AND score >= 70 (derived)
 //   Offers Submitted = has an event with type "offer" (amount parsed from content)
-import { api, Appointment, Lead, LeadProfile } from './api'
+import { api, Appointment, Lead, LeadProfile, localDateKey } from './api'
 import { Insights } from './insights'
 
 export interface FunnelStage {
@@ -93,7 +93,7 @@ export async function fetchFunnel(force = false): Promise<FunnelData> {
 
   let yesterday: Insights | null = null
   try {
-    const y = new Date(Date.now() - DAY).toISOString().slice(0, 10)
+    const y = localDateKey(new Date(Date.now() - DAY))
     yesterday = await api.insightsFor<Insights>(y)
   } catch {
     yesterday = null
@@ -259,9 +259,14 @@ function compute(
     {
       label: 'Close rate',
       value: `${overallPct}%`,
-      ...(yClosed != null && yFunnel
-        ? delta(closed.length, yClosed)
-        : {}),
+      // delta the RATE, not the closed count — 2→3 closed while total grows
+      // faster is a falling rate, not "▲ 50%"
+      ...(() => {
+        if (yClosed == null || !yFunnel) return {}
+        const yTotal = (yActive ?? 0) + yClosed
+        if (!yTotal) return {}
+        return delta(overallPct, Math.round((yClosed / yTotal) * 100))
+      })(),
     },
   ]
 

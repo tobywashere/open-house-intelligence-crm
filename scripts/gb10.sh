@@ -14,16 +14,25 @@ export AGENT_GATEWAY_URL="${AGENT_GATEWAY_URL:-http://localhost:18789}"
 # AGENT_GATEWAY_TOKEN is only needed when the gateway runs with
 # gateway.auth.mode = "token"/"password". On the GB10 it is "none", so unset is fine.
 
-if [ ! -d .venv ]; then
-  python3 -m venv .venv
-  .venv/bin/pip install -q -r backend/requirements.txt
-fi
+[ -d .venv ] || python3 -m venv .venv
+# always sync deps — a new requirements.txt line must not ImportError-crash
+# an existing install (pip is a fast no-op when everything is satisfied)
+.venv/bin/pip install -q -r backend/requirements.txt
 [ -f backend/data/crm.db ] || .venv/bin/python backend/seed.py
 
 if [ ! -d dashboard/node_modules ]; then
   (cd dashboard && npm install --no-fund --no-audit)
 fi
-(cd dashboard && npm run build)
+# a broken build must not take the API down with it — fall back to the last
+# good dist when one exists
+if ! (cd dashboard && npm run build); then
+  if [ -d dashboard/dist ]; then
+    echo "⚠  dashboard build FAILED — serving the previous dist" >&2
+  else
+    echo "✖ dashboard build failed and no previous dist exists" >&2
+    exit 1
+  fi
+fi
 
 echo "──────────────────────────────────────────────"
 echo " Open House Intelligence → http://0.0.0.0:$PORT"

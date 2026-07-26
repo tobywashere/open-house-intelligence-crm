@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -20,7 +22,13 @@ async def chat(body: ChatIn):
             "INSERT INTO chat_messages (session_id, role, content) VALUES (?,?,?)",
             (body.session_id, "user", body.message),
         )
-    reply = await driver.chat(body.message, body.session_id)
+    # the user turn is already persisted — an exception here would leave it
+    # hanging in the history with no reply, so always store something
+    try:
+        reply = await driver.chat(body.message, body.session_id)
+    except Exception:
+        logging.exception("chat driver failed")
+        reply = "⚠ The agent is unavailable right now. Your message is saved — try again shortly."
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO chat_messages (session_id, role, content) VALUES (?,?,?)",

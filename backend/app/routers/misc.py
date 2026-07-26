@@ -1,10 +1,11 @@
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..agent import get_driver
 from ..db import audit, get_conn, row_to_dict
+from .leads import fetch_lead
 from ..scoring import is_high_priority
 
 router = APIRouter(tags=["misc"])
@@ -25,6 +26,7 @@ class ReminderIn(BaseModel):
 @router.post("/reminders")
 def create_reminder(body: ReminderIn):
     with get_conn() as conn:
+        fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
         cur = conn.execute(
             "INSERT INTO reminders (lead_id, due_ts, note) VALUES (?,?,?)",
             (body.lead_id, body.due_ts, body.note),
@@ -49,7 +51,9 @@ def complete_reminder(reminder_id: int):
     with get_conn() as conn:
         conn.execute("UPDATE reminders SET done = 1 WHERE id = ?", (reminder_id,))
         row = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
-    return dict(row) if row else {"id": reminder_id, "done": 1}
+        if not row:
+            raise HTTPException(404, f"reminder {reminder_id} not found")
+    return dict(row)
 
 
 def run_neglect_check(conn) -> list[dict]:
@@ -57,7 +61,7 @@ def run_neglect_check(conn) -> list[dict]:
     and by the scheduled job (agent/cron)."""
     rows = conn.execute(
         "SELECT * FROM leads WHERE status IN ('new','contacted') AND is_neglected = 0 "
-        f"AND last_activity_at < datetime('now', '-{NEGLECT_AFTER_DAYS} days')"
+        f"AND last_activity_at < strftime('%Y-%m-%dT%H:%M:%SZ','now','-{NEGLECT_AFTER_DAYS} days')"
     ).fetchall()
     neglected = [row_to_dict(r) for r in rows]
     for lead in neglected:
@@ -75,7 +79,8 @@ def advance_time(body: AdvanceTimeIn):
         if body.days:
             conn.execute(
                 "UPDATE leads SET last_activity_at = "
-                "datetime(last_activity_at, ?) ", (f"-{body.days} days",))
+                "strftime('%Y-%m-%dT%H:%M:%SZ', datetime(last_activity_at, ?)) ",
+                (f"-{body.days} days",))
         neglected = run_neglect_check(conn)
     return {"neglected": neglected}
 

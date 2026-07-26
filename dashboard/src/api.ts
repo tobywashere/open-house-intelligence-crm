@@ -163,6 +163,11 @@ export const fmtMoney = (n: number | null) =>
 export const fmtLocal = (iso: string, opts: Intl.DateTimeFormatOptions) =>
   new Date(iso).toLocaleString(undefined, opts)
 
+// Local calendar date key (YYYY-MM-DD). NOT toISOString().slice(0,10) — that is
+// the UTC date, which rolls over at 4/5pm Pacific and breaks every "today" lookup.
+export const localDateKey = (d: Date = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
 export const fmtSlotTime = (iso: string) => fmtLocal(iso, { hour: 'numeric', minute: '2-digit' })
 
 export const fmtSlotDay = (iso: string) =>

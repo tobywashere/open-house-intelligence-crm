@@ -9,7 +9,7 @@ The model must never see or write raw SQL; every DB read/write goes through one
 of these functions, which call the FastAPI backend (Toby's layer) over HTTP.
 
 Configure the backend location with the CRM_API_URL env var
-(default: http://localhost:8000/api — same host as the backend when both run on
+(default: http://localhost:8080/api — same host as the backend when both run on
 the GB10 for the demo).
 
 Copy this whole directory (tools.py + db-operations-skill.md) to the GB10 instance.
@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE_URL = os.environ.get("CRM_API_URL", "http://localhost:8000/api").rstrip("/")
+BASE_URL = os.environ.get("CRM_API_URL", "http://localhost:8080/api").rstrip("/")
 TIMEOUT = float(os.environ.get("CRM_API_TIMEOUT_SECONDS", "10"))
 
 
@@ -201,3 +201,9 @@ def generate_dashboard_insights() -> dict:
     does not write prose here.
     """
     return _request("GET", "/metrics")
+
+
+def delete_lead(lead_id: int, reason: str = "") -> dict:
+    """Destructive: removes the lead and its events/appointments/reminders
+    (audit rows survive). Only call when the user explicitly asked."""
+    return _req("DELETE", f"/leads/{lead_id}", {"reason": reason})

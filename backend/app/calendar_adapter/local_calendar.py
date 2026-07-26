@@ -8,9 +8,18 @@ from datetime import datetime, timedelta
 SLOT_MINUTES = 45
 
 
+def parse_ts(ts: str) -> datetime:
+    """Parse a stored/incoming timestamp as NAIVE local time. A single
+    Z-suffixed row would otherwise make every later comparison raise
+    "can't compare offset-naive and offset-aware datetimes" and 500 all
+    booking + availability calls."""
+    dt = datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
+    return dt.replace(tzinfo=None)
+
+
 def free_slots(conn, date_str: str) -> list[dict]:
     """Free SLOT_MINUTES slots on date_str (YYYY-MM-DD), conflicts removed."""
-    day = datetime.fromisoformat(date_str)
+    day = parse_ts(date_str)
     weekday = day.weekday()
     windows = conn.execute(
         "SELECT start_time, end_time FROM availability WHERE weekday = ?", (weekday,)
@@ -18,16 +27,18 @@ def free_slots(conn, date_str: str) -> list[dict]:
 
     day_start = f"{date_str}T00:00:00"
     day_end = f"{date_str}T23:59:59"
+    # filter on end_ts too: an appointment starting the night before and
+    # running past midnight still blocks this morning's slots
     booked = conn.execute(
         "SELECT start_ts, end_ts FROM appointments "
-        "WHERE start_ts >= ? AND start_ts <= ?",
+        "WHERE end_ts >= ? AND start_ts <= ?",
         (day_start, day_end),
     ).fetchall()
 
     slots = []
     for w in windows:
-        cur = datetime.fromisoformat(f"{date_str}T{w['start_time']}")
-        end = datetime.fromisoformat(f"{date_str}T{w['end_time']}")
+        cur = parse_ts(f"{date_str}T{w['start_time']}")
+        end = parse_ts(f"{date_str}T{w['end_time']}")
         while cur + timedelta(minutes=SLOT_MINUTES) <= end:
             slot_end = cur + timedelta(minutes=SLOT_MINUTES)
             if not any(_overlaps(cur, slot_end, b["start_ts"], b["end_ts"]) for b in booked):
@@ -37,8 +48,8 @@ def free_slots(conn, date_str: str) -> list[dict]:
 
 
 def has_conflict(conn, start_ts: str, end_ts: str) -> bool:
-    start = datetime.fromisoformat(start_ts)
-    end = datetime.fromisoformat(end_ts)
+    start = parse_ts(start_ts)
+    end = parse_ts(end_ts)
     booked = conn.execute(
         "SELECT start_ts, end_ts FROM appointments"
     ).fetchall()
@@ -46,8 +57,8 @@ def has_conflict(conn, start_ts: str, end_ts: str) -> bool:
 
 
 def to_ics(appointment: dict, lead_name: str) -> str:
-    start = datetime.fromisoformat(appointment["start_ts"]).strftime("%Y%m%dT%H%M%S")
-    end = datetime.fromisoformat(appointment["end_ts"]).strftime("%Y%m%dT%H%M%S")
+    start = parse_ts(appointment["start_ts"]).strftime("%Y%m%dT%H%M%S")
+    end = parse_ts(appointment["end_ts"]).strftime("%Y%m%dT%H%M%S")
     return "\r\n".join([
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -64,4 +75,4 @@ def to_ics(appointment: dict, lead_name: str) -> str:
 
 
 def _overlaps(start_a: datetime, end_a: datetime, start_b: str, end_b: str) -> bool:
-    return start_a < datetime.fromisoformat(end_b) and end_a > datetime.fromisoformat(start_b)
+    return start_a < parse_ts(end_b) and end_a > parse_ts(start_b)

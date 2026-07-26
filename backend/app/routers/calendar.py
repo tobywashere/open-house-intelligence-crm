@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from datetime import date as _date
 
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn
@@ -14,9 +16,22 @@ class AppointmentIn(BaseModel):
     end_ts: str
     location: str | None = None
 
+    @field_validator("start_ts", "end_ts")
+    @classmethod
+    def _parseable(cls, v: str) -> str:
+        try:
+            calendar.parse_ts(v)
+        except ValueError:
+            raise ValueError("must be an ISO-8601 timestamp, e.g. 2026-08-01T17:00:00")
+        return v
+
 
 @router.get("/availability")
 def availability(date: str):
+    try:
+        _date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(422, "date must be YYYY-MM-DD")
     with get_conn() as conn:
         slots = calendar.free_slots(conn, date)
         audit(conn, "agent", "check_availability", {"date": date}, {"free": len(slots)})

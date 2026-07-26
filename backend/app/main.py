@@ -40,8 +40,11 @@ if DIST.exists():
     async def spa(path: str):
         if path.startswith("api/"):  # unknown API routes stay real 404s, not HTML
             raise HTTPException(404, f"unknown API route: /{path}")
-        file = DIST / path
-        if path and file.is_file():
+        # resolve + confine: uvicorn percent-decodes, so "..%2f" would otherwise
+        # escape dist and serve crm.db or /etc/passwd
+        root = DIST.resolve()
+        file = (root / path).resolve()
+        if path and file.is_file() and file.is_relative_to(root):
             return FileResponse(file)
         # never cache the shell — hashed assets carry the versioning; a cached
         # index.html would pin browsers to a stale bundle after every rebuild

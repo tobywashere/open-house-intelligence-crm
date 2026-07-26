@@ -3,7 +3,7 @@
 // AI insights (model-written narrative — SEPARATE from the deterministic
 // insights engine in insights.ts). Tries GET /api/summary; mock until K's cron
 // and Toby's endpoint exist. Same pattern as the briefing: UI never changes.
-import { api } from './api'
+import { api, localDateKey } from './api'
 
 // Shape mirrors prompts/seattle-real-estate-news-reporter.md output fields —
 // only title/source/takeaway are required; the rest render when present.
@@ -33,7 +33,7 @@ export interface DailySummary {
 }
 
 export async function fetchDailySummary(): Promise<DailySummary> {
-  const date = new Date().toISOString().slice(0, 10)
+  const date = localDateKey()
   try {
     return await api.summary<DailySummary>(date)
   } catch {

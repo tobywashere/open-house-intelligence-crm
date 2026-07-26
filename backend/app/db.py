@@ -1,7 +1,9 @@
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("DB_PATH", BACKEND_DIR / "data" / "crm.db"))
@@ -10,7 +12,11 @@ SCHEMA_PATH = BACKEND_DIR / "schema.sql"
 JSON_FIELDS = {"preferences", "missing_fields"}
 
 
-def get_conn() -> sqlite3.Connection:
+@contextmanager
+def get_conn() -> Iterator[sqlite3.Connection]:
+    """`with get_conn() as conn:` — commits on success, rolls back on error, and
+    ALWAYS closes. sqlite3's own connection context manager does not close, which
+    leaked an fd per request until the process hit its NOFILE limit."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -19,7 +25,11 @@ def get_conn() -> sqlite3.Connection:
     # (default rollback journal throws "database is locked" under that overlap).
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:

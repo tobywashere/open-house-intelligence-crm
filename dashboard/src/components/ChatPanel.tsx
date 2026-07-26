@@ -18,7 +18,7 @@ export function ChatPanel() {
   const placeholder =
     pathname === '/'
       ? 'Ask anything about your pipeline…'
-      : pathname.startsWith('/lead')
+      : pathname.startsWith('/lead/')
         ? 'Ask about this client…'
         : 'Ask anything about your leads'
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(SESSION_KEY) ?? 'dashboard')

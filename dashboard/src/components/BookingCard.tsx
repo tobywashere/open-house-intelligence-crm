@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, Appointment, fmtSlotDay, fmtSlotTime, icsUrl } from '../api'
+import { api, Appointment, fmtSlotDay, fmtSlotTime, icsUrl, localDateKey } from '../api'
 
 interface Slot {
   start_ts: string
@@ -9,7 +9,7 @@ interface Slot {
 function nextTuesday(): string {
   const d = new Date()
   d.setDate(d.getDate() + ((2 - d.getDay() + 7) % 7 || 7))
-  return d.toISOString().slice(0, 10)
+  return localDateKey(d)
 }
 
 export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: () => void }) {

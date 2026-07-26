@@ -1,7 +1,7 @@
 // Briefing data layer. Tries GET /api/briefing (agent-generated, per docs/BRIEFING-UI.md);
 // until K+Toby ship it, a client-side mock derives a plausible briefing from live CRM data
 // so the page is fully demoable today and flips to real content with zero UI changes.
-import { api, Appointment, fmtMoney, Lead } from './api'
+import { api, Appointment, fmtMoney, Lead, localDateKey } from './api'
 import { computeInsights } from './insights'
 
 export interface ScheduleBlock {
@@ -45,7 +45,7 @@ export interface Briefing {
 
 export async function fetchBriefing(): Promise<Briefing> {
   const today = new Date()
-  const date = today.toISOString().slice(0, 10)
+  const date = localDateKey(today)
   try {
     return await api.briefing<Briefing>(date)
   } catch {

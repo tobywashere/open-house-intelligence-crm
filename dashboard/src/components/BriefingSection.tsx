@@ -24,7 +24,7 @@ export function BriefingSection() {
       .then((a) =>
         setUpcoming(
           a
-            .filter((x) => x.start_ts > new Date().toISOString())
+            .filter((x) => new Date(x.start_ts) > new Date())  // start_ts is naive local time
             .sort((x, y) => x.start_ts.localeCompare(y.start_ts))
             .slice(0, 3),
         ),
@@ -180,9 +180,14 @@ export function BriefingSection() {
           <div className="space-y-3">
             {briefing.suggested_actions.map((a) => (
               <div key={a.lead_id} className="border-b border-tile last:border-0 pb-3 last:pb-0">
-                <Link to={`/lead/${a.lead_id}`} className="text-sm font-medium hover:text-accent">
-                  {channelIcon(a.channel)} <Markdown inline>{a.action}</Markdown>
-                </Link>
+                {/* Markdown sits outside the Link: an agent-written [Name](lead:N)
+                    inside would nest <a> in <a> and break clicks */}
+                <div className="text-sm font-medium">
+                  <Link to={`/lead/${a.lead_id}`} className="hover:text-accent">
+                    {channelIcon(a.channel)}
+                  </Link>{' '}
+                  <Markdown inline>{a.action}</Markdown>
+                </div>
                 <p className="text-xs text-sub/80 mt-1"><Markdown inline>{a.reason}</Markdown></p>
               </div>
             ))}

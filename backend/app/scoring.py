@@ -5,9 +5,15 @@ def score_lead(lead: dict, event_count: int = 0) -> int:
     score = 0
 
     # Budget known and substantial
-    if lead.get("budget"):
+    budget = lead.get("budget")
+    if not isinstance(budget, (int, float)):  # never trust LLM-written values
+        try:
+            budget = int(float(str(budget).replace(",", "").strip())) if budget else None
+        except ValueError:
+            budget = None
+    if budget:
         score += 25
-        if lead["budget"] >= 750_000:
+        if budget >= 750_000:
             score += 5
 
     # Timeline urgency

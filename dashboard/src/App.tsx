@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
-import { api, Metrics } from './api'
+import { api, localDateKey, Metrics } from './api'
 import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
 import { DailySummaryOverlay } from './components/DailySummaryOverlay'
-import { DemoControls } from './components/DemoControls'
 import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
@@ -23,10 +22,13 @@ export default function App() {
   // resizable chat rail — drag the divider between main content and chat
   const [chatW, setChatW] = useState(() => clampChatW(Number(localStorage.getItem(CHAT_W_KEY)) || 384))
   const startChatResize = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
     e.preventDefault()
     document.body.style.userSelect = 'none'
     document.body.style.cursor = 'col-resize'
     const onMove = (ev: PointerEvent) => setChatW(clampChatW(window.innerWidth - ev.clientX))
+    // pointercancel fires instead of pointerup when the browser claims a
+    // touch/pen gesture — both must restore cursor/selection state
     const onUp = () => {
       document.body.style.userSelect = ''
       document.body.style.cursor = ''
@@ -36,17 +38,29 @@ export default function App() {
       })
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
+  // mount exactly one ChatPanel (rail on lg+, overlay below) — two live copies
+  // of the same session diverge until reload
+  const [isLg, setIsLg] = useState(() => window.matchMedia('(min-width: 1024px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const onChange = (e: MediaQueryListEvent) => setIsLg(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
   // auto-open the daily summary once per day; reopenable any time from the header
   const [summaryOpen, setSummaryOpen] = useState(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = localDateKey()
     return localStorage.getItem('ohi-summary-seen') !== today
   })
   const closeSummary = () => {
-    localStorage.setItem('ohi-summary-seen', new Date().toISOString().slice(0, 10))
+    localStorage.setItem('ohi-summary-seen', localDateKey())
     setSummaryOpen(false)
   }
 
@@ -111,7 +125,6 @@ export default function App() {
           >
             {'</>'}
           </NavLink>
-          <DemoControls />
         </div>
       </header>
       <Toasts />
@@ -144,16 +157,19 @@ export default function App() {
             localStorage.setItem(CHAT_W_KEY, '384')
           }}
           title="Drag to resize chat"
+          style={{ touchAction: 'none' }}
           className="hidden lg:block w-1.5 -mr-1.5 shrink-0 cursor-col-resize z-10
                      hover:bg-accent/50 active:bg-accent/70 transition-colors"
         />
         {/* chat rail is viewport-fixed: the input is always visible, only messages scroll */}
-        <aside
-          style={{ width: chatW }}
-          className="shrink-0 border-l border-tile hidden lg:flex flex-col min-h-0 bg-bg"
-        >
-          <ChatPanel />
-        </aside>
+        {isLg && (
+          <aside
+            style={{ width: chatW }}
+            className="shrink-0 border-l border-tile hidden lg:flex flex-col min-h-0 bg-bg"
+          >
+            <ChatPanel />
+          </aside>
+        )}
       </div>
 
       {/* small screens: chat becomes a floating button + full-screen overlay */}
@@ -169,7 +185,7 @@ export default function App() {
       )}
       {summaryOpen && <DailySummaryOverlay onClose={closeSummary} />}
 
-      {chatOpen && (
+      {!isLg && chatOpen && (
         <div className="lg:hidden fixed inset-0 z-50 bg-bg flex flex-col">
           <div className="flex justify-end border-b border-tile px-2 py-1.5">
             <button

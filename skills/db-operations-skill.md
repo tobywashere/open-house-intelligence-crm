@@ -19,7 +19,7 @@ is auditable.
 5. Never fabricate numbers for `generate_dashboard_insights` — it returns the
    real counts from the database; write your narrative on top of those numbers,
    don't override them.
-6. Do not implement a "delete lead" action — it's out of scope for this build.
+6. `DELETE /api/leads/{id}` exists but is destructive: use it ONLY when the user explicitly asks to delete a specific lead, and confirm the name back afterwards. Never delete to "clean up" on your own initiative.
 
 ## Setup
 
@@ -28,7 +28,8 @@ needed) over the backend REST API. The backend (FastAPI + SQLite) must be
 running and reachable — for the demo it runs on the same GB10 box.
 
 ```bash
-export CRM_API_URL=http://localhost:8000/api   # default; change if the backend runs elsewhere
+# CRM_API_URL is already set in the gateway service environment (GB10: http://localhost:8080/api).
+# Do NOT export it yourself — :8000 on the GB10 is the vLLM server, not the CRM.
 python3 -c "import sys; sys.path.insert(0,'.'); import tools; print(tools.list_leads()[:1])"
 ```
 
@@ -69,7 +70,7 @@ view of that same contract; if they ever disagree, the contract wins.
 ## Curl equivalents (for debugging without the Python client)
 
 ```bash
-BASE=http://localhost:8000/api
+BASE="${CRM_API_URL:-http://localhost:8080/api}"
 
 curl -s -X POST "$BASE/leads" -H 'content-type: application/json' \
   -d '{"raw_text":"Met at open house, Bellevue, budget $1.1M","source":"form"}'
@@ -103,3 +104,7 @@ tell the user how to reset the demo if something goes wrong on stage.
 - If `tools.py` can't reach the backend, `CRMError(status=0, ...)` is raised —
   check the backend is running (`GET /health`) and `CRM_API_URL` is correct
   before assuming the DB is broken.
+
+## No funnel endpoint
+
+There is no `GET /api/funnel`. Pipeline/funnel questions are answered from `list_leads` (status field) plus `/api/appointments` — the dashboard derives its funnel client-side the same way.

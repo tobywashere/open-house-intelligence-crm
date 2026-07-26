@@ -63,13 +63,18 @@ export function LeadPage() {
 
   const markSent = async () => {
     if (!draft || !lead) return
-    await api.addEvent(leadId, 'text', `Follow-up sent: ${draft}`)
-    if (lead.status === 'new') await api.patchLead(leadId, { status: 'contacted' })
-    const due = new Date(Date.now() + 3 * 86_400_000)
-    await api.scheduleReminder(leadId, due.toISOString().slice(0, 19), `Check for a reply from ${lead.name}`)
-    toast('✓ Sent logged — status updated, reply check scheduled in 3 days')
-    setDraft(null)
-    load()
+    try {
+      await api.addEvent(leadId, 'text', `Follow-up sent: ${draft}`)
+      if (lead.status === 'new') await api.patchLead(leadId, { status: 'contacted' })
+      const due = new Date(Date.now() + 3 * 86_400_000)
+      await api.scheduleReminder(leadId, due.toISOString().slice(0, 19), `Check for a reply from ${lead.name}`)
+      toast('✓ Sent logged — status updated, reply check scheduled in 3 days')
+      setDraft(null)
+    } catch {
+      toast('⚠ Something failed while logging the send — check the lead timeline before retrying')
+    } finally {
+      load()
+    }
   }
 
   if (!lead)

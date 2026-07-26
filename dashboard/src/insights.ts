@@ -2,7 +2,7 @@
 // Deterministic by design: pure functions over CRM data. The dashboard renders
 // this JSON, and the morning summary consumes it as narrative input. No LLM
 // is involved in computing a number here, ever.
-import { Appointment, AuditRow, fmtMoney, Lead } from './api'
+import { Appointment, AuditRow, fmtMoney, Lead, localDateKey } from './api'
 
 export interface InsightDatum {
   label: string
@@ -53,7 +53,7 @@ export function computeInsights(leads: Lead[], appts: Appointment[], audit: Audi
   const order = { warn: 0, good: 1, info: 2 }
   insights.sort((a, b) => order[a.severity] - order[b.severity])
   return {
-    date: new Date().toISOString().slice(0, 10),
+    date: localDateKey(),
     computed_at: new Date().toISOString(),
     insights,
   }

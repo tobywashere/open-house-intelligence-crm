@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, localDateKey } from '../api'
 import { DailySummary, fetchDailySummary } from '../summary'
 import { BriefingSection } from './BriefingSection'
 import { Markdown } from './Markdown'
@@ -44,7 +44,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
       )
       .catch(() => {})
     toast('↻ Asked the agent for a fresh briefing — this takes a minute…')
-    const today = new Date().toISOString().slice(0, 10)
+    const today = localDateKey()
     for (let i = 0; i < 24 && alive.current; i++) {
       await new Promise((r) => setTimeout(r, 5000))
       try {
