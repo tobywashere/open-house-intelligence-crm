@@ -9,6 +9,7 @@ system prompt + skill (see agent/prompts and agent/skills) make it answer with
 bare JSON / bare text. K owns prompt quality here.
 """
 import json
+import logging
 import os
 
 import httpx
@@ -43,16 +44,21 @@ class OpenClawDriver(AgentDriver):
         return await self._send(message, session_id)
 
     async def extract(self, raw_text: str) -> dict:
-        reply = await self._send(
-            "Extract lead fields from the note below. Reply with ONLY a JSON object "
-            "with keys: name, phone, email, budget, area, timeline, "
-            "preferences (array), intent (buy|sell|browse|unknown), missing_fields (array). "
-            "Omit unknown scalar keys.\n\nNOTE:\n" + raw_text
-        )
-        start, end = reply.find("{"), reply.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError(f"agent returned no JSON: {reply[:200]}")
-        return json.loads(reply[start:end + 1])
+        try:
+            reply = await self._send(
+                "Extract lead fields from the note below. Reply with ONLY a JSON object "
+                "with keys: name, phone, email, budget, area, timeline, "
+                "preferences (array), intent (buy|sell|browse|unknown), missing_fields (array). "
+                "Omit unknown scalar keys.\n\nNOTE:\n" + raw_text
+            )
+            start, end = reply.find("{"), reply.rfind("}")
+            if start == -1 or end == -1:
+                raise ValueError(f"agent returned no JSON: {reply[:200]}")
+            return json.loads(reply[start:end + 1])
+        except Exception as exc:  # demo insurance: lead creation must never break
+            logging.warning("openclaw extract failed (%s) — regex fallback", exc)
+            from .mock import MockDriver
+            return await MockDriver().extract(raw_text)
 
     async def draft_followup(self, lead: dict) -> str:
         return await self._send(

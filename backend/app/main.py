@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,8 @@ if DIST.exists():
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
+        if path.startswith("api/"):  # unknown API routes stay real 404s, not HTML
+            raise HTTPException(404, f"unknown API route: /{path}")
         file = DIST / path
         if path and file.is_file():
             return FileResponse(file)
