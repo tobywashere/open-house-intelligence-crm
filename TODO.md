@@ -1,8 +1,8 @@
 # Post-MVP TODO
 
-Ownership after the job swap: **K = agent/inference (GB10, OpenClaw, Qwen 3.6 35B-A3B) · Toby = backend/SQLite/calendar · Johaan = dashboard/integration/demo.**
+Ownership after the job swap: **K = agent/inference (GB10, OpenClaw, Qwen 3.6 35B-A3B) · Toby = backend/SQLite/calendar · Johaan = dashboard/integration/demo + insights.**
 
-The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminders, and insights (delivered outside chat). Chat-that-acts is parked with K.
+The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminders (K), and **insights — now Johaan's**: computed from DB data, presented in the dashboard (never chat), and used as input for the morning summary. Plan: [docs/INSIGHTS.md](docs/INSIGHTS.md). Chat-that-acts is parked with K.
 
 ## ✅ Shipped (dashboard side, no dependencies)
 
@@ -32,6 +32,11 @@ The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminder
 
 ### #5 Chat-that-acts — parked with K
 - [ ] Deliberately deferred; violates none of the four AI purposes when it lands, but nothing on the dashboard blocks on it
+
+### Insights (docs/INSIGHTS.md)
+- [ ] **Johaan**: Phase 1 — `insights.ts` engine, `/insights` route, briefing section, mock-summary integration (zero dependencies)
+- [ ] **Toby**: Phase 2 — additive `insights` table + `GET/POST /api/insights?date=` (dashboard write-through creates daily history)
+- [ ] **K**: Phase 3 — morning-summary cron reads `GET /api/insights` as narrative input (insights stay deterministic)
 
 ### Briefing (from docs/BRIEFING-UI.md, still pending)
 - [ ] **Toby**: `briefing` table + `GET/POST /api/briefing`, `persona` + `relationship_summary` columns on leads
