@@ -72,10 +72,21 @@ Dashboard (Phase 1):
 ## Phase 2 — inbound
 
 - **Reply detection**: FastAPI background task (live mode only, every 5 min)
-  searches Gmail for mail from active leads' addresses; for each message not
-  already logged (dedupe on `gmail:<message_id>` marker), log "Reply received"
-  `email` event and mark that lead's reply-check reminders done. Inbox shows a
-  "replied" badge (computed from events).
+  polls the Gmail inbox; for each message from a known lead not already logged
+  (dedupe on `gmail:<message_id>` marker), log "Reply received" `email` event
+  and mark that lead's reply-check reminders done. Inbox shows a "replied"
+  badge (computed from events).
+- **Smart email intelligence** (added 2026-07-26, same poll pass):
+  - *Reply re-extraction*: after logging a reply, re-run `/leads/{id}/process`
+    so new info in the email (budget, timeline, …) backfills missing fields and
+    re-scores the lead. `process` re-extraction now reads `email` events too.
+  - *Lead intake from unknown senders*: inbox mail from an address matching no
+    lead (and not matching a noise filter — no-reply/newsletter/notification/…)
+    is fed through the existing `POST /leads {raw_text}` extraction pipeline as
+    a new lead with `source = 'email'` (convention — `leads.source` has no
+    CHECK constraint). The raw event carries the `[gmail:<id>]` marker for
+    idempotence. This also triggers the standard new-lead hooks (call block,
+    intro draft).
 - **Busy sync**: when live, `free_slots()` subtracts real GCal busy blocks
   (free/busy query, ~5-min TTL cache) so neither UI nor agent offers a slot
   Johaan is busy in. Local availability windows and the 409 conflict rule are

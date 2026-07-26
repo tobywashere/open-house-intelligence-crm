@@ -1237,6 +1237,218 @@ git commit -m "Integrations: Gmail reply poller with marker dedupe + GCal busy c
 
 ---
 
+### Task 6b: Phase 2 — smart email intelligence (lead intake + reply re-extraction)
+
+**Files:**
+- Modify: `backend/app/integrations/poller.py` (restructure `check_replies` → `check_inbox` with an intake branch)
+- Modify: `backend/app/routers/leads.py:224` (process re-extraction reads `email` events too)
+- Test: `backend/tests/test_poller.py` (replace file — Task 6's tests are updated for the new entry point)
+
+**Interfaces:**
+- Consumes: Task 6's `poller.py` (module structure, `busy_blocks` stays untouched), `routers.leads.create_lead/LeadIn/process_lead`, `composio_client.execute`.
+- Produces:
+  - `poller.check_inbox() -> dict` — replaces `check_replies` as the poll entry point; returns `{"replies": int, "intake": int}`. One inbox-wide fetch (`in:inbox newer_than:2d`); known-lead senders → reply flow + field re-extraction; unknown senders → auto-intake through the existing raw-text lead pipeline.
+  - Lead convention: auto-intaken leads get `source = "email"` (no CHECK constraint on `leads.source` — convention, goes in the Task 8 group-chat note).
+  - `poll_loop()` now calls `check_inbox`.
+
+- [ ] **Step 1: Write the failing tests (replace `backend/tests/test_poller.py`)**
+
+```python
+from conftest import make_lead
+from app.integrations import poller
+
+
+def _fake_fetch(messages):
+    def fake_execute(slug, arguments):
+        assert slug == "GMAIL_FETCH_EMAILS"
+        assert arguments["query"] == "in:inbox newer_than:2d"
+        return {"response_data": {"messages": messages}}
+    return fake_execute
+
+
+def test_reply_logged_reminder_done_and_reprocessed(client, monkeypatch):
+    lead = make_lead(client)
+    client.post("/api/email/send", json={
+        "lead_id": lead["id"], "subject": "s", "body": "b"})  # creates reply-check reminder
+
+    monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([{
+        "messageId": "reply-1",
+        "sender": "Test Lead <lead@example.com>",
+        "preview": {"body": "Sounds great, let's talk Tuesday"},
+    }]))
+    assert poller.check_inbox() == {"replies": 1, "intake": 0}
+
+    profile = client.get(f"/api/leads/{lead['id']}").json()
+    reply_evs = [e for e in profile["events"] if "[gmail:reply-1]" in e["content"]]
+    assert len(reply_evs) == 1 and reply_evs[0]["type"] == "email"
+    reminders = client.get("/api/reminders").json()   # only done=0 returned
+    assert not any(r["note"].startswith("Check for a reply") for r in reminders)
+    # reply triggered re-processing (extract → score) — wiring, not extraction quality
+    tools = [a["tool"] for a in client.get("/api/audit?limit=30").json()]
+    assert "score_lead" in tools
+
+
+def test_reply_dedupe_second_pass_noop(client, monkeypatch):
+    lead = make_lead(client)
+    client.post("/api/email/send", json={
+        "lead_id": lead["id"], "subject": "s", "body": "b"})
+    fake = _fake_fetch([{"messageId": "reply-2",
+                         "sender": "lead@example.com",
+                         "preview": {"body": "hi"}}])
+    monkeypatch.setattr("app.integrations.poller.cc.execute", fake)
+    assert poller.check_inbox()["replies"] == 1
+    assert poller.check_inbox()["replies"] == 0   # marker dedupe
+
+
+def test_unknown_sender_becomes_lead(client, monkeypatch):
+    monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([{
+        "messageId": "new-1",
+        "sender": "Maria Lopez <maria@example.net>",
+        "subject": "Looking for a home in Kirkland",
+        "preview": {"body": "Hi! My budget is around $800k, hoping to move in 3 months."},
+    }]))
+    assert poller.check_inbox()["intake"] == 1
+    leads = client.get("/api/leads").json()
+    maria = next(l for l in leads if l["email"] == "maria@example.net")
+    assert maria["source"] == "email"
+    # second pass: same message id is not intaken twice
+    assert poller.check_inbox()["intake"] == 0
+    assert len([l for l in client.get("/api/leads").json()
+                if l["email"] == "maria@example.net"]) == 1
+
+
+def test_noise_senders_ignored(client, monkeypatch):
+    monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([
+        {"messageId": "n1", "sender": "no-reply@zillow.com",
+         "preview": {"body": "Your weekly listings digest"}},
+        {"messageId": "n2", "sender": "newsletter@redfin.com",
+         "preview": {"body": "Market trends this week"}},
+    ]))
+    assert poller.check_inbox() == {"replies": 0, "intake": 0}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && ../.venv/bin/python -m pytest tests/test_poller.py -v`
+Expected: FAIL — `AttributeError: module 'app.integrations.poller' has no attribute 'check_inbox'`
+
+- [ ] **Step 3: Restructure the poller**
+
+In `backend/app/integrations/poller.py`, add `import re` and `import asyncio` (asyncio is already imported), then REPLACE the `check_replies` function with:
+
+```python
+NOISE_SENDER = re.compile(
+    r"no-?reply|do-?not-?reply|newsletter|notification|mailer|daemon|unsubscribe",
+    re.I)
+
+
+def _extract_address(sender: str) -> str:
+    m = re.search(r"<([^>]+)>", sender)
+    return (m.group(1) if m else sender).strip().lower()
+
+
+def check_inbox() -> dict:
+    """One polling pass over the inbox: replies from known leads (logged,
+    reminder cleared, fields re-extracted) + auto-intake of lead-like mail
+    from unknown senders via the existing raw-text pipeline."""
+    with get_conn() as conn:
+        leads = [dict(r) for r in conn.execute(
+            "SELECT id, name, email FROM leads WHERE email IS NOT NULL AND email != ''")]
+    by_email = {l["email"].lower(): l for l in leads}
+    data = cc.execute("GMAIL_FETCH_EMAILS",
+                      {"query": "in:inbox newer_than:2d", "max_results": 25})
+    inner = data.get("response_data") or data
+    messages = inner.get("messages") or []
+    counts = {"replies": 0, "intake": 0}
+    for m in messages:
+        msg_id = m.get("messageId") or m.get("id")
+        if not msg_id:
+            continue
+        addr = _extract_address(m.get("sender") or m.get("from") or "")
+        preview = m.get("preview") or {}
+        body = (preview.get("body") if isinstance(preview, dict) else None) \
+            or m.get("snippet") or ""
+        lead = by_email.get(addr)
+        if lead:
+            counts["replies"] += _log_reply(lead, msg_id, body)
+        else:
+            counts["intake"] += _intake_lead(addr, m.get("subject") or "", body, msg_id)
+    return counts
+
+
+def _seen(msg_id: str) -> bool:
+    with get_conn() as conn:
+        return conn.execute("SELECT 1 FROM events WHERE content LIKE ?",
+                            (f"%[gmail:{msg_id}]%",)).fetchone() is not None
+
+
+def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
+    if _seen(msg_id):
+        return 0
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+            (lead["id"], "email",
+             f"Reply received: {(snippet or '(no preview)')[:300]} [gmail:{msg_id}]"))
+        conn.execute(
+            "UPDATE reminders SET done = 1 WHERE lead_id = ? AND done = 0 "
+            "AND note LIKE 'Check for a reply%'", (lead["id"],))
+        audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
+              {"message_id": msg_id}, lead["id"])
+    try:
+        # new info in a reply may fill missing fields / change the score
+        from ..routers.leads import process_lead
+        asyncio.run(process_lead(lead["id"]))
+    except Exception:
+        pass  # re-extraction is best-effort; the reply event is already logged
+    return 1
+
+
+def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
+    if not addr or "@" not in addr or NOISE_SENDER.search(addr) or not body.strip():
+        return 0
+    if _seen(msg_id):
+        return 0
+    raw = f"Email from {addr}\nSubject: {subject}\n\n{body[:1000]}\n[gmail:{msg_id}]"
+    try:
+        from ..routers.leads import LeadIn, create_lead
+        lead = asyncio.run(create_lead(LeadIn(raw_text=raw, source="email", email=addr)))
+    except Exception:
+        return 0
+    with get_conn() as conn:
+        audit(conn, "cron", "email_lead_intake", {"from": addr, "subject": subject},
+              {"lead_id": lead["id"]}, lead["id"])
+    return 1
+```
+
+And in `poll_loop`, change `await asyncio.to_thread(check_replies)` to `await asyncio.to_thread(check_inbox)`.
+
+(`create_lead` stores the raw text as a `note` event whose content carries the
+`[gmail:<id>]` marker — that is what makes `_seen()` dedupe intake. `busy_blocks`
+and the rest of the module stay untouched.)
+
+- [ ] **Step 4: Let re-extraction read email events**
+
+In `backend/app/routers/leads.py`, `process_lead`, change the latest-raw-event query line:
+
+```python
+                "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text','email') "
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `cd backend && ../.venv/bin/python -m pytest tests -v`
+Expected: PASS (all)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/app/integrations/poller.py backend/app/routers/leads.py backend/tests/test_poller.py
+git commit -m "Integrations: smart inbox — auto-intake unknown senders as leads, re-extract on replies"
+```
+
+---
+
 ### Task 7: Phase 2 — GCal busy filter on availability + inbox replied badge
 
 **Files:**
@@ -1396,6 +1608,7 @@ Additive changes heads-up (no contract breakage):
 2. Two new endpoints: POST /api/email/send {lead_id,subject,body} and GET /api/integrations/status
 3. New event-type convention: events.type='email' for sent mail + replies (no CHECK constraint, same trick as the offer events); reply dedupe marker [gmail:<id>] in content
 4. Behavior: when INTEGRATIONS_MODE=live on the GB10, create_lead / book_appointment / schedule_followup ALSO create Google Calendar events (+ a Gmail intro draft for leads with email). Off by default; off mode simulates + audits only. K: zero agent changes needed — your existing tool calls trigger it.
+5. New source convention: leads.source='email' for leads auto-intaken from the Gmail inbox poller (unknown sender → raw_text pipeline → extracted lead). Replies from known leads also re-run /process so new info (budget etc.) updates fields + score.
 ```
 
 - [ ] **Step 5: Full verification sweep**
