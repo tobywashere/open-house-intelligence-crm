@@ -172,39 +172,68 @@ export function FunnelPage() {
   )
 }
 
+const ROW_H = 50
+const ROW_GAP = 5
+
 function FunnelChart({ data }: { data: FunnelData }) {
+  const n = data.stages.length
   const max = Math.max(...data.stages.map((s) => s.count), 1)
+
+  // continuous silhouette: monotonic widths, each layer's top edge = previous
+  // layer's bottom edge, so the funnel reads as one shape instead of loose bars
+  const widths: number[] = []
+  data.stages.forEach((s, i) => {
+    const raw = Math.max((s.count / max) * 92, 16)
+    widths.push(i === 0 ? raw : Math.min(raw, widths[i - 1]))
+  })
+  const bottomOf = (i: number) => (i < n - 1 ? widths[i + 1] : Math.max(widths[i] * 0.62, 10))
+  const height = n * ROW_H + (n - 1) * ROW_GAP
+
   return (
-    <div className="flex gap-3">
-      <div className="flex-1 space-y-1.5 min-w-0">
+    <div className="flex gap-4">
+      <div className="flex-1 relative min-w-0" style={{ height }}>
+        {/* soft glow behind the whole silhouette */}
+        <div
+          className="absolute inset-x-[10%] inset-y-2 rounded-full pointer-events-none"
+          style={{ background: 'radial-gradient(closest-side, rgba(14,165,233,0.13), transparent)' }}
+        />
         {data.stages.map((s, i) => {
-          const w = Math.max((s.count / max) * 100, 22)
+          const top = widths[i]
+          const bot = bottomOf(i)
+          const t = i / (n - 1)
           return (
             <div
               key={s.key}
-              className="mx-auto relative h-[46px] flex flex-col items-center justify-center transition-all"
+              className="rise absolute inset-x-0 flex flex-col items-center justify-center
+                         hover:brightness-125 transition-[filter] cursor-default"
               style={{
-                width: `${w}%`,
-                clipPath: 'polygon(0 0, 100% 0, 94% 100%, 6% 100%)',
-                background: 'linear-gradient(180deg, rgba(2,132,199,0.45), rgba(2,132,199,0.12))',
-                boxShadow: 'inset 0 1px 0 rgba(56,189,248,0.5), 0 0 18px rgba(14,165,233,0.12)',
+                top: i * (ROW_H + ROW_GAP),
+                height: ROW_H,
+                animationDelay: `${i * 70}ms`,
+                clipPath: `polygon(${(100 - top) / 2}% 0, ${(100 + top) / 2}% 0, ${(100 + bot) / 2}% 100%, ${(100 - bot) / 2}% 100%)`,
+                background: `linear-gradient(180deg, rgba(56,189,248,${(0.26 + 0.2 * t).toFixed(2)}), rgba(2,132,199,${(0.10 + 0.14 * t).toFixed(2)}))`,
+                filter: 'drop-shadow(0 2px 8px rgba(14,165,233,0.18))',
               }}
               title={`${s.label}: ${s.count}`}
             >
-              <span className="text-[11px] text-sub leading-none">{s.label}</span>
-              <span className="text-lg font-semibold text-ink leading-tight">{s.count}</span>
+              <span className="text-[11px] text-ink2/80 leading-none">{s.label}</span>
+              <span className="text-lg font-semibold text-ink leading-tight tabular-nums">{s.count}</span>
             </div>
           )
         })}
       </div>
-      {/* conversion rail: one chip per transition, aligned to the gaps */}
-      <div className="w-36 shrink-0 flex flex-col justify-between py-[28px]">
+      {/* conversion rail: each chip vertically centered on its stage boundary */}
+      <div className="w-40 shrink-0 relative" style={{ height }}>
         {data.conversions.map((c, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <span className="text-sub/40">·—</span>
-            <div className="rounded-lg border border-tile bg-tile/50 px-2 py-1 text-center">
-              <div className="text-sm font-semibold text-ink leading-none">{c.pct}%</div>
-              <div className="text-[9px] text-sub tabular-nums">{c.num} / {c.den}</div>
+          <div
+            key={i}
+            className="absolute left-0 flex items-center gap-1.5 -translate-y-1/2"
+            style={{ top: (i + 1) * ROW_H + i * ROW_GAP + ROW_GAP / 2 }}
+          >
+            <span className="h-px w-3 bg-line" />
+            <div className="rounded-lg border border-tile bg-tile/50 px-2 py-0.5 text-center">
+              <div className="text-sm font-semibold text-ink leading-tight">{c.pct}%</div>
+              <div className="text-[9px] text-sub tabular-nums leading-none pb-0.5">{c.num} / {c.den}</div>
             </div>
             {i === data.worstIdx && (
               <span className="rounded-full border border-alert/40 bg-alert/10 text-alert px-1.5 py-0.5 text-[9px] whitespace-nowrap">
