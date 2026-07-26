@@ -1,32 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api, ChatSession, fmtDate } from '../api'
+import { Markdown } from './Markdown'
 import { toast } from './Toast'
 
 interface Msg {
   role: string
   content: string
   created_at?: string
-}
-
-// Agent replies may contain [Name](lead:12) — render those as profile links.
-// (Syntax documented in docs/BRIEFING-UI.md; K's prompts emit it.)
-function renderWithLinks(text: string) {
-  const re = /\[([^\]]+)\]\(lead:(\d+)\)/g
-  const parts: (string | JSX.Element)[] = []
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(text))) {
-    if (m.index > last) parts.push(text.slice(last, m.index))
-    parts.push(
-      <Link key={m.index} to={`/lead/${m[2]}`} className="text-accent underline hover:text-accent">
-        {m[1]}
-      </Link>,
-    )
-    last = m.index + m[0].length
-  }
-  if (last < text.length) parts.push(text.slice(last))
-  return parts
 }
 
 const SESSION_KEY = 'ohi-chat-session'
@@ -165,13 +145,13 @@ export function ChatPanel() {
         {msgs.map((m, i) => (
           <div key={i} className={`group flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
             <div
-              className={`max-w-[85%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap ${
+              className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
                 m.role === 'user'
-                  ? 'bg-accent/15 text-ink2'
+                  ? 'bg-accent/15 text-ink2 whitespace-pre-wrap'
                   : 'bg-tile text-body'
               }`}
             >
-              {renderWithLinks(m.content)}
+              {m.role === 'user' ? m.content : <Markdown>{m.content}</Markdown>}
             </div>
             <div className="flex items-center gap-2 mt-0.5 px-1 opacity-0 group-hover:opacity-100 transition-opacity">
               {m.created_at && <span className="text-[10px] text-sub/60">{fmtDate(m.created_at)}</span>}

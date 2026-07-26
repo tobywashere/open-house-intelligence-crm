@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, Lead, LeadProfile } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
+import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
 import { BookingCard } from '../components/BookingCard'
 import { MergeReview } from '../components/MergeReview'
@@ -160,7 +161,7 @@ export function LeadPage() {
       {lead.relationship_summary && (
         <div className="rounded-lg border border-tile bg-surface p-4 text-sm">
           <div className="text-xs text-sub/80 mb-1">Relationship summary</div>
-          <p className="whitespace-pre-wrap text-body">{lead.relationship_summary}</p>
+          <div className="text-body"><Markdown>{lead.relationship_summary}</Markdown></div>
         </div>
       )}
 

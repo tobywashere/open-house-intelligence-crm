@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { DailySummary, fetchDailySummary } from '../summary'
+import { Markdown } from './Markdown'
 import { Skeleton } from './Skeleton'
 import { toast } from './Toast'
 
@@ -11,15 +12,20 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
   const [refreshing, setRefreshing] = useState(false)
   const alive = useRef(true)
 
+  // Fetch once per mount — keep this effect off the onClose dep, which App
+  // recreates every metrics poll (with it, the overlay refetched every 5s).
   useEffect(() => {
     alive.current = true
     fetchDailySummary().then(setSummary).catch(() => {})
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
     return () => {
       alive.current = false
-      window.removeEventListener('keydown', onKey)
     }
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
   // Intra-day refresh: ask the agent (via the normal chat relay) to re-run the
@@ -131,12 +137,12 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
                     ) : (
                       <div className="font-semibold">{m.title}</div>
                     )}
-                    {m.summary && <p className="text-sm text-sub mt-2">{m.summary}</p>}
+                    {m.summary && <div className="text-sm text-sub mt-2"><Markdown>{m.summary}</Markdown></div>}
                     <p className="text-sm text-sub mt-2">
-                      <span className="text-accent">Why it matters:</span> {m.takeaway}
+                      <span className="text-accent">Why it matters:</span> <Markdown inline>{m.takeaway}</Markdown>
                     </p>
                     {m.content_opportunity && (
-                      <p className="text-xs text-sub/80 mt-2">📣 {m.content_opportunity}</p>
+                      <p className="text-xs text-sub/80 mt-2">📣 <Markdown inline>{m.content_opportunity}</Markdown></p>
                     )}
                   </article>
                 ))}
@@ -155,7 +161,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
                     style={{ animationDelay: `${180 + i * 70}ms` }}
                   >
                     <div className="font-semibold text-ink2">{ins.title}</div>
-                    <p className="text-sm text-body mt-2 leading-relaxed">{ins.body}</p>
+                    <div className="text-sm text-body mt-2 leading-relaxed"><Markdown>{ins.body}</Markdown></div>
                   </article>
                 ))}
               </div>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Briefing as BriefingData, fetchBriefing, PERSONA_STYLE, ScheduleBlock } from '../briefing'
+import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
 import { toast } from '../components/Toast'
 
@@ -103,7 +104,7 @@ export function BriefingPage() {
                           {brief.persona}
                         </span>
                       </div>
-                      <p className="text-sm text-body mt-1.5">{brief.summary}</p>
+                      <div className="text-sm text-body mt-1.5"><Markdown>{brief.summary}</Markdown></div>
                     </div>
                     <Link
                       to={`/lead/${brief.lead_id}`}
@@ -118,14 +119,14 @@ export function BriefingPage() {
                       <ul className="text-sm text-body space-y-1">
                         {brief.prepare.map((p) => (
                           <li key={p} className="flex gap-2">
-                            <span className="text-sub/60">□</span> {p}
+                            <span className="text-sub/60">□</span> <Markdown inline>{p}</Markdown>
                           </li>
                         ))}
                       </ul>
                     </div>
                     <div className="rounded-lg bg-accent/5 border border-accent/20 p-3">
                       <div className="text-xs text-accent mb-1.5">Recommendation</div>
-                      <p className="text-sm text-body">{brief.recommendation}</p>
+                      <div className="text-sm text-body"><Markdown>{brief.recommendation}</Markdown></div>
                     </div>
                   </div>
                 </div>
@@ -160,9 +161,9 @@ export function BriefingPage() {
               {briefing.suggested_actions.map((a) => (
                 <div key={a.lead_id} className="border-b border-tile last:border-0 pb-3 last:pb-0">
                   <Link to={`/lead/${a.lead_id}`} className="text-sm font-medium hover:text-accent">
-                    {channelIcon(a.channel)} {a.action}
+                    {channelIcon(a.channel)} <Markdown inline>{a.action}</Markdown>
                   </Link>
-                  <p className="text-xs text-sub/80 mt-1">{a.reason}</p>
+                  <p className="text-xs text-sub/80 mt-1"><Markdown inline>{a.reason}</Markdown></p>
                 </div>
               ))}
               {!briefing.suggested_actions.length && (
