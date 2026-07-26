@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { api, Appointment, fmtSlotDay, fmtSlotTime } from '../api'
 import { Briefing as BriefingData, fetchBriefing, PERSONA_STYLE, ScheduleBlock } from '../briefing'
 import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
@@ -8,12 +8,25 @@ import { toast } from '../components/Toast'
 
 export function BriefingPage() {
   const [briefing, setBriefing] = useState<BriefingData | null>(null)
+  const [upcoming, setUpcoming] = useState<Appointment[]>([])
   const [now, setNow] = useState(currentHHMM())
   const [memory, setMemory] = useState('')
   const [savingMemory, setSavingMemory] = useState(false)
 
   useEffect(() => {
     fetchBriefing().then(setBriefing).catch(() => {})
+    // upcoming appointments feed the schedule empty state on meeting-free days
+    api
+      .appointments()
+      .then((a) =>
+        setUpcoming(
+          a
+            .filter((x) => x.start_ts > new Date().toISOString())
+            .sort((x, y) => x.start_ts.localeCompare(y.start_ts))
+            .slice(0, 3),
+        ),
+      )
+      .catch(() => {})
     const t = setInterval(() => setNow(currentHHMM()), 30_000)
     return () => clearInterval(t)
   }, [])
@@ -78,12 +91,40 @@ export function BriefingPage() {
               {briefing.schedule.map((b, i) => (
                 <ScheduleRow key={i} block={b} active={now >= b.start && now < b.end} />
               ))}
+              {!briefing.schedule.length && (
+                <div className="rounded-lg border border-dashed border-tile px-4 py-3.5 text-sm text-sub">
+                  Nothing on the calendar today — a good day for follow-ups.
+                  {upcoming.length > 0 && (
+                    <div className="mt-2.5 space-y-1">
+                      <div className="text-xs text-sub/60">Coming up</div>
+                      {upcoming.map((a) => (
+                        <Link
+                          key={a.id}
+                          to={`/lead/${a.lead_id}`}
+                          className="flex items-center gap-3 text-sm text-body hover:text-accent"
+                        >
+                          <span className="font-mono text-xs text-sub/80 w-28 shrink-0">
+                            {fmtSlotDay(a.start_ts)} {fmtSlotTime(a.start_ts)}
+                          </span>
+                          <span>{a.lead_name}</span>
+                          {a.location && <span className="text-sub/60 truncate">· {a.location}</span>}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 
           <section className="rise" style={{ animationDelay: '120ms' }}>
             <h2 className="text-sm font-semibold text-sub mb-3">Meeting briefs</h2>
             <div className="space-y-4">
+              {!briefing.meeting_briefs.length && (
+                <div className="rounded-lg border border-dashed border-tile px-4 py-3.5 text-sm text-sub">
+                  No client meetings today — briefs appear here the morning of each meeting.
+                </div>
+              )}
               {briefing.meeting_briefs.map((brief, i) => (
                 <div
                   key={brief.lead_id}
