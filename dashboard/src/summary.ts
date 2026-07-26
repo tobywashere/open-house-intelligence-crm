@@ -5,11 +5,17 @@
 // and Toby's endpoint exist. Same pattern as the briefing: UI never changes.
 import { api } from './api'
 
+// Shape mirrors prompts/seattle-real-estate-news-reporter.md output fields —
+// only title/source/takeaway are required; the rest render when present.
 export interface MarketItem {
   title: string
   source: string
+  takeaway: string // "why this matters" for this realtor
   url?: string
-  takeaway: string // one-sentence "why this matters to you"
+  date?: string
+  summary?: string // the 2-4 sentence story summary
+  geo?: string // geographic impact, e.g. "Eastside", "King County"
+  content_opportunity?: string // suggested post/newsletter/client email idea
 }
 
 export interface AiInsight {
@@ -43,7 +49,10 @@ const MOCK_SUMMARY: Omit<DailySummary, 'date' | 'generated_at'> = {
     {
       title: 'Eastside inventory up 8% month-over-month',
       source: 'NWMLS weekly digest',
+      geo: 'Eastside',
+      summary: 'Active listings across Bellevue, Kirkland and Redmond rose for the third straight week as new construction closings hit the market.',
       takeaway: 'More options for your Bellevue and Kirkland buyers — good week to re-engage anyone who paused for lack of inventory.',
+      content_opportunity: 'Newsletter: "3 new Eastside listings my buyers should see this week."',
     },
     {
       title: '30-year fixed rates dip to 5.9%',

@@ -54,6 +54,26 @@ The briefing page gets a "Daily memory" input that POSTs to the existing `/api/c
 (session `memory`). The agent decides which lead each memory belongs to and stores it as an
 event. Mock mode just acknowledges.
 
+## Daily summary overlay (added 2026-07-26)
+
+The daily summary is a **full-screen overlay** (auto-opens once per day, ✕/Esc to
+close, "☀️ Daily summary" header button reopens any time) — it is NOT delivered in
+chat. Two portions, both agent-generated (K), UI already built and mock-backed:
+
+```
+GET/POST /api/summary?date=YYYY-MM-DD
+{
+  "date": "…", "generated_at": "…", "greeting": "…",
+  "market_watch": [{ "title", "source", "takeaway",           // required
+                     "url?", "date?", "summary?", "geo?",     // optional — all rendered
+                     "content_opportunity?" }],               //   (mirrors prompts/seattle-real-estate-news-reporter.md)
+  "ai_insights":  [{ "title", "body" }]                       // model-written narrative
+}
+```
+
+`ai_insights` here are the model's *written* observations — separate from the
+deterministic insights engine (`docs/INSIGHTS.md`), which K's cron can use as input.
+
 ## Dashboard information architecture
 
 ```

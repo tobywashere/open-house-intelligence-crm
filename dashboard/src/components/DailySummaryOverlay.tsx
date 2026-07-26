@@ -62,7 +62,15 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
                     className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-5"
                     style={{ animationDelay: `${120 + i * 70}ms` }}
                   >
-                    <div className="text-xs text-zinc-500 mb-1">{m.source}</div>
+                    <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
+                      <span>{m.source}</span>
+                      {m.date && <span>· {m.date}</span>}
+                      {m.geo && (
+                        <span className="ml-auto rounded-full border border-zinc-700 px-2 py-px text-[10px] text-zinc-400">
+                          {m.geo}
+                        </span>
+                      )}
+                    </div>
                     {m.url ? (
                       <a href={m.url} target="_blank" rel="noreferrer" className="font-semibold hover:text-emerald-300">
                         {m.title} ↗
@@ -70,9 +78,13 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
                     ) : (
                       <div className="font-semibold">{m.title}</div>
                     )}
+                    {m.summary && <p className="text-sm text-zinc-400 mt-2">{m.summary}</p>}
                     <p className="text-sm text-zinc-400 mt-2">
                       <span className="text-emerald-400">Why it matters:</span> {m.takeaway}
                     </p>
+                    {m.content_opportunity && (
+                      <p className="text-xs text-zinc-500 mt-2">📣 {m.content_opportunity}</p>
+                    )}
                   </article>
                 ))}
               </div>
