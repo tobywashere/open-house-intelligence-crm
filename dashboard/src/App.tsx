@@ -7,6 +7,7 @@ import { DemoControls } from './components/DemoControls'
 import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
+import { BriefingPage } from './pages/Briefing'
 import { Inbox } from './pages/Inbox'
 import { LeadPage } from './pages/Lead'
 
@@ -27,7 +28,8 @@ export default function App() {
           Open House <span className="text-emerald-400">Intelligence</span>
         </Link>
         <nav className="flex gap-3 text-sm text-zinc-400">
-          <Link to="/" className="hover:text-zinc-100">Leads</Link>
+          <Link to="/" className="hover:text-zinc-100">Briefing</Link>
+          <Link to="/leads" className="hover:text-zinc-100">Leads</Link>
           <Link to="/activity" className="hover:text-zinc-100">Agent activity</Link>
         </nav>
         <div className="ml-auto flex items-center gap-2">
@@ -52,7 +54,8 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <main className="flex-1 overflow-y-auto p-6">
           <Routes>
-            <Route path="/" element={<Inbox />} />
+            <Route path="/" element={<BriefingPage />} />
+            <Route path="/leads" element={<Inbox />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>

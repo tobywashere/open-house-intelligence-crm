@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, LeadProfile } from '../api'
+import { PERSONA_STYLE, personaOf } from '../briefing'
 import { BookingCard } from '../components/BookingCard'
 import { NoteBox } from '../components/NoteBox'
 import { ScoreBadge } from './Inbox'
 
 export function LeadPage() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const leadId = Number(id)
   const [lead, setLead] = useState<LeadProfile | null>(null)
   const [draft, setDraft] = useState<string | null>(null)
@@ -40,11 +42,28 @@ export function LeadPage() {
 
   if (!lead) return <div className="text-zinc-500">Loading…</div>
 
+  const persona = personaOf(lead)
+
   return (
     <div className="max-w-3xl space-y-6">
+      <nav className="flex items-center gap-2 text-sm text-zinc-500">
+        <button onClick={() => navigate(-1)} className="hover:text-zinc-200">
+          ← Back
+        </button>
+        <span className="text-zinc-700">/</span>
+        <Link to="/" className="hover:text-zinc-200">Briefing</Link>
+        <span className="text-zinc-700">/</span>
+        <span className="text-zinc-300">{lead.name}</span>
+      </nav>
+
       <div className="flex items-start gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">{lead.name}</h1>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl font-semibold">{lead.name}</h1>
+            <span className={`rounded-full border px-2 py-0.5 text-xs ${PERSONA_STYLE[persona] ?? PERSONA_STYLE['Home Buyer']}`}>
+              {persona}
+            </span>
+          </div>
           <div className="text-sm text-zinc-400">
             {lead.phone ?? 'no phone'} · {lead.email ?? 'no email'} · via {lead.source}
           </div>
@@ -74,6 +93,13 @@ export function LeadPage() {
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {lead.relationship_summary && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4 text-sm">
+          <div className="text-xs text-zinc-500 mb-1">Relationship summary</div>
+          <p className="whitespace-pre-wrap text-zinc-200">{lead.relationship_summary}</p>
         </div>
       )}
 

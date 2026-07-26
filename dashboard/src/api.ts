@@ -19,6 +19,9 @@ export interface Lead {
   is_neglected: number
   created_at: string
   last_activity_at: string
+  // filled by the agent once K adds the columns; UI hides them when absent
+  persona?: string | null
+  relationship_summary?: string | null
 }
 
 export interface LeadEvent {
@@ -120,6 +123,7 @@ export const api = {
   completeReminder: (id: number) => req<Reminder>(`/reminders/${id}`, { method: 'PATCH' }),
   advanceTime: (days = 3) =>
     req<{ neglected: Lead[] }>('/demo/advance-time', { method: 'POST', body: JSON.stringify({ days }) }),
+  briefing: <T>(date: string) => req<T>(`/briefing?date=${date}`),
 }
 
 export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`
