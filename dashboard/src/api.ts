@@ -69,6 +69,21 @@ export interface Reminder {
   lead_name?: string
 }
 
+export interface ChatMessage {
+  id: number
+  session_id: string
+  role: string
+  content: string
+  created_at: string
+}
+
+export interface ChatSession {
+  session_id: string
+  message_count: number
+  last_at: string
+  preview: string
+}
+
 export interface Metrics {
   active_leads: number
   high_priority: number
@@ -111,7 +126,11 @@ export const api = {
   appointments: () => req<Appointment[]>('/appointments'),
   chat: (message: string, session_id = 'dashboard') =>
     req<{ reply: string }>('/chat', { method: 'POST', body: JSON.stringify({ message, session_id }) }),
-  chatHistory: () => req<{ role: string; content: string; id: number }[]>('/chat/history'),
+  chatHistory: (session_id = 'dashboard') =>
+    req<ChatMessage[]>(`/chat/history?session_id=${encodeURIComponent(session_id)}`),
+  chatSessions: () => req<ChatSession[]>('/chat/sessions'),
+  clearChat: (session_id: string) =>
+    req<{ deleted: number }>(`/chat/history?session_id=${encodeURIComponent(session_id)}`, { method: 'DELETE' }),
   audit: (limit = 30) => req<AuditRow[]>(`/audit?limit=${limit}`),
   metrics: () => req<Metrics>('/metrics'),
   addEvent: (lead_id: number, type: string, content: string) =>
