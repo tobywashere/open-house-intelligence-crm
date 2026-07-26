@@ -8,7 +8,9 @@ import { DemoControls } from './components/DemoControls'
 import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
+import { fetchFunnel, Kpi } from './funnel'
 import { BriefingPage } from './pages/Briefing'
+import { FunnelPage } from './pages/Funnel'
 import { Inbox } from './pages/Inbox'
 import { InsightsPage } from './pages/Insights'
 import { LeadPage } from './pages/Lead'
@@ -57,6 +59,15 @@ export default function App() {
     return () => clearInterval(t)
   }, [])
 
+  // KPI strip: six funnel KPIs, ▲/▼ deltas only when a real yesterday snapshot exists
+  const [kpis, setKpis] = useState<Kpi[] | null>(null)
+  useEffect(() => {
+    const load = () => fetchFunnel().then((d) => setKpis(d.kpis)).catch(() => {})
+    load()
+    const t = setInterval(load, 60_000)
+    return () => clearInterval(t)
+  }, [])
+
   const navCls = ({ isActive }: { isActive: boolean }) =>
     `rounded-md px-2.5 py-1 transition-colors ${
       isActive ? 'bg-tile text-ink2' : 'text-sub/80 hover:text-ink2'
@@ -70,8 +81,9 @@ export default function App() {
         </Link>
         <nav className="flex gap-1 text-sm">
           <NavLink to="/" end className={navCls}>Insights</NavLink>
-          <NavLink to="/briefing" className={navCls}>Briefing</NavLink>
+          <NavLink to="/funnel" className={navCls}>Funnel</NavLink>
           <NavLink to="/leads" className={navCls}>Leads</NavLink>
+          <NavLink to="/briefing" className={navCls}>Briefing</NavLink>
           <NavLink to="/activity" className={navCls}>Agent activity</NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-2">
@@ -90,13 +102,11 @@ export default function App() {
 
       <ReminderBanner />
 
-      {metrics && (
-        <div className="shrink-0 grid grid-cols-2 sm:grid-cols-5 border-b border-tile bg-surface/40 divide-x divide-tile/60">
-          <Tile label="Active leads" value={metrics.active_leads} />
-          <Tile label="High priority" value={metrics.high_priority} accent />
-          <Tile label="Follow-ups due" value={metrics.followups_due} />
-          <Tile label="Appointments" value={metrics.appointments_booked} />
-          <Tile label="Avg response" value={`${metrics.avg_response_minutes}m`} />
+      {kpis && (
+        <div className="shrink-0 grid grid-cols-3 sm:grid-cols-6 border-b border-tile bg-surface/40 divide-x divide-tile/60">
+          {kpis.map((k, i) => (
+            <Tile key={k.label} kpi={k} accent={i === 5} />
+          ))}
         </div>
       )}
 
@@ -104,6 +114,7 @@ export default function App() {
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
           <Routes>
             <Route path="/" element={<InsightsPage />} />
+            <Route path="/funnel" element={<FunnelPage />} />
             <Route path="/briefing" element={<BriefingPage />} />
             <Route path="/leads" element={<Inbox />} />
             <Route path="/lead/:id" element={<LeadPage />} />
@@ -162,11 +173,18 @@ export default function App() {
   )
 }
 
-function Tile({ label, value, accent }: { label: string; value: number | string; accent?: boolean }) {
+function Tile({ kpi, accent }: { kpi: Kpi; accent?: boolean }) {
   return (
-    <div className="px-4 py-2.5">
-      <div className="text-[11px] uppercase tracking-wider text-sub/60">{label}</div>
-      <div className={`text-lg font-semibold tabular-nums ${accent ? 'text-accent' : ''}`}>{value}</div>
+    <div className="px-4 py-2">
+      <div className="text-[11px] uppercase tracking-wider text-sub/60 truncate">{kpi.label}</div>
+      <div className={`text-lg font-semibold tabular-nums leading-tight ${accent ? 'text-accent' : 'text-ink'}`}>
+        {kpi.value}
+      </div>
+      {kpi.delta && (
+        <div className={`text-[10px] ${kpi.up === true ? 'text-accent' : kpi.up === false ? 'text-alert' : 'text-sub/60'}`}>
+          {kpi.delta}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { api, ChatSession, fmtDate } from '../api'
 import { Markdown } from './Markdown'
 import { toast } from './Toast'
@@ -13,6 +14,13 @@ const SESSION_KEY = 'ohi-chat-session'
 const newSessionId = () => `dash-${Date.now().toString(36)}`
 
 export function ChatPanel() {
+  const { pathname } = useLocation()
+  const placeholder =
+    pathname === '/funnel'
+      ? 'Ask anything about your funnel…'
+      : pathname.startsWith('/lead')
+        ? 'Ask about this client…'
+        : 'Ask anything about your leads'
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(SESSION_KEY) ?? 'dashboard')
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [sessions, setSessions] = useState<ChatSession[]>([])
@@ -201,7 +209,7 @@ export function ChatPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && send()}
-            placeholder="Ask anything about your leads"
+            placeholder={placeholder}
             className="flex-1 bg-transparent text-sm placeholder:text-sub/50 focus:outline-none py-1"
           />
           <button

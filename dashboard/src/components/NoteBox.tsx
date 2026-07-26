@@ -12,6 +12,7 @@ const OPTIONS = [
 ]
 export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => void }) {
   const [note, setNote] = useState('')
+  const [isOffer, setIsOffer] = useState(false)
   const [followupMins, setFollowupMins] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [confirmation, setConfirmation] = useState<string | null>(null)
@@ -20,8 +21,10 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
     if (!note.trim() || busy) return
     setBusy(true)
     try {
-      await api.addEvent(leadId, 'note', note.trim())
-      let msg = 'Note saved.'
+      // "offer" events are the agreed convention that feeds the funnel's
+      // Offers Submitted stage (docs/FUNNEL-UI.md) — amount parsed from text
+      await api.addEvent(leadId, isOffer ? 'offer' : 'note', note.trim())
+      let msg = isOffer ? 'Offer logged — it now counts in the funnel.' : 'Note saved.'
       if (followupMins !== null) {
         const due = new Date(Date.now() + followupMins * 60_000)
         if (followupMins >= 1440) due.setHours(9, 0, 0, 0)
@@ -41,12 +44,36 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
 
   return (
     <div className="rounded-lg border border-tile bg-surface p-4 space-y-2">
-      <h2 className="text-sm font-semibold">Log a note</h2>
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold">{isOffer ? 'Log an offer' : 'Log a note'}</h2>
+        <div className="ml-auto flex gap-1">
+          {[
+            { label: 'Note', offer: false },
+            { label: '💰 Offer', offer: true },
+          ].map((t) => (
+            <button
+              key={t.label}
+              onClick={() => setIsOffer(t.offer)}
+              className={`rounded-md px-2 py-0.5 text-[11px] border transition-colors ${
+                isOffer === t.offer
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-line text-sub hover:border-[#4b5563]'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
         rows={2}
-        placeholder='e.g. "Spoke on the phone — wants to see the Lakemont house this weekend"'
+        placeholder={
+          isOffer
+            ? 'e.g. "Offer submitted: $1,250,000 on the Lakemont house"'
+            : 'e.g. "Spoke on the phone — wants to see the Lakemont house this weekend"'
+        }
         className="w-full rounded-md bg-surface border border-tile px-3 py-2 text-sm resize-y
                    placeholder:text-sub/50 focus:outline-none focus:border-accent"
       />

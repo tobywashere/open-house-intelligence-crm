@@ -151,6 +151,7 @@ export const api = {
   summary: <T>(date: string) => req<T>(`/summary?date=${date}`),
   postInsights: <T>(payload: T) =>
     req<T>('/insights', { method: 'POST', body: JSON.stringify(payload) }),
+  insightsFor: <T>(date: string) => req<T>(`/insights?date=${date}`),
 }
 
 export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`
