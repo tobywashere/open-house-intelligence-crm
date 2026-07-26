@@ -22,24 +22,39 @@ The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminder
 
 ### #12 GB10 hosting issues found in gateway logs (2026-07-26) — K
 
-- [ ] **chrome-mcp won't attach**: `openclaw-gateway` logs
-  `[bundle-mcp] failed to start server "streamable-mcp-server" (http://127.0.0.1:12306/mcp):
-  … "Already connected to a transport. Call close() before connecting to a new transport"`
-  every few minutes. The `mcp-chrome-bridge` on :12306 holds one stale transport and rejects the
-  gateway's reconnects. **Consequence**: the daily-brief skill silently degrades — GeekWire article
-  bodies (Cloudflare-blocked without a browser) and the entire CNBC feed drop out; today's handoff
-  logs both under `sources_failed`. **Likely fix**: restart the chrome bridge (and Chrome) so the
-  stale connection clears, or upgrade `mcp-chrome-bridge` to a version that allocates one Protocol
-  instance per connection. Verify with: `journalctl --user -u openclaw-gateway -f` → the
-  `[bundle-mcp]` error should stop, and the next daily-brief run should list `cnbc-economy` under
-  `sources_ok`.
-- [ ] **Memory search wants an OpenAI key**: `[memory] sync failed (search-bootstrap): No API key
-  found for provider "openai"`. OpenClaw's memory-search bootstrap builds a semantic index and
-  defaults its *embedding* provider to OpenAI. Nothing is sent anywhere (it fails before any call)
-  and chat/tools are unaffected — memory falls back to keyword-only search. Since the product rule
-  is local-only inference, don't add an OpenAI key; either set
-  `agents.defaults.memorySearch.provider` to a local option (Ollama / local GGUF / an
-  OpenAI-compatible local endpoint serving an embedding model) or leave it — the error is cosmetic.
+**chrome-mcp ("streamable-mcp-server") root cause, diagnosed 2026-07-26**: `mcp-chrome-bridge@1.0.31`
+binds every HTTP session's transport to ONE module-global MCP `Server` (`dist/mcp/mcp-server.js`
+singleton → `dist/server/index.js:194`), and the MCP SDK allows one transport per Server — so the
+bridge supports exactly **one client session per process lifetime**. A client that dies without
+`DELETE /mcp` wedges it permanently ("Already connected to a transport"; the throw escapes the
+handler's try/catch → Fastify 500). On this box the first claim came from Claude Code's own
+`chrome-mcp-server` entry in `~/.claude.json` racing the gateway for :12306. **Consequence**:
+daily-brief silently loses CNBC entirely + GeekWire article bodies (both under `sources_failed`
+in the 2026-07-26 handoff). The bridge is spawned by Brave as a native-messaging host (extension
+`hbdgbgagpkpjffpklnamcljpakneikee`), no systemd unit — it lives and dies with the browser.
+
+- [x] Phantom-session unblock: killed the wedged bridge pid; removed the competing `chrome-mcp-server`
+  entry from `~/.claude.json` so the gateway is :12306's only client (2026-07-26)
+- [ ] **K**: after any Brave/extension restart, confirm the gateway attaches:
+  `journalctl --user -u openclaw-gateway -f` → no `[bundle-mcp] failed to start`; then a chat turn
+  calling `get_windows_and_tabs` should succeed, and the next daily-brief run should list
+  `cnbc-economy` under `sources_ok`
+- [ ] **K**: upgrade `mcp-chrome-bridge` past 1.0.31 once a release creates one Server per session
+  (well-known MCP SDK pitfall; the SDK reference example allocates per-transport). Until then ANY
+  client crash re-wedges the bridge until its process is replaced (toggle the extension at
+  brave://extensions, or kill the `mcp-chrome-bridge` node process and let Brave respawn it)
+- [ ] **K**: make the daily-brief cron tolerate the bridge being down — pre-flight
+  `curl -sf http://127.0.0.1:12306/mcp` and fall back per the skill's documented WebFetch path
+  (GeekWire headlines-only, CNBC logged under sources unavailable)
+- [ ] Optional hardening if upstream doesn't fix: vendor the package and patch `dist/server/index.js`
+  (per-session Server factory, `server.close()` in `transport.onclose`, stale-session reaper) —
+  note an in-place patch is overwritten by the next `npm i -g`
+- [x] **Memory search now runs on local embeddings** (2026-07-26): installed
+  `@openclaw/llama-cpp-provider` and set `agents.defaults.memorySearch = {provider: "local",
+  local: {contextSize: 2048}}` in `~/.openclaw/openclaw.json` — GGUF model
+  (`embeddinggemma-300m-qat-Q8_0`, ~0.6 GB) runs in-process, no cloud calls, consistent with the
+  local-only rule. The old `No API key found for provider "openai"` error is gone; if the local
+  provider ever fails it degrades to keyword-only search instead of erroring.
 
 ### #9 Voice-note intake
 - [ ] **K**: serve Whisper on the GB10 alongside Qwen
