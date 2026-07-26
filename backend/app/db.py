@@ -35,6 +35,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("persona", "relationship_summary"):
         if col not in cols:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT")
+    for table in ("appointments", "reminders"):
+        tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if "gcal_event_id" not in tcols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN gcal_event_id TEXT")
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
