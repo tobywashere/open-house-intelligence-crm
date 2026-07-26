@@ -5,10 +5,11 @@
 set -e
 cd "$(dirname "$0")/.."
 
-export AGENT_MODE=openclaw
+# AGENT_MODE=mock bash scripts/gb10.sh → full hosted product with the mock agent
+# (useful for testing the GB10 deployment before OpenClaw is configured)
+export AGENT_MODE="${AGENT_MODE:-openclaw}"
 export AGENT_GATEWAY_URL="${AGENT_GATEWAY_URL:-http://localhost:18789}"
-# AGENT_GATEWAY_TOKEN must be set in the environment (OpenClaw gateway token)
-if [ -z "$AGENT_GATEWAY_TOKEN" ]; then
+if [ "$AGENT_MODE" = "openclaw" ] && [ -z "$AGENT_GATEWAY_TOKEN" ]; then
   echo "⚠  AGENT_GATEWAY_TOKEN is not set — chat relay will 401. export it first." >&2
 fi
 
