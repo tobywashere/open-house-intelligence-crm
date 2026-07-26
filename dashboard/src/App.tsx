@@ -35,14 +35,14 @@ export default function App() {
 
   const navCls = ({ isActive }: { isActive: boolean }) =>
     `rounded-md px-2.5 py-1 transition-colors ${
-      isActive ? 'bg-zinc-800/70 text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'
+      isActive ? 'bg-tile text-ink2' : 'text-sub/80 hover:text-ink2'
     }`
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur px-6 py-2.5 flex items-center gap-5">
-        <Link to="/" className="text-[17px] font-semibold tracking-tight">
-          Open House <span className="text-emerald-400">Intelligence</span>
+      <header className="shrink-0 border-b border-tile bg-bg/90 backdrop-blur px-6 py-2.5 flex items-center gap-5">
+        <Link to="/" className="text-[17px] font-semibold tracking-tight text-ink">
+          Open House <span className="brand-gradient">Intelligence</span>
         </Link>
         <nav className="flex gap-1 text-sm">
           <NavLink to="/" end className={navCls}>Insights</NavLink>
@@ -53,8 +53,8 @@ export default function App() {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => setSummaryOpen(true)}
-            className="rounded-full border border-zinc-700 hover:border-emerald-500/60 px-3 py-1.5
-                       text-xs text-zinc-300 hover:text-emerald-300 transition-colors"
+            className="rounded-full border border-line hover:border-accent/60 px-3 py-1.5
+                       text-xs text-body hover:text-accent transition-colors"
           >
             ☀️ Daily summary
           </button>
@@ -67,7 +67,7 @@ export default function App() {
       <ReminderBanner />
 
       {metrics && (
-        <div className="shrink-0 grid grid-cols-2 sm:grid-cols-5 border-b border-zinc-800/60 bg-zinc-900/20 divide-x divide-zinc-800/40">
+        <div className="shrink-0 grid grid-cols-2 sm:grid-cols-5 border-b border-tile bg-surface/40 divide-x divide-tile/60">
           <Tile label="Active leads" value={metrics.active_leads} />
           <Tile label="High priority" value={metrics.high_priority} accent />
           <Tile label="Follow-ups due" value={metrics.followups_due} />
@@ -87,7 +87,7 @@ export default function App() {
           </Routes>
         </main>
         {/* chat rail is viewport-fixed: the input is always visible, only messages scroll */}
-        <aside className="w-96 shrink-0 border-l border-zinc-800 hidden lg:flex flex-col min-h-0 bg-zinc-950">
+        <aside className="w-96 shrink-0 border-l border-tile hidden lg:flex flex-col min-h-0 bg-bg">
           <ChatPanel />
         </aside>
       </div>
@@ -96,8 +96,8 @@ export default function App() {
       {!chatOpen && (
         <button
           onClick={() => setChatOpen(true)}
-          className="lg:hidden fixed bottom-4 right-4 z-40 h-12 w-12 rounded-full bg-emerald-600
-                     hover:bg-emerald-500 shadow-xl text-lg"
+          className="lg:hidden fixed bottom-4 right-4 z-40 h-12 w-12 rounded-full bg-accent
+                     text-[#0b0f19] hover:brightness-110 shadow-xl text-lg"
           title="Chat with your agent"
         >
           💬
@@ -106,11 +106,11 @@ export default function App() {
       {summaryOpen && <DailySummaryOverlay onClose={closeSummary} />}
 
       {chatOpen && (
-        <div className="lg:hidden fixed inset-0 z-50 bg-zinc-950 flex flex-col">
-          <div className="flex justify-end border-b border-zinc-800 px-2 py-1.5">
+        <div className="lg:hidden fixed inset-0 z-50 bg-bg flex flex-col">
+          <div className="flex justify-end border-b border-tile px-2 py-1.5">
             <button
               onClick={() => setChatOpen(false)}
-              className="text-sm text-zinc-400 hover:text-zinc-100 px-2 py-1"
+              className="text-sm text-sub hover:text-ink px-2 py-1"
             >
               ✕ Close
             </button>
@@ -127,8 +127,8 @@ export default function App() {
 function Tile({ label, value, accent }: { label: string; value: number | string; accent?: boolean }) {
   return (
     <div className="px-4 py-2.5">
-      <div className="text-[11px] uppercase tracking-wider text-zinc-600">{label}</div>
-      <div className={`text-lg font-semibold tabular-nums ${accent ? 'text-emerald-400' : ''}`}>{value}</div>
+      <div className="text-[11px] uppercase tracking-wider text-sub/60">{label}</div>
+      <div className={`text-lg font-semibold tabular-nums ${accent ? 'text-accent' : ''}`}>{value}</div>
     </div>
   )
 }

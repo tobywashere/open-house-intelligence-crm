@@ -92,3 +92,4 @@ in the 2026-07-26 handoff). The bridge is spawned by Brave as a native-messaging
 ### Daily summary overlay (docs/BRIEFING-UI.md)
 - [x] **Toby**: `daily_summary` table + `GET/POST /api/summary?date=`
 - [ ] **K**: cron that runs `prompts/seattle-real-estate-news-reporter.md` + writes the AI-insights narrative, POSTs to `/api/summary`
+- [ ] **K**: intra-day refresh — the dashboard's "↻ Refresh now" button sends a chat message on session `summary-trigger` asking for a regeneration, then polls `GET /api/summary` for a newer `generated_at`. Agent should treat that message as "re-run research + insights and POST a fresh summary."

@@ -24,7 +24,7 @@ export function Toasts() {
       {items.map((t) => (
         <div
           key={t.id}
-          className="rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm shadow-xl"
+          className="rounded-lg border border-line bg-surface px-4 py-2.5 text-sm shadow-xl"
         >
           {t.msg}
         </div>

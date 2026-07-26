@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { api, AuditRow, fmtDate } from '../api'
 
 const ACTOR_STYLE: Record<string, string> = {
-  agent: 'text-emerald-400',
-  cron: 'text-violet-400',
-  user: 'text-sky-400',
+  agent: 'text-accent',
+  cron: 'text-[#a5b4fc]',
+  user: 'text-ink2',
 }
 
 // The wow factor: a live stream of every tool call the agent makes.
@@ -35,18 +35,18 @@ export function AuditLog({ full = false }: { full?: boolean }) {
       <div className="space-y-1.5 font-mono text-xs">
         {rows.map((r) => (
           <div key={r.id} className={`flex gap-2 items-baseline rounded px-1 ${isNew(r.id) ? 'row-flash' : ''}`}>
-            <span className="text-zinc-600 shrink-0">{fmtDate(r.ts)}</span>
+            <span className="text-sub/60 shrink-0">{fmtDate(r.ts)}</span>
             <span className={`shrink-0 ${ACTOR_STYLE[r.actor] ?? ''}`}>{r.actor}</span>
-            <span className="text-zinc-200">{r.tool}</span>
+            <span className="text-body">{r.tool}</span>
             {r.lead_id && (
-              <Link to={`/lead/${r.lead_id}`} className="text-zinc-400 hover:text-emerald-400 truncate">
+              <Link to={`/lead/${r.lead_id}`} className="text-sub hover:text-accent truncate">
                 → {r.lead_name ?? `lead #${r.lead_id}`}
               </Link>
             )}
-            <span className="text-zinc-600 truncate">{summarize(r.output)}</span>
+            <span className="text-sub/60 truncate">{summarize(r.output)}</span>
           </div>
         ))}
-        {!rows.length && <div className="text-zinc-600">No agent activity yet.</div>}
+        {!rows.length && <div className="text-sub/60">No agent activity yet.</div>}
       </div>
     </div>
   )

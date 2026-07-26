@@ -1,48 +1,79 @@
 @import "tailwindcss";
 
+/* Pitch-deck design tokens — "deep space" dark with sky/indigo accents.
+   Source: the UX color scheme doc from the deck (docs kept in team drive). */
+@theme {
+  --color-bg: #0b0f19;       /* app background / deep space */
+  --color-surface: #111827;  /* base surface / main cards */
+  --color-tile: #1f2937;     /* elevated surface / tiles */
+  --color-line: #374151;     /* standard border */
+  --color-ink: #ffffff;      /* primary headings */
+  --color-ink2: #f3f4f6;     /* secondary headings */
+  --color-body: #d1d5db;     /* high-contrast body */
+  --color-sub: #9ca3af;      /* standard body / subtitles */
+  --color-accent: #38bdf8;   /* primary accent (sky) — text, icons, actives */
+  --color-accent2: #818cf8;  /* indigo — gradients/decoration only, never data */
+  --color-mark: #0284c7;     /* chart mark fill — validated vs surface (dataviz) */
+  --color-alert: #f87171;    /* soft red — problems, neglected, urgent */
+}
+
 body {
-  @apply bg-zinc-950 text-zinc-100 antialiased;
+  @apply text-body antialiased;
+  /* ambient glows so the dark theme doesn't feel flat (deck §5) */
+  background:
+    radial-gradient(700px 480px at 88% -5%, rgba(14, 165, 233, 0.08), transparent 60%),
+    radial-gradient(700px 480px at -5% 105%, rgba(99, 102, 241, 0.08), transparent 60%),
+    #0b0f19;
+  background-attachment: fixed;
 }
 
 /* premium details: thin scrollbars, brand selection, visible focus */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: #374151 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: #374151;
   border-radius: 8px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 ::selection {
-  background: rgb(16 185 129 / 0.3);
+  background: rgba(56, 189, 248, 0.3);
 }
 :where(button, a, input, textarea, select):focus-visible {
-  outline: 2px solid rgb(16 185 129 / 0.55);
+  outline: 2px solid rgba(56, 189, 248, 0.55);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
 /* new audit rows flash on arrival — makes agent activity feel live */
 @keyframes rowflash {
-  from { background-color: rgb(16 185 129 / 0.18); }
+  from { background-color: rgba(56, 189, 248, 0.16); }
   to { background-color: transparent; }
 }
 .row-flash {
   animation: rowflash 1.6s ease-out;
 }
 
-/* staggered card entrance for the briefing page */
+/* staggered card entrance for briefing/insights */
 @keyframes rise {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
 .rise {
   animation: rise 0.4s ease-out both;
+}
+
+/* hero gradient text (deck §5) */
+.brand-gradient {
+  background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }

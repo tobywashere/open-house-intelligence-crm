@@ -69,13 +69,14 @@ export function personaOf(lead: Lead): string {
   return 'Home Buyer'
 }
 
+// deck palette: accent washes (sky/indigo family), alert red only for sellers
 export const PERSONA_STYLE: Record<string, string> = {
-  'Luxury Executive': 'bg-violet-500/15 text-violet-300 border-violet-500/30',
-  'Growing Family': 'bg-sky-500/15 text-sky-300 border-sky-500/30',
-  'Relocating Professional': 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  'First-Time Buyer': 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-  Seller: 'bg-rose-500/15 text-rose-300 border-rose-500/30',
-  'Home Buyer': 'bg-zinc-500/15 text-zinc-300 border-zinc-600',
+  'Luxury Executive': 'bg-accent2/15 text-[#a5b4fc] border-accent2/30',
+  'Growing Family': 'bg-accent/10 text-accent border-accent/30',
+  'Relocating Professional': 'bg-cyan-400/10 text-cyan-300 border-cyan-400/30',
+  'First-Time Buyer': 'bg-sky-300/10 text-sky-200 border-sky-300/30',
+  Seller: 'bg-alert/10 text-alert border-alert/30',
+  'Home Buyer': 'bg-tile text-sub border-line',
 }
 
 function briefOf(lead: Lead): MeetingBrief {

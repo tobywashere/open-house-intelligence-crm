@@ -90,14 +90,14 @@ export function LeadPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <nav className="flex items-center gap-2 text-sm text-zinc-500">
-        <button onClick={() => navigate(-1)} className="hover:text-zinc-200">
+      <nav className="flex items-center gap-2 text-sm text-sub/80">
+        <button onClick={() => navigate(-1)} className="hover:text-ink2">
           ← Back
         </button>
-        <span className="text-zinc-700">/</span>
-        <Link to="/" className="hover:text-zinc-200">Insights</Link>
-        <span className="text-zinc-700">/</span>
-        <span className="text-zinc-300">{lead.name}</span>
+        <span className="text-sub/40">/</span>
+        <Link to="/" className="hover:text-ink2">Insights</Link>
+        <span className="text-sub/40">/</span>
+        <span className="text-body">{lead.name}</span>
       </nav>
 
       <div className="flex items-start gap-4">
@@ -108,7 +108,7 @@ export function LeadPage() {
               {persona}
             </span>
           </div>
-          <div className="text-sm text-zinc-400">
+          <div className="text-sm text-sub">
             {lead.phone ?? 'no phone'} · {lead.email ?? 'no email'} · via {lead.source}
           </div>
         </div>
@@ -117,14 +117,14 @@ export function LeadPage() {
           <button
             onClick={exportSummary}
             title="Download a client-safe markdown summary"
-            className="rounded-lg border border-zinc-700 hover:border-zinc-500 px-3 py-1.5 text-sm"
+            className="rounded-lg border border-line hover:border-[#4b5563] px-3 py-1.5 text-sm"
           >
             Export ↓
           </button>
           <button
             onClick={process}
             disabled={busy}
-            className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-1.5 text-sm"
+            className="rounded-lg bg-accent text-[#0b0f19] hover:brightness-110 disabled:opacity-50 px-3 py-1.5 text-sm"
           >
             {busy ? 'Agent thinking…' : 'Analyze & draft'}
           </button>
@@ -132,14 +132,14 @@ export function LeadPage() {
       </div>
 
       {dupes.length > 0 && !reviewing && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
-          <div className="text-amber-300 mb-1">Possible duplicates detected:</div>
+        <div className="rounded-lg border border-alert/30 bg-alert/10 p-3 text-sm">
+          <div className="text-alert mb-1">Possible duplicates detected:</div>
           {dupes.map((d) => (
             <div key={d.lead.id} className="flex items-center gap-2">
               <span>
-                {d.lead.name} <span className="text-zinc-500">(matched on {d.match_on})</span>
+                {d.lead.name} <span className="text-sub/80">(matched on {d.match_on})</span>
               </span>
-              <button onClick={() => setReviewing(d.lead)} className="text-emerald-400 hover:underline">
+              <button onClick={() => setReviewing(d.lead)} className="text-accent hover:underline">
                 Review merge →
               </button>
             </div>
@@ -158,9 +158,9 @@ export function LeadPage() {
       )}
 
       {lead.relationship_summary && (
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4 text-sm">
-          <div className="text-xs text-zinc-500 mb-1">Relationship summary</div>
-          <p className="whitespace-pre-wrap text-zinc-200">{lead.relationship_summary}</p>
+        <div className="rounded-lg border border-tile bg-surface p-4 text-sm">
+          <div className="text-xs text-sub/80 mb-1">Relationship summary</div>
+          <p className="whitespace-pre-wrap text-body">{lead.relationship_summary}</p>
         </div>
       )}
 
@@ -172,30 +172,30 @@ export function LeadPage() {
       </div>
 
       {lead.score_reason && (
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-sm">
-          <div className="text-xs text-zinc-500 mb-1">Why this priority</div>
+        <div className="rounded-lg border border-tile bg-surface p-3 text-sm">
+          <div className="text-xs text-sub/80 mb-1">Why this priority</div>
           {lead.score_reason}
         </div>
       )}
 
       {lead.missing_fields.length > 0 && (
-        <div className="text-sm text-zinc-400">
+        <div className="text-sm text-sub">
           Still missing: {lead.missing_fields.join(', ')}
         </div>
       )}
 
       {draft && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm space-y-2">
-          <div className="text-xs text-emerald-400">Suggested follow-up</div>
+        <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm space-y-2">
+          <div className="text-xs text-accent">Suggested follow-up</div>
           <p className="whitespace-pre-wrap">{draft}</p>
           <div className="flex gap-2 pt-1">
             <button
               onClick={markSent}
-              className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-medium"
+              className="rounded-md bg-accent text-[#0b0f19] hover:brightness-110 px-3 py-1.5 text-xs font-medium"
             >
               Mark as sent ✓
             </button>
-            <span className="text-xs text-zinc-500 self-center">
+            <span className="text-xs text-sub/80 self-center">
               logs it, sets status, schedules a 3-day reply check
             </span>
           </div>
@@ -204,12 +204,12 @@ export function LeadPage() {
 
       {lead.appointments.length > 0 && (
         <section>
-          <h2 className="text-sm font-semibold text-zinc-400 mb-2">Appointments</h2>
+          <h2 className="text-sm font-semibold text-sub mb-2">Appointments</h2>
           {lead.appointments.map((a) => (
-            <div key={a.id} className="text-sm text-zinc-300 flex items-center gap-2">
+            <div key={a.id} className="text-sm text-body flex items-center gap-2">
               📅 {fmtSlotDay(a.start_ts)} · {fmtSlotTime(a.start_ts)}–{fmtSlotTime(a.end_ts)} —{' '}
               {a.location ?? 'location TBD'}
-              <a href={icsUrl(a.id)} className="text-emerald-400 hover:underline text-xs">
+              <a href={icsUrl(a.id)} className="text-accent hover:underline text-xs">
                 .ics ↓
               </a>
             </div>
@@ -225,13 +225,13 @@ export function LeadPage() {
       )}
 
       <section>
-        <h2 className="text-sm font-semibold text-zinc-400 mb-2">Activity timeline</h2>
+        <h2 className="text-sm font-semibold text-sub mb-2">Activity timeline</h2>
         <div className="space-y-2">
           {lead.events.map((e) => (
             <div key={e.id} className="flex gap-3 text-sm">
-              <span className="text-zinc-600 shrink-0 w-28">{fmtDate(e.created_at)}</span>
-              <span className="text-zinc-500 shrink-0 w-24 uppercase text-xs pt-0.5">{e.type}</span>
-              <span className="text-zinc-300">{e.content}</span>
+              <span className="text-sub/60 shrink-0 w-28">{fmtDate(e.created_at)}</span>
+              <span className="text-sub/80 shrink-0 w-24 uppercase text-xs pt-0.5">{e.type}</span>
+              <span className="text-body">{e.content}</span>
             </div>
           ))}
         </div>
@@ -242,8 +242,8 @@ export function LeadPage() {
 
 function Fact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
-      <div className="text-xs text-zinc-500">{label}</div>
+    <div className="rounded-lg border border-tile bg-surface p-3">
+      <div className="text-xs text-sub/80">{label}</div>
       <div className="font-medium">{value}</div>
     </div>
   )

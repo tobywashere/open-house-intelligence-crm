@@ -60,10 +60,10 @@ export function BriefingPage() {
   return (
     <div className="max-w-5xl space-y-8">
       <header className="rise">
-        <div className="text-sm text-zinc-500">{dateLabel}</div>
+        <div className="text-sm text-sub/80">{dateLabel}</div>
         <h1 className="text-2xl font-semibold tracking-tight mt-1">{briefing.greeting}</h1>
         {briefing.mock && (
-          <div className="mt-2 inline-block rounded-full border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-500">
+          <div className="mt-2 inline-block rounded-full border border-line px-2.5 py-0.5 text-xs text-sub/80">
             preview · the agent generates the real briefing at 7:00 on the GB10
           </div>
         )}
@@ -72,7 +72,7 @@ export function BriefingPage() {
       <div className="grid lg:grid-cols-[1fr_300px] gap-8 items-start">
         <div className="space-y-8 min-w-0">
           <section className="rise" style={{ animationDelay: '60ms' }}>
-            <h2 className="text-sm font-semibold text-zinc-400 mb-3">Today's schedule</h2>
+            <h2 className="text-sm font-semibold text-sub mb-3">Today's schedule</h2>
             <div className="space-y-1">
               {briefing.schedule.map((b, i) => (
                 <ScheduleRow key={i} block={b} active={now >= b.start && now < b.end} />
@@ -81,12 +81,12 @@ export function BriefingPage() {
           </section>
 
           <section className="rise" style={{ animationDelay: '120ms' }}>
-            <h2 className="text-sm font-semibold text-zinc-400 mb-3">Meeting briefs</h2>
+            <h2 className="text-sm font-semibold text-sub mb-3">Meeting briefs</h2>
             <div className="space-y-4">
               {briefing.meeting_briefs.map((brief, i) => (
                 <div
                   key={brief.lead_id}
-                  className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-5"
+                  className="rise rounded-xl border border-tile bg-surface p-5"
                   style={{ animationDelay: `${160 + i * 80}ms` }}
                 >
                   <div className="flex items-start gap-4">
@@ -94,7 +94,7 @@ export function BriefingPage() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-semibold">{brief.name}</span>
-                        {brief.area && <span className="text-zinc-500 text-sm">· {brief.area}</span>}
+                        {brief.area && <span className="text-sub/80 text-sm">· {brief.area}</span>}
                         <span
                           className={`rounded-full border px-2 py-0.5 text-xs ${
                             PERSONA_STYLE[brief.persona] ?? PERSONA_STYLE['Home Buyer']
@@ -103,29 +103,29 @@ export function BriefingPage() {
                           {brief.persona}
                         </span>
                       </div>
-                      <p className="text-sm text-zinc-300 mt-1.5">{brief.summary}</p>
+                      <p className="text-sm text-body mt-1.5">{brief.summary}</p>
                     </div>
                     <Link
                       to={`/lead/${brief.lead_id}`}
-                      className="ml-auto shrink-0 text-sm text-emerald-400 hover:underline"
+                      className="ml-auto shrink-0 text-sm text-accent hover:underline"
                     >
                       Open profile →
                     </Link>
                   </div>
                   <div className="mt-4 grid sm:grid-cols-2 gap-3">
-                    <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 p-3">
-                      <div className="text-xs text-zinc-500 mb-1.5">Prepare</div>
-                      <ul className="text-sm text-zinc-300 space-y-1">
+                    <div className="rounded-lg bg-surface/60 border border-tile p-3">
+                      <div className="text-xs text-sub/80 mb-1.5">Prepare</div>
+                      <ul className="text-sm text-body space-y-1">
                         {brief.prepare.map((p) => (
                           <li key={p} className="flex gap-2">
-                            <span className="text-zinc-600">□</span> {p}
+                            <span className="text-sub/60">□</span> {p}
                           </li>
                         ))}
                       </ul>
                     </div>
-                    <div className="rounded-lg bg-emerald-500/5 border border-emerald-500/20 p-3">
-                      <div className="text-xs text-emerald-400 mb-1.5">Recommendation</div>
-                      <p className="text-sm text-zinc-200">{brief.recommendation}</p>
+                    <div className="rounded-lg bg-accent/5 border border-accent/20 p-3">
+                      <div className="text-xs text-accent mb-1.5">Recommendation</div>
+                      <p className="text-sm text-body">{brief.recommendation}</p>
                     </div>
                   </div>
                 </div>
@@ -136,44 +136,44 @@ export function BriefingPage() {
 
         <aside className="space-y-6">
           {briefing.insight_headlines && briefing.insight_headlines.length > 0 && (
-            <section className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-4" style={{ animationDelay: '150ms' }}>
-              <h2 className="text-sm font-semibold text-zinc-400 mb-3">Pipeline insights</h2>
+            <section className="rise rounded-xl border border-tile bg-surface p-4" style={{ animationDelay: '150ms' }}>
+              <h2 className="text-sm font-semibold text-sub mb-3">Pipeline insights</h2>
               <div className="space-y-2.5">
                 {briefing.insight_headlines.map((h) => (
                   <div key={h.headline} className="flex gap-2 text-sm">
-                    <span className={h.severity === 'warn' ? 'text-amber-400' : h.severity === 'good' ? 'text-emerald-400' : 'text-zinc-500'}>
+                    <span className={h.severity === 'warn' ? 'text-alert' : h.severity === 'good' ? 'text-accent' : 'text-sub/80'}>
                       {h.severity === 'warn' ? '▲' : h.severity === 'good' ? '●' : '○'}
                     </span>
-                    <span className="text-zinc-300">{h.headline}</span>
+                    <span className="text-body">{h.headline}</span>
                   </div>
                 ))}
               </div>
-              <Link to="/" className="mt-3 inline-block text-xs text-emerald-400 hover:underline">
+              <Link to="/" className="mt-3 inline-block text-xs text-accent hover:underline">
                 All insights →
               </Link>
             </section>
           )}
 
-          <section className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-4" style={{ animationDelay: '180ms' }}>
-            <h2 className="text-sm font-semibold text-zinc-400 mb-3">Suggested actions</h2>
+          <section className="rise rounded-xl border border-tile bg-surface p-4" style={{ animationDelay: '180ms' }}>
+            <h2 className="text-sm font-semibold text-sub mb-3">Suggested actions</h2>
             <div className="space-y-3">
               {briefing.suggested_actions.map((a) => (
-                <div key={a.lead_id} className="border-b border-zinc-800 last:border-0 pb-3 last:pb-0">
-                  <Link to={`/lead/${a.lead_id}`} className="text-sm font-medium hover:text-emerald-400">
+                <div key={a.lead_id} className="border-b border-tile last:border-0 pb-3 last:pb-0">
+                  <Link to={`/lead/${a.lead_id}`} className="text-sm font-medium hover:text-accent">
                     {channelIcon(a.channel)} {a.action}
                   </Link>
-                  <p className="text-xs text-zinc-500 mt-1">{a.reason}</p>
+                  <p className="text-xs text-sub/80 mt-1">{a.reason}</p>
                 </div>
               ))}
               {!briefing.suggested_actions.length && (
-                <div className="text-sm text-zinc-600">Nothing urgent — pipeline is healthy.</div>
+                <div className="text-sm text-sub/60">Nothing urgent — pipeline is healthy.</div>
               )}
             </div>
           </section>
 
-          <section className="rise rounded-xl border border-zinc-800 bg-zinc-900/60 p-4" style={{ animationDelay: '240ms' }}>
-            <h2 className="text-sm font-semibold text-zinc-400 mb-1">Daily memory</h2>
-            <p className="text-xs text-zinc-600 mb-2">
+          <section className="rise rounded-xl border border-tile bg-surface p-4" style={{ animationDelay: '240ms' }}>
+            <h2 className="text-sm font-semibold text-sub mb-1">Daily memory</h2>
+            <p className="text-xs text-sub/60 mb-2">
               Brain-dump anything — the agent files it on the right client.
             </p>
             <textarea
@@ -181,13 +181,13 @@ export function BriefingPage() {
               onChange={(e) => setMemory(e.target.value)}
               rows={3}
               placeholder='"Michael mentioned his daughter starts private school in September."'
-              className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm resize-y
-                         placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500"
+              className="w-full rounded-md bg-bg border border-tile px-3 py-2 text-sm resize-y
+                         placeholder:text-sub/50 focus:outline-none focus:border-accent"
             />
             <button
               onClick={saveMemory}
               disabled={savingMemory || !memory.trim()}
-              className="mt-2 w-full rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 text-sm font-medium"
+              className="mt-2 w-full rounded-md bg-accent text-[#0b0f19] hover:brightness-110 disabled:opacity-40 px-3 py-1.5 text-sm font-medium"
             >
               {savingMemory ? 'Saving…' : 'Remember it'}
             </button>
@@ -199,25 +199,25 @@ export function BriefingPage() {
 }
 
 const BLOCK_STYLE: Record<ScheduleBlock['kind'], string> = {
-  meeting: 'border-emerald-500/40 bg-emerald-500/5',
-  travel: 'border-zinc-800 bg-transparent text-zinc-500',
-  buffer: 'border-dashed border-zinc-800 text-zinc-500',
-  personal: 'border-zinc-800 bg-zinc-900/40 text-zinc-400',
+  meeting: 'border-accent/40 bg-accent/5',
+  travel: 'border-tile bg-transparent text-sub/80',
+  buffer: 'border-dashed border-tile text-sub/80',
+  personal: 'border-tile bg-surface/70 text-sub',
 }
 
 function ScheduleRow({ block, active }: { block: ScheduleBlock; active: boolean }) {
   const inner = (
     <div
       className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-sm ${BLOCK_STYLE[block.kind]} ${
-        active ? 'ring-1 ring-emerald-400/60' : ''
+        active ? 'ring-1 ring-accent/60' : ''
       }`}
     >
-      <span className="font-mono text-xs text-zinc-500 w-24 shrink-0">
+      <span className="font-mono text-xs text-sub/80 w-24 shrink-0">
         {block.start}–{block.end}
       </span>
-      <span className={block.kind === 'meeting' ? 'font-medium text-zinc-100' : ''}>{block.title}</span>
+      <span className={block.kind === 'meeting' ? 'font-medium text-ink2' : ''}>{block.title}</span>
       {active && (
-        <span className="ml-auto rounded-full bg-emerald-500/20 text-emerald-300 px-2 py-0.5 text-xs">
+        <span className="ml-auto rounded-full bg-accent/15 text-accent px-2 py-0.5 text-xs">
           Now
         </span>
       )}
@@ -236,10 +236,10 @@ export function ScoreRing({ score }: { score: number | null }) {
   const value = score ?? 0
   const r = 17
   const c = 2 * Math.PI * r
-  const color = value >= 70 ? '#34d399' : value >= 40 ? '#fbbf24' : '#71717a'
+  const color = value >= 70 ? '#38bdf8' : value >= 40 ? '#818cf8' : '#64748b'
   return (
     <svg width="44" height="44" viewBox="0 0 44 44" className="shrink-0 -rotate-90">
-      <circle cx="22" cy="22" r={r} fill="none" stroke="#27272a" strokeWidth="4" />
+      <circle cx="22" cy="22" r={r} fill="none" stroke="#374151" strokeWidth="4" />
       <circle
         cx="22" cy="22" r={r} fill="none"
         stroke={color} strokeWidth="4" strokeLinecap="round"
@@ -248,7 +248,7 @@ export function ScoreRing({ score }: { score: number | null }) {
       <text
         x="22" y="22" transform="rotate(90 22 22)"
         textAnchor="middle" dominantBaseline="central"
-        fill="#e4e4e7" fontSize="12" fontWeight="600"
+        fill="#f3f4f6" fontSize="12" fontWeight="600"
       >
         {score ?? '—'}
       </text>
