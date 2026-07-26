@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
-from .routers import calendar, chat, leads, misc
+from .routers import calendar, chat, leads, misc, reports
 
 app = FastAPI(title="Open House Intelligence")
 
@@ -21,6 +21,7 @@ app.include_router(leads.router, prefix="/api")
 app.include_router(calendar.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(misc.router, prefix="/api")
+app.include_router(reports.router, prefix="/api")
 
 
 @app.on_event("startup")

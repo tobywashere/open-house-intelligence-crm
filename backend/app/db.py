@@ -21,6 +21,16 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA_PATH.read_text())
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column backfill for DBs created before a column existed —
+    lets an existing GB10/demo DB pick up new fields without a reseed."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
+    for col in ("persona", "relationship_summary"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT")
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:

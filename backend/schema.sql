@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS leads (
   intent TEXT DEFAULT 'unknown',        -- buy | sell | browse | unknown
   missing_fields TEXT NOT NULL DEFAULT '[]', -- JSON array
   is_neglected INTEGER NOT NULL DEFAULT 0,
+  persona TEXT,                          -- e.g. "Luxury Executive"; agent-set, nullable
+  relationship_summary TEXT,             -- AI-written paragraph for the profile hero
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   last_activity_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
@@ -74,4 +76,29 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   role TEXT NOT NULL,                   -- user | agent
   content TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- Executive Briefing — one row per date; K's 7am cron posts, dashboard reads.
+-- payload is the full JSON shape documented in docs/BRIEFING-UI.md.
+CREATE TABLE IF NOT EXISTS briefing (
+  date TEXT PRIMARY KEY,                 -- YYYY-MM-DD
+  payload TEXT NOT NULL,
+  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- Deterministic dashboard insights — one row per date; dashboard write-through
+-- caches computeInsights() output here; K's morning-summary cron reads it back.
+-- payload shape documented in docs/INSIGHTS.md.
+CREATE TABLE IF NOT EXISTS insights (
+  date TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  computed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- Daily summary overlay (market watch + AI insights) — one row per date; agent
+-- posts. payload shape documented in docs/BRIEFING-UI.md ("Daily summary overlay").
+CREATE TABLE IF NOT EXISTS daily_summary (
+  date TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );

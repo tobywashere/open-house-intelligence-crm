@@ -11,6 +11,13 @@ The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminder
 - [x] **#6 Neglect tiers (UI half)** — "Needs attention" section on the inbox, urgency = days idle × score, computed client-side
 - [x] **#4 Merge review (UI half)** — field-by-field diff preview before confirming a merge
 
+## ✅ Shipped (backend, 2026-07-26)
+
+- [x] **Briefing persistence** — `briefing` table + `GET/POST /api/briefing` (upsert by date, 404 if none yet); `leads.persona` + `leads.relationship_summary` columns, settable via `PATCH /leads/{id}`. Existing DBs auto-migrate (no reseed needed).
+- [x] **Insights persistence (Phase 2 endpoint)** — `insights` table + `GET/POST /api/insights?date=`. Dashboard write-through (POSTing after `computeInsights()`) is still Johaan's remaining piece — the endpoint is ready and tested.
+- [x] **Daily summary persistence** — `daily_summary` table + `GET/POST /api/summary?date=`, matching `prompts/seattle-real-estate-news-reporter.md`'s output shape.
+- Round-tripped all three (POST → GET, plus upsert-not-duplicate) against a live server; verified against the exact TS interfaces in `dashboard/src/{briefing,summary,insights}.ts` so the existing mock-fallback UI now renders real data with zero UI changes once K's crons post to them.
+
 ## 🔜 Blocked / teammate parts
 
 ### #9 Voice-note intake
@@ -34,10 +41,15 @@ The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminder
 - [ ] Deliberately deferred; violates none of the four AI purposes when it lands, but nothing on the dashboard blocks on it
 
 ### Insights (docs/INSIGHTS.md)
-- [ ] **Johaan**: Phase 1 — `insights.ts` engine, `/insights` route, briefing section, mock-summary integration (zero dependencies)
-- [ ] **Toby**: Phase 2 — additive `insights` table + `GET/POST /api/insights?date=` (dashboard write-through creates daily history)
+- [x] **Johaan**: Phase 1 — `insights.ts` engine, `/insights` route, briefing section, mock-summary integration (zero dependencies)
+- [x] **Toby**: Phase 2 endpoint — additive `insights` table + `GET/POST /api/insights?date=`
+- [ ] **Johaan**: Phase 2 write-through — POST today's `computeInsights()` payload after computing (idempotent upsert; endpoint's ready)
 - [ ] **K**: Phase 3 — morning-summary cron reads `GET /api/insights` as narrative input (insights stay deterministic)
 
-### Briefing (from docs/BRIEFING-UI.md, still pending)
-- [ ] **Toby**: `briefing` table + `GET/POST /api/briefing`, `persona` + `relationship_summary` columns on leads
+### Briefing (from docs/BRIEFING-UI.md)
+- [x] **Toby**: `briefing` table + `GET/POST /api/briefing`, `persona` + `relationship_summary` columns on leads
 - [ ] **K**: 7am cron on the GB10 — Qwen composes the briefing JSON and POSTs it; emit `[Name](lead:id)` links in chat replies
+
+### Daily summary overlay (docs/BRIEFING-UI.md)
+- [x] **Toby**: `daily_summary` table + `GET/POST /api/summary?date=`
+- [ ] **K**: cron that runs `prompts/seattle-real-estate-news-reporter.md` + writes the AI-insights narrative, POSTs to `/api/summary`

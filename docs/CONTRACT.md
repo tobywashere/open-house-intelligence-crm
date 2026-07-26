@@ -28,6 +28,8 @@ Canonical DDL lives in [`backend/schema.sql`](../backend/schema.sql). Summary:
 | intent | TEXT | `buy` \| `sell` \| `browse` \| `unknown` |
 | missing_fields | TEXT (JSON array) | what the agent still needs to ask |
 | is_neglected | INTEGER 0/1 | set by scheduled check |
+| persona | TEXT | nullable, e.g. "Luxury Executive"; agent-set |
+| relationship_summary | TEXT | nullable, AI-written profile hero paragraph |
 | created_at / last_activity_at | TEXT | ISO-8601 UTC |
 
 Merging keeps the primary row, moves the duplicate's events over, and deletes the duplicate.
@@ -49,6 +51,12 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 
 ### `chat_messages`
 `id, session_id, role (user|agent), content, created_at`
+
+### `briefing`, `insights`, `daily_summary` — date-keyed generated content
+`date TEXT PRIMARY KEY, payload TEXT (JSON), generated_at`/`computed_at`. One row
+per date, upserted by whoever posts. The backend stores/serves the payload as-is —
+see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
+[`docs/INSIGHTS.md`](INSIGHTS.md) for the payload shapes.
 
 ## 2. REST API (base: `http://<host>:8000/api`)
 
@@ -74,6 +82,12 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 | `GET /metrics` | → dashboard tile numbers | see below |
 | `GET /health` | → `{ok, agent_mode, agent_connected}` | |
 | `POST /demo/advance-time` | `{days}` → `{neglected: [lead]}` | backdates activity, runs neglect check |
+| `GET /briefing?date=YYYY-MM-DD` | → briefing JSON | **404** if none generated yet; shape in `docs/BRIEFING-UI.md` |
+| `POST /briefing` | briefing JSON (must include `date`) → same JSON | upsert by date |
+| `GET /insights?date=YYYY-MM-DD` | → insights JSON | **404** if none yet; shape in `docs/INSIGHTS.md` |
+| `POST /insights` | insights JSON (must include `date`) → same JSON | upsert by date |
+| `GET /summary?date=YYYY-MM-DD` | → daily summary JSON | **404** if none yet; shape in `docs/BRIEFING-UI.md` |
+| `POST /summary` | summary JSON (must include `date`) → same JSON | upsert by date |
 
 `GET /metrics` returns:
 ```json

@@ -38,6 +38,8 @@ class LeadPatch(BaseModel):
     score: int | None = None
     score_reason: str | None = None
     is_neglected: int | None = None
+    persona: str | None = None
+    relationship_summary: str | None = None
 
 
 class EventIn(BaseModel):
