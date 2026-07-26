@@ -149,6 +149,8 @@ export const api = {
     req<{ neglected: Lead[] }>('/demo/advance-time', { method: 'POST', body: JSON.stringify({ days }) }),
   briefing: <T>(date: string) => req<T>(`/briefing?date=${date}`),
   summary: <T>(date: string) => req<T>(`/summary?date=${date}`),
+  postInsights: <T>(payload: T) =>
+    req<T>('/insights', { method: 'POST', body: JSON.stringify(payload) }),
 }
 
 export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`

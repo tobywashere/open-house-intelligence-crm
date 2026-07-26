@@ -43,4 +43,6 @@ if DIST.exists():
         file = DIST / path
         if path and file.is_file():
             return FileResponse(file)
-        return FileResponse(DIST / "index.html")
+        # never cache the shell — hashed assets carry the versioning; a cached
+        # index.html would pin browsers to a stale bundle after every rebuild
+        return FileResponse(DIST / "index.html", headers={"Cache-Control": "no-cache"})

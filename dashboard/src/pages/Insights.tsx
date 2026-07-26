@@ -18,9 +18,19 @@ export function InsightsPage() {
   const [result, setResult] = useState<Insights | null>(null)
 
   useEffect(() => {
+    let persisted = false
     const load = () =>
       Promise.all([api.leads(), api.appointments(), api.audit(200)])
-        .then(([leads, appts, audit]) => setResult(computeInsights(leads, appts, audit)))
+        .then(([leads, appts, audit]) => {
+          const computed = computeInsights(leads, appts, audit)
+          setResult(computed)
+          if (!persisted) {
+            // write-through (once per visit): persists today's payload so K's
+            // morning-summary cron can GET /api/insights — docs/INSIGHTS.md Phase 2
+            persisted = true
+            api.postInsights(computed).catch(() => {})
+          }
+        })
         .catch(() => {})
     load()
     const t = setInterval(load, 15_000)
