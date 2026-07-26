@@ -153,7 +153,6 @@ function Tile({
       <div className="text-[15px] xl:text-base font-semibold text-ink mt-1.5 leading-snug line-clamp-2">
         {insight.headline}
       </div>
-      <p className="text-[11px] text-sub/80 mt-1 line-clamp-2">{insight.detail}</p>
       <div className="flex-1 min-h-0 flex flex-col justify-end mt-2">{children}</div>
     </div>
   )

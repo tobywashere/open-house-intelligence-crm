@@ -197,7 +197,7 @@ export function LeadPage() {
               Mark as sent ✓
             </button>
             <span className="text-xs text-sub/80 self-center">
-              logs it, sets status, schedules a 3-day reply check
+              logs + schedules a 3-day reply check
             </span>
           </div>
         </div>

@@ -146,7 +146,7 @@ export function ChatPanel() {
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
         {msgs.length === 0 && !thinking && (
           <div className="space-y-2">
-            <div className="text-xs text-sub/60">Try one of the demo prompts:</div>
+            <div className="text-xs text-sub/60">Try:</div>
             {[
               'Add Minh Nguyen, 425-555-0198, buyer interested in Kirkland and Redmond',
               'Which active buyers need a follow-up?',

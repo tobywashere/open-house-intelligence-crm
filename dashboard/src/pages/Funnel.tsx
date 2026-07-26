@@ -36,8 +36,7 @@ export function FunnelPage() {
     <div className="max-w-6xl space-y-4">
       {/* funnel + summary */}
       <section className="rise rounded-xl border border-tile bg-surface p-5">
-        <h1 className="text-lg font-semibold text-ink">Sales funnel</h1>
-        <p className="text-xs text-sub mb-5">Your buyer pipeline from new lead to closed deal.</p>
+        <h1 className="text-lg font-semibold text-ink mb-5">Sales funnel</h1>
         <div className="grid lg:grid-cols-[1fr_260px] gap-6 items-start">
           <FunnelChart data={data} />
           <aside className="space-y-4 text-sm">
@@ -98,9 +97,6 @@ export function FunnelPage() {
                 )}
               </div>
             ))}
-            <p className="text-[10px] text-sub/60 pt-1">
-              From status-change timestamps; fills in as leads move.
-            </p>
           </div>
         </Card>
 
@@ -139,7 +135,6 @@ export function FunnelPage() {
           <div className="flex items-center gap-2 mb-3">
             <span className="text-accent">◎</span>
             <h2 className="text-sm font-semibold text-ink">Next best actions</h2>
-            <span className="text-xs text-sub">Prioritized recommendations to move your pipeline forward.</span>
           </div>
           <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
             {data.actions.map((a) => (
@@ -259,14 +254,17 @@ function Card({
   children: React.ReactNode
 }) {
   return (
-    <div className="rise rounded-xl border border-tile bg-surface p-4 min-w-0" style={{ animationDelay: `${delay}ms` }}>
-      <div className="flex items-center gap-2 mb-0.5">
+    <div
+      className="rise rounded-xl border border-tile bg-surface p-4 min-w-0"
+      style={{ animationDelay: `${delay}ms` }}
+      title={sub}
+    >
+      <div className="flex items-center gap-2 mb-3">
         <h2 className="text-sm font-semibold text-body">{title}</h2>
         <span className="ml-auto rounded-full border border-line bg-tile text-sub px-2 py-0.5 text-[10px]">
           insight
         </span>
       </div>
-      <p className="text-[10px] text-sub/70 mb-3">{sub}</p>
       {children}
     </div>
   )

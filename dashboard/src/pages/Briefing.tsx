@@ -78,7 +78,7 @@ export function BriefingPage() {
         <h1 className="text-2xl font-semibold tracking-tight mt-1">{briefing.greeting}</h1>
         {briefing.mock && (
           <div className="mt-2 inline-block rounded-full border border-line px-2.5 py-0.5 text-xs text-sub/80">
-            preview · the agent generates the real briefing at 7:00 on the GB10
+            preview · live at 7:00
           </div>
         )}
       </header>

@@ -98,7 +98,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
           </h1>
           {summary?.mock && (
             <div className="mt-3 inline-block rounded-full border border-line px-2.5 py-0.5 text-xs text-sub/80">
-              preview · the agent writes the real summary at 7:00 on the GB10
+              preview · live at 7:00
             </div>
           )}
         </header>
@@ -170,7 +170,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
         )}
 
         <footer className="mt-12 text-center text-xs text-sub/60">
-          Qwen 3.6 35B-A3B · generated locally on the Dell GB10 · press Esc or ✕ to close
+          Qwen 3.6 35B-A3B · generated locally on the GB10
         </footer>
       </div>
     </div>
