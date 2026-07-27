@@ -46,6 +46,7 @@ def send_email(body: EmailIn):
 
     # closed loop only after a confirmed (or simulated) send
     with get_conn() as conn:
+        lead = fetch_lead(conn, lead["id"])
         conn.execute(
             "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
             (lead["id"], "email",
