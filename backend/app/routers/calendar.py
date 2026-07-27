@@ -5,6 +5,7 @@ from datetime import date as _date
 
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn
+from ..integrations import hooks
 from .leads import NOW, fetch_lead
 
 router = APIRouter(tags=["calendar"])
@@ -67,6 +68,7 @@ def book_appointment(body: AppointmentIn):
             "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
         audit(conn, "agent", "book_appointment", body.model_dump(),
               {"appointment_id": appt["id"]}, body.lead_id)
+    hooks.on_tour_booked(lead, appt)
     return appt
 
 

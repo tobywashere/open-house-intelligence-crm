@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from ..agent import get_driver
 from ..db import audit, get_conn, row_to_dict
+from ..integrations import hooks
 from .leads import fetch_lead
 from ..scoring import is_high_priority
 
@@ -32,8 +33,10 @@ def create_reminder(body: ReminderIn):
             (body.lead_id, body.due_ts, body.note),
         )
         audit(conn, "agent", "schedule_followup", body.model_dump(), {}, body.lead_id)
-        return dict(conn.execute(
+        reminder = dict(conn.execute(
             "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
+    hooks.on_reminder_created(reminder)
+    return reminder
 
 
 @router.get("/reminders")

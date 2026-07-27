@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ..agent import get_driver
 from ..db import audit, get_conn, row_to_dict
+from ..integrations import hooks
 from ..scoring import score_lead
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -93,6 +94,7 @@ async def create_lead(body: LeadIn):
             )
         lead = fetch_lead(conn, lead_id)
         audit(conn, "agent", "create_lead", {"source": body.source}, {"lead_id": lead_id}, lead_id)
+    hooks.on_lead_created(lead)
     return lead
 
 
