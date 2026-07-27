@@ -18,16 +18,31 @@ def get_conn() -> Iterator[sqlite3.Connection]:
     ALWAYS closes. sqlite3's own connection context manager does not close, which
     leaked an fd per request until the process hit its NOFILE limit."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    # autocommit off at the driver level: WE own transaction boundaries so a
+    # read-check + write (e.g. conflict check -> INSERT) is one atomic unit.
+    # BEGIN IMMEDIATE takes the write lock up front; a concurrent writer blocks
+    # on busy_timeout instead of both reading an empty calendar and double-booking.
+    conn.isolation_level = None
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL lets the agent's tool calls write while dashboard reads are in flight
     # (default rollback journal throws "database is locked" under that overlap).
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("BEGIN IMMEDIATE")
     try:
-        with conn:
-            yield conn
+        yield conn
+        # init_db()'s conn.executescript() implicitly COMMITs any open
+        # transaction before it runs (sqlite3 stdlib behavior), so by the
+        # time we get here the BEGIN IMMEDIATE above may already be closed —
+        # only issue COMMIT/ROLLBACK if a transaction is still active.
+        if conn.in_transaction:
+            conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 
