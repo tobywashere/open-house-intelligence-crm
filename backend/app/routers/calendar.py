@@ -35,10 +35,14 @@ def availability(date: str):
         _date.fromisoformat(date)
     except ValueError:
         raise HTTPException(422, "date must be YYYY-MM-DD")
+    # integrations_busy() hits the Composio free/busy API (can take seconds in
+    # live mode) — run it with no get_conn() open, since get_conn() now holds
+    # an exclusive BEGIN IMMEDIATE write lock for its whole block.
+    live = cc.is_live()
+    busy = integrations_busy(date) if live else []
     with get_conn() as conn:
         slots = calendar.free_slots(conn, date)
-        if cc.is_live():
-            busy = integrations_busy(date)
+        if live:
             slots = [s for s in slots if not any(
                 s["start_ts"] < b_end and s["end_ts"] > b_start
                 for b_start, b_end in busy)]

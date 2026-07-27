@@ -25,22 +25,31 @@ def _lead_details(lead: dict) -> str:
 
 
 def _create_event(lead_id: int | None, args: dict) -> str | None:
-    """Create a GCal event (or simulate). Returns the Google event id when live."""
-    with get_conn() as conn:
-        if not cc.is_live():
+    """Create a GCal event (or simulate). Returns the Google event id when live.
+
+    The Composio network call runs with NO get_conn() open: it can take
+    15-30s in live mode, and get_conn() now holds an exclusive BEGIN
+    IMMEDIATE write lock for its whole block — holding that across a network
+    round trip would serialize every other writer on busy_timeout (and 500
+    them once it expires). Each audit() below gets its own short-lived
+    connection instead."""
+    if not cc.is_live():
+        with get_conn() as conn:
             audit(conn, "user", "gcal_create_event (simulated)", args,
                   {"simulated": True}, lead_id)
-            return None
-        try:
-            data = cc.execute("GOOGLECALENDAR_CREATE_EVENT", args)
-            event_id = (data.get("response_data") or data).get("id")
-            audit(conn, "user", "gcal_create_event", args,
-                  {"event_id": event_id}, lead_id)
-            return event_id
-        except cc.IntegrationError as e:
+        return None
+    try:
+        data = cc.execute("GOOGLECALENDAR_CREATE_EVENT", args)
+        event_id = (data.get("response_data") or data).get("id")
+    except cc.IntegrationError as e:
+        with get_conn() as conn:
             audit(conn, "user", "gcal_create_event (failed)", args,
                   {"error": str(e)}, lead_id)
-            return None
+        return None
+    with get_conn() as conn:
+        audit(conn, "user", "gcal_create_event", args,
+              {"event_id": event_id}, lead_id)
+    return event_id
 
 
 def _audit_hook_failure(tool: str, lead_id: int | None, exc: Exception) -> None:
@@ -101,18 +110,22 @@ def _on_lead_created_impl(lead: dict) -> None:
             "your home search. When would be a good time for a quick call?\n\n"
             "Best,\nJohaan")
     args = {"recipient_email": lead["email"], "subject": subject, "body": body}
-    with get_conn() as conn:
-        if not cc.is_live():
+    # same rule as _create_event: run the Composio call with no get_conn() open.
+    if not cc.is_live():
+        with get_conn() as conn:
             audit(conn, "user", "gmail_create_draft (simulated)", args,
                   {"simulated": True}, lead["id"])
-            return
-        try:
-            data = cc.execute("GMAIL_CREATE_EMAIL_DRAFT", args)
-            audit(conn, "user", "gmail_create_draft", args,
-                  {"id": (data.get("response_data") or data).get("id")}, lead["id"])
-        except cc.IntegrationError as e:
+        return
+    try:
+        data = cc.execute("GMAIL_CREATE_EMAIL_DRAFT", args)
+        draft_id = (data.get("response_data") or data).get("id")
+    except cc.IntegrationError as e:
+        with get_conn() as conn:
             audit(conn, "user", "gmail_create_draft (failed)", args,
                   {"error": str(e)}, lead["id"])
+        return
+    with get_conn() as conn:
+        audit(conn, "user", "gmail_create_draft", args, {"id": draft_id}, lead["id"])
 
 
 def on_lead_created(lead: dict) -> None:

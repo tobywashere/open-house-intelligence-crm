@@ -14,11 +14,18 @@ JSON_FIELDS = {"preferences", "missing_fields"}
 
 @contextmanager
 def get_conn() -> Iterator[sqlite3.Connection]:
-    """`with get_conn() as conn:` — commits on success, rolls back on error, and
-    ALWAYS closes. sqlite3's own connection context manager does not close, which
-    leaked an fd per request until the process hit its NOFILE limit."""
+    """`with get_conn() as conn:` — one BEGIN IMMEDIATE transaction per block:
+    commits on success, rolls back on error, and ALWAYS closes. sqlite3's own
+    connection context manager does not close, which leaked an fd per request
+    until the process hit its NOFILE limit.
+
+    Every block holds the exclusive write lock for its full duration and
+    other writers serialize behind it on busy_timeout — so callers MUST NOT
+    do slow work (network calls, `await`s that can take seconds) inside a
+    `with get_conn()` block. Do that work first/after and keep the block to
+    just the DB reads/writes."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     # autocommit off at the driver level: WE own transaction boundaries so a
     # read-check + write (e.g. conflict check -> INSERT) is one atomic unit.
@@ -26,31 +33,42 @@ def get_conn() -> Iterator[sqlite3.Connection]:
     # on busy_timeout instead of both reading an empty calendar and double-booking.
     conn.isolation_level = None
     conn.execute("PRAGMA foreign_keys = ON")
-    # WAL lets the agent's tool calls write while dashboard reads are in flight
-    # (default rollback journal throws "database is locked" under that overlap).
+    # journal_mode is WAL for read throughput (readers never block on a writer's
+    # WAL frames), but every writer here takes the same exclusive BEGIN
+    # IMMEDIATE lock and queues behind it up to busy_timeout — writers are
+    # fully serialized, not concurrent.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
-        # init_db()'s conn.executescript() implicitly COMMITs any open
-        # transaction before it runs (sqlite3 stdlib behavior), so by the
-        # time we get here the BEGIN IMMEDIATE above may already be closed —
-        # only issue COMMIT/ROLLBACK if a transaction is still active.
-        if conn.in_transaction:
-            conn.execute("COMMIT")
+        conn.execute("COMMIT")
     except BaseException:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
+        conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()
 
 
 def init_db() -> None:
-    with get_conn() as conn:
+    """Runs on its own plain (non-transactional) connection, not get_conn():
+    conn.executescript() implicitly COMMITs any open transaction before it
+    runs (sqlite3 stdlib behavior), which would silently end get_conn()'s
+    BEGIN IMMEDIATE early and make its closing COMMIT/ROLLBACK a lie. Schema
+    creation only ever runs once at startup, single-threaded — it doesn't
+    need get_conn()'s atomicity guarantee."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.executescript(SCHEMA_PATH.read_text())
         _migrate(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
