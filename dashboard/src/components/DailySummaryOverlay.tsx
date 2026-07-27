@@ -45,7 +45,8 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
       .catch(() => {})
     toast('↻ Asked the agent for a fresh briefing — this takes a minute…')
     const today = localDateKey()
-    for (let i = 0; i < 24 && alive.current; i++) {
+    // a full research pass takes ~3 min on the GB10 — poll for 5 before giving up
+    for (let i = 0; i < 60 && alive.current; i++) {
       await new Promise((r) => setTimeout(r, 5000))
       try {
         const fresh = await api.summary<DailySummary>(today)
