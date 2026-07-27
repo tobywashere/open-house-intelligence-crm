@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -34,7 +35,10 @@ def startup():
     if cc.mode() == "live" and not cc.is_live():
         print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
               "running with integrations OFF (simulated).")
-    if cc.is_live():
+    # INTEGRATIONS_POLLER=off keeps live sends/events but skips the inbox
+    # poller — with the CLI transport the connected mailbox is a PERSONAL
+    # account, and auto-intake would turn its real mail into CRM leads.
+    if cc.is_live() and os.environ.get("INTEGRATIONS_POLLER", "on") != "off":
         import asyncio
         from .integrations.poller import poll_loop
         asyncio.get_event_loop().create_task(poll_loop())
