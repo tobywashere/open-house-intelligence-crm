@@ -9,6 +9,7 @@ import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { fetchFunnel, Kpi } from './funnel'
 import { DashboardPage } from './pages/Dashboard'
+import { ScanCardPage } from './pages/ScanCard'
 import { Inbox } from './pages/Inbox'
 import { LeadPage } from './pages/Lead'
 
@@ -145,6 +146,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/leads" element={<Inbox />} />
+            <Route path="/scan" element={<ScanCardPage />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>

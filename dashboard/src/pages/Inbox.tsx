@@ -96,6 +96,14 @@ export function Inbox() {
         >
           {adding ? 'Analyzing…' : 'Add lead'}
         </button>
+        <Link
+          to="/scan"
+          title="Scan a business card"
+          className="rounded-lg border border-line hover:border-accent/60 px-3 py-2 text-sm
+                     text-body hover:text-accent transition-colors"
+        >
+          📷
+        </Link>
       </div>
 
       <table className="w-full text-sm">

@@ -59,6 +59,10 @@ in the 2026-07-26 handoff). The bridge is spawned by Brave as a native-messaging
   local-only rule. The old `No API key found for provider "openai"` error is gone; if the local
   provider ever fails it degrades to keyword-only search instead of erroring.
 
+### Business-card scan (shipped 2026-07-26, dashboard + additive endpoint)
+- [x] **Johaan**: /scan page (live viewfinder + file picker + review-confirm), 📷 buttons on dashboard + leads page, additive `POST /api/scan-card` relay (mock-backed)
+- [ ] **K**: on GB10, the endpoint sends a chat message on session `card-scan` pointing at the saved image path and asking for extraction-only JSON — make sure the agent handles it with the business-card-scanner skill (extract, don't create)
+
 ### #9 Voice-note intake
 - [ ] **K**: serve Whisper on the GB10 alongside Qwen
 - [ ] **Toby**: additive endpoint — audio upload → transcript → existing `POST /leads` raw-text pipeline (group-chat note, no contract fight)

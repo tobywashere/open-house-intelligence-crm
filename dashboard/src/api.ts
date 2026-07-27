@@ -108,6 +108,13 @@ export const api = {
   lead: (id: number) => req<LeadProfile>(`/leads/${id}`),
   createLead: (raw_text: string, source = 'note') =>
     req<Lead>('/leads', { method: 'POST', body: JSON.stringify({ raw_text, source }) }),
+  createLeadFields: (fields: Partial<Lead> & { name: string }) =>
+    req<Lead>('/leads', { method: 'POST', body: JSON.stringify(fields) }),
+  scanCard: (filename: string, data: string) =>
+    req<{ extracted: Record<string, string>; duplicates: { lead: Lead; match_on: string }[]; image: string }>(
+      '/scan-card',
+      { method: 'POST', body: JSON.stringify({ filename, data }) },
+    ),
   patchLead: (id: number, fields: Partial<Lead>) =>
     req<Lead>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
   processLead: (id: number) =>
