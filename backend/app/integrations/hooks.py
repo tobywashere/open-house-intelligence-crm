@@ -4,6 +4,7 @@ land in audit_log and the triggering request succeeds regardless. Hooks open
 their own connection because they run after the caller's transaction commits."""
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ..db import audit, get_conn
 from . import composio_client as cc
@@ -79,7 +80,10 @@ def on_tour_booked(lead: dict, appt: dict) -> None:
 
 
 def _on_lead_created_impl(lead: dict) -> None:
-    start = (datetime.now() + timedelta(minutes=30)).replace(second=0, microsecond=0)
+    # local wall-clock in the event's timezone — naive now() on a UTC box would
+    # schedule the call block ~7h off
+    start = (datetime.now(ZoneInfo(_tz())) + timedelta(minutes=30)).replace(
+        second=0, microsecond=0, tzinfo=None)
     _create_event(lead["id"], {
         "calendar_id": "primary",
         "summary": f"📞 Call new lead: {lead['name']}",

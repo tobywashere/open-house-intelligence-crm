@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { toast } from '../components/Toast'
+import { CameraIcon } from '../components/icons'
 
 // Scan a business card → agent extracts → review → confirm → lead created.
 // No live viewfinder: getUserMedia needs a secure context and the app is served
@@ -140,7 +141,7 @@ export function ScanCardPage() {
             className="w-full flex flex-col items-center justify-center gap-3 py-16 px-6
                        hover:bg-bg/60 transition-colors"
           >
-            <span className="text-4xl">📷</span>
+            <CameraIcon size={40} className="text-sub" />
             <span className="text-sm font-medium text-body">Attach a photo of the card</span>
             <span className="text-xs text-sub">Opens the camera on phones — or pick an image file</span>
           </button>

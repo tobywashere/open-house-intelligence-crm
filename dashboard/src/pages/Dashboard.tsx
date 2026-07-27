@@ -4,6 +4,7 @@ import { api } from '../api'
 import { FunnelData, fetchFunnel } from '../funnel'
 import { computeInsights, Insight, Insights } from '../insights'
 import { Skeleton } from '../components/Skeleton'
+import { CameraIcon } from '../components/icons'
 
 // The dashboard: sales funnel + deterministic insights on one page (home).
 // Funnel geometry per the reference mock; marks single-hue; no gradients.
@@ -72,10 +73,11 @@ export function DashboardPage() {
           <Link
             to="/scan"
             title="Scan a business card to add a lead"
-            className="ml-auto rounded-full border border-line hover:border-accent/60 px-3 py-1.5 text-xs
-                       text-body hover:text-accent transition-colors"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line
+                       hover:border-accent/60 px-3 py-1.5 text-xs text-body hover:text-accent
+                       transition-colors"
           >
-            📷 Scan card
+            <CameraIcon size={14} /> Scan card
           </Link>
         </div>
         <div className="grid lg:grid-cols-[1fr_260px] gap-6 items-start">

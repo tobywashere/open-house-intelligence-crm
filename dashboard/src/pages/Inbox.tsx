@@ -5,6 +5,7 @@ import { api, fmtDate, fmtMoney, Lead } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
 import { daysIdle } from '../insights'
 import { Skeleton } from '../components/Skeleton'
+import { CameraIcon } from '../components/icons'
 
 const STATUS_STYLE: Record<string, string> = {
   new: 'bg-accent2/15 text-[#a5b4fc]',
@@ -99,10 +100,10 @@ export function Inbox() {
         <Link
           to="/scan"
           title="Scan a business card"
-          className="rounded-lg border border-line hover:border-accent/60 px-3 py-2 text-sm
-                     text-body hover:text-accent transition-colors"
+          className="inline-flex items-center rounded-lg border border-line hover:border-accent/60
+                     px-3 py-2 text-sm text-body hover:text-accent transition-colors"
         >
-          📷
+          <CameraIcon size={18} />
         </Link>
       </div>
 
