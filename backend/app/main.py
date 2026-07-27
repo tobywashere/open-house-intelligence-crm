@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
+from .integrations import router as integrations
 from .routers import calendar, chat, leads, misc, reports, scan
 
 app = FastAPI(title="Open House Intelligence")
@@ -23,11 +24,20 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(misc.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(scan.router, prefix="/api")
+app.include_router(integrations.router, prefix="/api")
 
 
 @app.on_event("startup")
 def startup():
     init_db()
+    from .integrations import composio_client as cc
+    if cc.mode() == "live" and not cc.is_live():
+        print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
+              "running with integrations OFF (simulated).")
+    if cc.is_live():
+        import asyncio
+        from .integrations.poller import poll_loop
+        asyncio.get_event_loop().create_task(poll_loop())
 
 
 # GB10 single-port hosting: if the dashboard has been built (npm run build),

@@ -28,6 +28,7 @@ Builds the dashboard and serves the whole product from **one port**: `http://<gb
 
 - `/` — the dashboard: live KPI strip in the navbar, sales funnel (with derived Qualified / Offers Submitted stages), and the deterministic insights engine (`dashboard/src/insights.ts` — computed from DB data, never LLM-invented)
 - `/leads` — prioritized inbox with the "Needs attention" neglect section
+- `/scan` — business-card capture with camera relay into lead intake
 - `/lead/:id` — profile: persona chip + AI relationship summary, activity timeline, follow-up draft with closed-loop "Mark as sent", booking, client-safe export, merge review
 - `/activity` — agent audit stream (every tool call), reachable from the dev icon in the navbar
 - Global resizable **chat rail** — sessions, markdown rendering, `[Name](lead:12)` links into profiles
@@ -67,6 +68,10 @@ The contract (`docs/CONTRACT.md`) is frozen — breaking changes need all three 
 | `PORT` | `8080` | Serve port for `scripts/gb10.sh` (dev mode uses 8000 + 5173) |
 | `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
 | `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (`:8000` on the GB10 is vLLM, not the CRM) |
+| `INTEGRATIONS_MODE` | `off` | `off` (demo-safe, simulated) or `live` (real Gmail + Google Calendar via Composio) |
+| `COMPOSIO_API_KEY` | — | Composio project API key (`ak_…`) — create one at https://app.composio.dev → project settings → API keys |
+| `COMPOSIO_USER_ID` | `default` | Composio connected-account user id |
+| `GCAL_TIMEZONE` | `America/Los_Angeles` | Timezone for created calendar events |
 
 Everyone develops locally in mock mode. For integration tests, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at the GB10 over Tailscale.
 

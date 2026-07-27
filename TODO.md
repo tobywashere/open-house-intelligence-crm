@@ -14,9 +14,13 @@ The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminder
 ## ✅ Shipped (backend, 2026-07-26)
 
 - [x] **Briefing persistence** — `briefing` table + `GET/POST /api/briefing` (upsert by date, 404 if none yet); `leads.persona` + `leads.relationship_summary` columns, settable via `PATCH /leads/{id}`. Existing DBs auto-migrate (no reseed needed).
-- [x] **Insights persistence (Phase 2 endpoint)** — `insights` table + `GET/POST /api/insights?date=`. Dashboard write-through (POSTing after `computeInsights()`) is still Johaan's remaining piece — the endpoint is ready and tested.
+- [x] **Insights persistence (Phase 2 endpoint)** — `insights` table + `GET/POST /api/insights?date=`. Dashboard write-through (POSTing after `computeInsights()`) is still Johaan's remaining piece *(done — see Insights section below)* — the endpoint is ready and tested.
 - [x] **Daily summary persistence** — `daily_summary` table + `GET/POST /api/summary?date=`, matching `prompts/seattle-real-estate-news-reporter.md`'s output shape.
 - Round-tripped all three (POST → GET, plus upsert-not-duplicate) against a live server; verified against the exact TS interfaces in `dashboard/src/{briefing,summary,insights}.ts` so the existing mock-fallback UI now renders real data with zero UI changes once K's crons post to them.
+
+## ✅ Shipped — Google integrations (2026-07-26, Johaan)
+
+- [x] `INTEGRATIONS_MODE=off|live` adapter (Composio): tours/new-leads/reminders → Google Calendar, one-click "Send via Gmail" + free compose with the closed-loop, intro-draft on new lead, reply poller (marks reply-check reminders done, ✉ replied badge), GCal busy-time filtering of availability. Off mode simulates everything (demo-safe, zero network). Spec: docs/superpowers/specs/2026-07-26-gcal-gmail-integration-design.md
 
 ## 🔜 Blocked / teammate parts
 
@@ -87,7 +91,7 @@ in the 2026-07-26 handoff). The bridge is spawned by Brave as a native-messaging
 ### Insights (docs/INSIGHTS.md)
 - [x] **Johaan**: Phase 1 — `insights.ts` engine, `/insights` route, briefing section, mock-summary integration (zero dependencies)
 - [x] **Toby**: Phase 2 endpoint — additive `insights` table + `GET/POST /api/insights?date=`
-- [ ] **Johaan**: Phase 2 write-through — POST today's `computeInsights()` payload after computing (idempotent upsert; endpoint's ready)
+- [x] **Johaan**: Phase 2 write-through — shipped 2026-07-26: `pages/Dashboard.tsx` POSTs today's `computeInsights()` payload once per visit (idempotent upsert via `api.postInsights`)
 - [ ] **K**: Phase 3 — morning-summary cron reads `GET /api/insights` as narrative input (insights stay deterministic)
 
 ### Briefing (from docs/BRIEFING-UI.md)

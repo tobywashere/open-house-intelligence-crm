@@ -5,6 +5,7 @@ import { PERSONA_STYLE, personaOf } from '../briefing'
 import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
 import { BookingCard } from '../components/BookingCard'
+import { EmailCompose } from '../components/EmailCompose'
 import { MergeReview } from '../components/MergeReview'
 import { NoteBox } from '../components/NoteBox'
 import { toast } from '../components/Toast'
@@ -21,6 +22,8 @@ export function LeadPage() {
   const [reviewing, setReviewing] = useState<Lead | null>(null)
   const [busy, setBusy] = useState(false)
   const [merging, setMerging] = useState(false)
+  const [subject, setSubject] = useState('')
+  const [sending, setSending] = useState(false)
 
   const load = useCallback(() => {
     api.lead(leadId).then(setLead).catch(() => {})
@@ -35,6 +38,7 @@ export function LeadPage() {
     try {
       const res = await api.processLead(leadId)
       setDraft(res.followup_draft)
+      setSubject(lead?.area ? `Your home search in ${lead.area}` : 'Following up on your home search')
       load()
     } finally {
       setBusy(false)
@@ -77,6 +81,21 @@ export function LeadPage() {
     }
   }
 
+  const sendViaGmail = async () => {
+    if (!draft || !lead) return
+    setSending(true)
+    try {
+      const res = await api.sendEmail(leadId, subject || 'Following up', draft)
+      toast(res.simulated ? '✓ Simulated send — integrations off' : `✓ Emailed ${lead.email}`)
+      setDraft(null)
+      load()
+    } catch {
+      toast('✗ Send failed — try again')
+    } finally {
+      setSending(false)
+    }
+  }
+
   if (!lead)
     return (
       <div className="max-w-3xl space-y-6">
@@ -113,6 +132,11 @@ export function LeadPage() {
             <span className={`rounded-full border px-2 py-0.5 text-xs ${PERSONA_STYLE[persona] ?? PERSONA_STYLE['Home Buyer']}`}>
               {persona}
             </span>
+            {lead.events.some((e) => e.type === 'email' && e.content.startsWith('Reply received:')) && (
+              <span className="rounded-full border border-accent/40 text-accent px-2 py-0.5 text-xs">
+                ✉ replied
+              </span>
+            )}
           </div>
           <div className="text-sm text-sub">
             {lead.phone ?? 'no phone'} · {lead.email ?? 'no email'} · via {lead.source}
@@ -194,10 +218,27 @@ export function LeadPage() {
         <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm space-y-2">
           <div className="text-xs text-accent">Suggested follow-up</div>
           <p className="whitespace-pre-wrap">{draft}</p>
+          {lead.email && (
+            <input
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Subject"
+              className="w-full rounded-md bg-tile border border-line px-2 py-1.5 text-xs"
+            />
+          )}
           <div className="flex gap-2 pt-1">
+            {lead.email && (
+              <button
+                onClick={sendViaGmail}
+                disabled={sending}
+                className="rounded-md bg-accent text-[#0b0f19] hover:brightness-110 disabled:opacity-50 px-3 py-1.5 text-xs font-medium"
+              >
+                {sending ? 'Sending…' : 'Send via Gmail ✉'}
+              </button>
+            )}
             <button
               onClick={markSent}
-              className="rounded-md bg-accent text-[#0b0f19] hover:brightness-110 px-3 py-1.5 text-xs font-medium"
+              className="rounded-md border border-line hover:border-accent/60 px-3 py-1.5 text-xs"
             >
               Mark as sent ✓
             </button>
@@ -226,6 +267,7 @@ export function LeadPage() {
       {lead.status !== 'closed' && (
         <>
           <NoteBox leadId={leadId} onSaved={load} />
+          {lead.email && <EmailCompose leadId={leadId} email={lead.email} onSent={load} />}
           <BookingCard leadId={leadId} onBooked={load} />
         </>
       )}
@@ -236,7 +278,9 @@ export function LeadPage() {
           {lead.events.map((e) => (
             <div key={e.id} className="flex gap-3 text-sm">
               <span className="text-sub/60 shrink-0 w-28">{fmtDate(e.created_at)}</span>
-              <span className="text-sub/80 shrink-0 w-24 uppercase text-xs pt-0.5">{e.type}</span>
+              <span className="text-sub/80 shrink-0 w-24 uppercase text-xs pt-0.5">
+                {e.type === 'email' ? '✉ email' : e.type}
+              </span>
               <span className="text-body">{e.content}</span>
             </div>
           ))}

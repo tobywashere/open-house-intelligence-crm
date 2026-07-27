@@ -23,6 +23,16 @@ def client():
         if p.exists():
             p.unlink()
     with TestClient(app) as c:  # startup event runs init_db()
+        # Seed availability windows for testing
+        from app.db import get_conn
+        with get_conn() as conn:
+            for weekday in range(5):  # Mon-Fri 5pm-8pm
+                conn.execute(
+                    "INSERT INTO availability (weekday, start_time, end_time) VALUES (?,?,?)",
+                    (weekday, "17:00", "20:00"))
+            conn.execute(
+                "INSERT INTO availability (weekday, start_time, end_time) VALUES (?,?,?)",
+                (5, "10:00", "16:00"))  # Sat 10am-4pm
         yield c
 
 

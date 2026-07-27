@@ -5,6 +5,9 @@ from datetime import date as _date
 
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn
+from ..integrations import composio_client as cc
+from ..integrations.poller import busy_blocks as integrations_busy
+from ..integrations import hooks
 from .leads import NOW, fetch_lead
 
 router = APIRouter(tags=["calendar"])
@@ -34,6 +37,11 @@ def availability(date: str):
         raise HTTPException(422, "date must be YYYY-MM-DD")
     with get_conn() as conn:
         slots = calendar.free_slots(conn, date)
+        if cc.is_live():
+            busy = integrations_busy(date)
+            slots = [s for s in slots if not any(
+                s["start_ts"] < b_end and s["end_ts"] > b_start
+                for b_start, b_end in busy)]
         audit(conn, "agent", "check_availability", {"date": date}, {"free": len(slots)})
     return slots
 
@@ -67,6 +75,7 @@ def book_appointment(body: AppointmentIn):
             "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
         audit(conn, "agent", "book_appointment", body.model_dump(),
               {"appointment_id": appt["id"]}, body.lead_id)
+    hooks.on_tour_booked(lead, appt)
     return appt
 
 

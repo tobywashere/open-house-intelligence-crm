@@ -73,6 +73,7 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |
 | `POST /appointments` | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; sets status `meeting_booked` |
 | `GET /appointments` | → `[appt]` | |
+| `GET /appointments/{id}/ics` | → `.ics` file | additive (documented 2026-07-26); calendar-file download used by the booking card |
 | `POST /chat` | `{message, session_id}` → `{reply, session_id}` | relays to agent driver (mock/openclaw) |
 | `GET /chat/history?session_id=` | → `[message]` | |
 | `GET /chat/sessions` | → `[{session_id, message_count, last_at, preview}]` | additive 2026-07-26 (chat history picker) |

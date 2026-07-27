@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ..agent import get_driver
 from ..db import audit, get_conn, row_to_dict
+from ..integrations import hooks
 from ..scoring import score_lead
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -93,6 +94,7 @@ async def create_lead(body: LeadIn):
             )
         lead = fetch_lead(conn, lead_id)
         audit(conn, "agent", "create_lead", {"source": body.source}, {"lead_id": lead_id}, lead_id)
+    hooks.on_lead_created(lead)
     return lead
 
 
@@ -230,7 +232,7 @@ async def process_lead(lead_id: int):
         latest = None
         if not lead.get("budget") or not lead.get("timeline"):
             latest = conn.execute(
-                "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text') "
+                "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text','email') "
                 "ORDER BY created_at DESC LIMIT 1", (lead_id,)).fetchone()
 
     # re-extract from the latest raw note if fields are missing
