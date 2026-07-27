@@ -1,12 +1,23 @@
-# Open House Intelligence
+# OpenHouse Intelligence
 
-A local-first real estate sales agent that manages leads from first contact through booked appointment. All inference runs locally on the Dell Pro Max GB10 — client PII never leaves the machine.
+**Your AI-powered operating system for the modern real estate agent.** Spend less time managing your CRM. Spend more time building relationships.
+
+Real estate agents have data everywhere but intelligence nowhere — leads scattered across text messages, voice notes, emails, business cards, spreadsheets, and legacy CRMs, where information gets lost and nothing helps the agent get better. OpenHouse Intelligence turns those scattered conversations into an intelligent, always-on real estate operation: **just tell your agent what happened** ("I met Sarah Chen at the open house — she wants a 3-bed in Bellevue under $1.2M") and the AI reads and writes the CRM through natural language, drafts the follow-ups, books the tours, and generates real analytics — pipeline health, conversion, lead aging, source performance, next-best actions — with zero manual data entry. The result: less administration, faster follow-up, more closed deals.
+
+And it's **local-first**: all inference runs on the Dell Pro Max GB10, so client PII — budgets, financial situations, relocation reasons — never leaves the machine. Full story: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
 
 **[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`PLAN.md`](PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
 
 ## Architecture
 
+![OpenHouse Intelligence architecture: Capture (text, voice notes, Discord) → Virtual AI (unstructured conversation → structured intents) → OpenClaw orchestrator ↔ Client DB (SQLite), enriched by hyper-local market data, with scheduled briefs pushed back to the agent and a live dashboard reading the DB](docs/images/pitch-architecture.png)
+
+<details>
+<summary>Original whiteboard sketch this grew from</summary>
+
 ![Architecture sketch: Client text UI → Virtual AI assistant → OpenClaw harness ↔ Client DB (SQLite), with scheduled reminders flowing back to the UI](docs/images/architecture-sketch.png)
+
+</details>
 
 ## One-command startup (dev, mock agent)
 
@@ -25,6 +36,8 @@ bash scripts/gb10.sh
 Builds the dashboard and serves the whole product from **one port**: `http://<gb10-tailscale-name>:8080` (`:8000` on the GB10 belongs to the vLLM server). Runs with `AGENT_MODE=openclaw`, relaying chat to the OpenClaw gateway on `:18789`. Full wiring, skill install, and verification checklist: [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md).
 
 ## What's in the dashboard
+
+![Real analytics. Period. — the dashboard concept: KPI strip, sales funnel with per-stage conversion, lead source performance, stage velocity, top opportunities, demand by area, next-best actions, and the chat rail](docs/images/pitch-dashboard.png)
 
 - `/` — the dashboard: live KPI strip in the navbar, sales funnel (with derived Qualified / Offers Submitted stages), and the deterministic insights engine (`dashboard/src/insights.ts` — computed from DB data, never LLM-invented)
 - `/leads` — prioritized inbox with the "Needs attention" neglect section
@@ -78,6 +91,7 @@ Everyone develops locally in mock mode. For integration tests, point `VITE_API_U
 
 ## Docs index
 
+- [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf) — the pitch deck: vision, problem, architecture, demo story
 - [`docs/CONTRACT.md`](docs/CONTRACT.md) — frozen schema / API / agent tools (source of truth)
 - [`TODO.md`](TODO.md) — post-MVP work, tracked by owner
 - [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) — hosting the product on the GB10
