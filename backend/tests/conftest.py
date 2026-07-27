@@ -10,6 +10,7 @@ TEST_DB = Path(__file__).resolve().parent / "test.db"
 os.environ["DB_PATH"] = str(TEST_DB)          # must be set BEFORE importing app
 os.environ["AGENT_MODE"] = "mock"
 os.environ["INTEGRATIONS_MODE"] = "off"   # hard-set: ambient live env must not leak into tests
+os.environ.pop("COMPOSIO_API_KEY", None)  # scrub ambient key to prevent real API calls
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402

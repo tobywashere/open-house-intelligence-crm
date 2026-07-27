@@ -15,8 +15,10 @@ def test_mode_reads_env_at_call_time(monkeypatch):
 
 
 def test_execute_success(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.setenv("COMPOSIO_API_KEY", "k")
     calls = []
+    captured_kwargs = {}
 
     class FakeResp:
         status_code = 200
@@ -25,6 +27,7 @@ def test_execute_success(monkeypatch):
 
     def fake_post(url, headers=None, json=None, timeout=None):
         calls.append((url, headers, json))
+        captured_kwargs["timeout"] = timeout
         return FakeResp()
 
     monkeypatch.setattr(cc.httpx, "post", fake_post)
@@ -34,9 +37,12 @@ def test_execute_success(monkeypatch):
     assert url.endswith("/api/v3/tools/execute/GOOGLECALENDAR_CREATE_EVENT")
     assert headers["x-api-key"] == "k"
     assert body["arguments"] == {"summary": "x"}
+    assert body["user_id"] == "default"
+    assert captured_kwargs["timeout"] == 15
 
 
 def test_execute_retries_once_then_raises(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.setenv("COMPOSIO_API_KEY", "k")
     attempts = []
 
@@ -53,6 +59,20 @@ def test_execute_retries_once_then_raises(monkeypatch):
 
 
 def test_execute_without_key_raises(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
     with pytest.raises(cc.IntegrationError):
         cc.execute("GMAIL_SEND_EMAIL", {})
+
+
+def test_execute_in_off_mode_raises_without_network_call(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "off")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "k")
+
+    def no_network_allowed(*a, **kw):
+        raise AssertionError("network call made in off mode")
+
+    monkeypatch.setattr(cc.httpx, "post", no_network_allowed)
+    with pytest.raises(cc.IntegrationError) as exc_info:
+        cc.execute("GMAIL_SEND_EMAIL", {})
+    assert "integrations disabled" in str(exc_info.value)

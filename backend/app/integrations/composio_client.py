@@ -22,6 +22,8 @@ def is_live() -> bool:
 
 
 def execute(slug: str, arguments: dict) -> dict:
+    if not is_live():
+        raise IntegrationError("integrations disabled (INTEGRATIONS_MODE != live or no key)")
     key = os.environ.get("COMPOSIO_API_KEY")
     if not key:
         raise IntegrationError("COMPOSIO_API_KEY not set")
