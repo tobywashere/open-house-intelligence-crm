@@ -65,6 +65,51 @@ def test_execute_without_key_raises(monkeypatch):
         cc.execute("GMAIL_SEND_EMAIL", {})
 
 
+def test_cli_transport_is_live_without_key(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
+    monkeypatch.setenv("COMPOSIO_TRANSPORT", "cli")
+    assert cc.is_live()
+
+
+def test_cli_transport_executes_via_subprocess(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_TRANSPORT", "cli")
+    monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = '{"successful": true, "data": {"response_data": {"id": "evt9"}}, "error": null}'
+        stderr = ""
+
+    monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/composio")
+    monkeypatch.setattr(cc.os.path, "exists", lambda _: True)
+    monkeypatch.setattr(cc.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or FakeProc())
+    data = cc.execute("GOOGLECALENDAR_CREATE_EVENT", {"summary": "x"})
+    assert data == {"response_data": {"id": "evt9"}}
+    assert calls[0][1:3] == ["execute", "GOOGLECALENDAR_CREATE_EVENT"]
+    assert '"summary": "x"' in calls[0][4]
+
+
+def test_cli_transport_failure_raises(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_TRANSPORT", "cli")
+
+    class FakeProc:
+        returncode = 1
+        stdout = '{"successful": false, "error": "no connected account"}'
+        stderr = ""
+
+    monkeypatch.setattr(cc.shutil, "which", lambda _: "/usr/bin/composio")
+    monkeypatch.setattr(cc.os.path, "exists", lambda _: True)
+    monkeypatch.setattr(cc.subprocess, "run", lambda argv, **kw: FakeProc())
+    with pytest.raises(cc.IntegrationError) as exc_info:
+        cc.execute("GMAIL_SEND_EMAIL", {})
+    assert "no connected account" in str(exc_info.value)
+
+
 def test_execute_in_off_mode_raises_without_network_call(monkeypatch):
     monkeypatch.setenv("INTEGRATIONS_MODE", "off")
     monkeypatch.setenv("COMPOSIO_API_KEY", "k")

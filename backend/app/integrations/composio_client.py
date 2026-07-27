@@ -1,10 +1,18 @@
-"""Thin Composio v3 REST client (only touched when INTEGRATIONS_MODE=live).
+"""Thin Composio client (only touched when INTEGRATIONS_MODE=live).
 
-Docs: POST {base}/api/v3/tools/execute/{slug} with x-api-key header and
-{"user_id": ..., "arguments": {...}} body → {"successful": bool, "data": {...},
-"error": str|null}. Tool schemas: `composio execute <SLUG> --get-schema`.
+Two transports, picked by COMPOSIO_TRANSPORT:
+- "api" (default): POST {base}/api/v3/tools/execute/{slug} with x-api-key header
+  and {"user_id": ..., "arguments": {...}} body → {"successful": bool,
+  "data": {...}, "error": str|null}. Needs a project API key (ak_...).
+- "cli": shell out to the locally-authed `composio` CLI (managed OAuth — the
+  CLI's uak_ session key is NOT valid for the REST API, hence this path).
+
+Tool schemas: `composio execute <SLUG> --get-schema`.
 """
+import json
 import os
+import shutil
+import subprocess
 
 import httpx
 
@@ -17,13 +25,41 @@ def mode() -> str:
     return os.environ.get("INTEGRATIONS_MODE", "off")
 
 
+def transport() -> str:
+    return os.environ.get("COMPOSIO_TRANSPORT", "api")
+
+
 def is_live() -> bool:
-    return mode() == "live" and bool(os.environ.get("COMPOSIO_API_KEY"))
+    if mode() != "live":
+        return False
+    return transport() == "cli" or bool(os.environ.get("COMPOSIO_API_KEY"))
+
+
+def _execute_cli(slug: str, arguments: dict) -> dict:
+    path = shutil.which("composio") or os.path.expanduser("~/.composio/composio")
+    if not os.path.exists(path):
+        raise IntegrationError(f"{slug}: composio CLI not found")
+    try:
+        proc = subprocess.run([path, "execute", slug, "-d", json.dumps(arguments)],
+                              capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise IntegrationError(f"{slug}: CLI timed out")
+    out = proc.stdout.strip()
+    try:
+        payload = json.loads(out[out.index("{"):]) if "{" in out else {}
+    except ValueError:
+        payload = {}
+    if proc.returncode == 0 and payload.get("successful"):
+        return payload.get("data") or {}
+    err = payload.get("error") or proc.stderr.strip()[:300] or f"exit {proc.returncode}"
+    raise IntegrationError(f"{slug}: {err}")
 
 
 def execute(slug: str, arguments: dict) -> dict:
     if not is_live():
         raise IntegrationError("integrations disabled (INTEGRATIONS_MODE != live or no key)")
+    if transport() == "cli":
+        return _execute_cli(slug, arguments)
     key = os.environ.get("COMPOSIO_API_KEY")
     if not key:
         raise IntegrationError("COMPOSIO_API_KEY not set")
