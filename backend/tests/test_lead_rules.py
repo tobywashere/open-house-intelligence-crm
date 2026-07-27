@@ -26,3 +26,13 @@ def test_forward_transitions_ok(client):
     for status in ("contacted", "meeting_booked", "closed"):
         assert client.patch(f"/api/leads/{lead['id']}",
                             json={"status": status}).status_code == 200
+
+
+def test_booking_cannot_reopen_closed_lead(client):
+    lead = _mk(client)
+    client.patch(f"/api/leads/{lead['id']}", json={"status": "closed"})
+    r = client.post("/api/appointments", json={
+        "lead_id": lead["id"], "start_ts": "2026-08-05T10:00:00",
+        "end_ts": "2026-08-05T10:45:00", "location": "X"})
+    assert r.status_code == 400
+    assert client.get(f"/api/leads/{lead['id']}").json()["status"] == "closed"

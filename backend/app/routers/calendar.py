@@ -8,7 +8,7 @@ from ..db import audit, get_conn
 from ..integrations import composio_client as cc
 from ..integrations.poller import busy_blocks as integrations_busy
 from ..integrations import hooks
-from .leads import NOW, fetch_lead
+from .leads import NOW, fetch_lead, ALLOWED_TRANSITIONS
 
 router = APIRouter(tags=["calendar"])
 
@@ -64,6 +64,9 @@ def book_appointment(body: AppointmentIn):
         lead = fetch_lead(conn, body.lead_id)
         if calendar.has_conflict(conn, body.start_ts, body.end_ts):
             raise HTTPException(409, "slot conflicts with an existing appointment")
+        # Validate status transition before creating appointment
+        if lead["status"] != "meeting_booked" and "meeting_booked" not in ALLOWED_TRANSITIONS[lead["status"]]:
+            raise HTTPException(400, f"cannot book: invalid status transition {lead['status']} -> meeting_booked")
         cur = conn.execute(
             "INSERT INTO appointments (lead_id, start_ts, end_ts, location) VALUES (?,?,?,?)",
             (body.lead_id, body.start_ts, body.end_ts, body.location),
