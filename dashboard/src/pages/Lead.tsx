@@ -132,6 +132,11 @@ export function LeadPage() {
             <span className={`rounded-full border px-2 py-0.5 text-xs ${PERSONA_STYLE[persona] ?? PERSONA_STYLE['Home Buyer']}`}>
               {persona}
             </span>
+            {lead.events.some((e) => e.type === 'email' && e.content.startsWith('Reply received:')) && (
+              <span className="rounded-full border border-accent/40 text-accent px-2 py-0.5 text-xs">
+                ✉ replied
+              </span>
+            )}
           </div>
           <div className="text-sm text-sub">
             {lead.phone ?? 'no phone'} · {lead.email ?? 'no email'} · via {lead.source}
