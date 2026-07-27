@@ -1,6 +1,6 @@
 ---
 name: composio-email-calendar
-description: "Send and draft real Gmail, search the inbox, and create/check Google Calendar events through the locally-authed Composio CLI — use for 'email this lead', 'draft a follow-up', 'did anyone reply', 'put it on my calendar', 'am I free Thursday 2pm'. Real external side effects: always confirm before sending mail or creating events."
+description: "Google Calendar AND Gmail through the locally-authed Composio CLI. Calendar: create events, check free/busy, list today's/this week's schedule — 'put it on my calendar', 'am I free Thursday 2pm', 'what's on my calendar', 'block off 3pm', 'schedule a walkthrough'. Email: send, draft, search inbox — 'email this lead', 'draft a follow-up', 'did anyone reply'. Use for ANY calendar or email request. Real external side effects: always confirm before sending mail or creating events."
 ---
 
 # Composio email + calendar skill
