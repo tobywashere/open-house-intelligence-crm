@@ -232,7 +232,7 @@ async def process_lead(lead_id: int):
         latest = None
         if not lead.get("budget") or not lead.get("timeline"):
             latest = conn.execute(
-                "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text') "
+                "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text','email') "
                 "ORDER BY created_at DESC LIMIT 1", (lead_id,)).fetchone()
 
     # re-extract from the latest raw note if fields are missing
