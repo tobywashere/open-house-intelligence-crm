@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
-import { api, localDateKey, Metrics } from './api'
+import { api, IntegrationsStatus, localDateKey, Metrics } from './api'
 import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
 import { DailySummaryOverlay } from './components/DailySummaryOverlay'
@@ -111,6 +111,7 @@ export default function App() {
           >
             ☀️ Daily summary
           </button>
+          <IntegrationsChip />
           <LocalBadge metrics={metrics} />
           {/* dev-only: raw agent/tool audit stream, deliberately not a nav item */}
           <NavLink
@@ -219,6 +220,25 @@ function HeaderStat({ kpi, accent }: { kpi: Kpi; accent?: boolean }) {
       </div>
       <div className="text-[9px] uppercase tracking-wider text-sub/60 mt-1 whitespace-nowrap">{kpi.label}</div>
     </div>
+  )
+}
+
+function IntegrationsChip() {
+  const [st, setSt] = useState<IntegrationsStatus | null>(null)
+  useEffect(() => {
+    api.integrationsStatus().then(setSt).catch(() => {})
+  }, [])
+  if (!st) return null
+  const live = st.mode === 'live'
+  return (
+    <span
+      title={live ? 'Gmail + Google Calendar connected (Composio)' : 'Google integrations off — demo-safe mode'}
+      className={`rounded-full border px-2.5 py-1 text-[10px] ${
+        live ? 'border-accent/40 text-accent' : 'border-line text-sub/70'
+      }`}
+    >
+      {live ? '● Google live' : '○ Google off'}
+    </span>
   )
 }
 

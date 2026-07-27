@@ -84,6 +84,12 @@ export interface ChatSession {
   preview: string
 }
 
+export interface IntegrationsStatus {
+  mode: 'off' | 'live'
+  gmail: boolean
+  gcal: boolean
+}
+
 export interface Metrics {
   active_leads: number
   high_priority: number
@@ -177,6 +183,12 @@ export const api = {
   postInsights: <T>(payload: T) =>
     req<T>('/insights', { method: 'POST', body: JSON.stringify(payload) }),
   insightsFor: <T>(date: string) => req<T>(`/insights?date=${date}`),
+  sendEmail: (lead_id: number, subject: string, body: string) =>
+    req<{ sent: boolean; simulated: boolean }>('/email/send', {
+      method: 'POST',
+      body: JSON.stringify({ lead_id, subject, body }),
+    }),
+  integrationsStatus: () => req<IntegrationsStatus>('/integrations/status'),
 }
 
 export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`

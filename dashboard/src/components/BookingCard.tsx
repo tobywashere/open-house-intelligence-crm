@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, Appointment, fmtSlotDay, fmtSlotTime, icsUrl, localDateKey } from '../api'
+import { api, Appointment, fmtSlotDay, fmtSlotTime, icsUrl, IntegrationsStatus, localDateKey } from '../api'
 
 interface Slot {
   start_ts: string
@@ -20,6 +20,10 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
   const [booked, setBooked] = useState<Appointment | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [intg, setIntg] = useState<IntegrationsStatus | null>(null)
+  useEffect(() => {
+    api.integrationsStatus().then(setIntg).catch(() => {})
+  }, [])
 
   const loadSlots = (d: string) => {
     setSelected(null)
@@ -61,6 +65,9 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
         <a href={icsUrl(booked.id)} className="inline-block text-accent hover:underline">
           Download .ics ↓
         </a>
+        {intg?.mode === 'live' && (
+          <div className="text-xs text-accent">✓ Added to Google Calendar</div>
+        )}
       </div>
     )
   }
