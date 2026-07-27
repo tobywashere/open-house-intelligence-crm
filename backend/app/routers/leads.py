@@ -14,6 +14,15 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 NOW = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
 STATUSES = ["new", "contacted", "meeting_booked", "closed"]
 
+# forward-only lifecycle; any state may close. Backward moves need a human
+# with DB access — the agent must never un-close a lead.
+ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    "new": {"contacted", "meeting_booked", "closed"},
+    "contacted": {"meeting_booked", "closed"},
+    "meeting_booked": {"closed"},
+    "closed": set(),
+}
+
 
 class LeadIn(BaseModel):
     raw_text: str | None = None
@@ -136,6 +145,10 @@ def patch_lead(lead_id: int, body: LeadPatch):
         raise HTTPException(400, f"status must be one of {STATUSES}")
     with get_conn() as conn:
         old = fetch_lead(conn, lead_id)
+        if "status" in fields and fields["status"] != old["status"]:
+            new_status = fields["status"]
+            if new_status not in ALLOWED_TRANSITIONS[old["status"]]:
+                raise HTTPException(400, f"invalid status transition {old['status']} -> {new_status}")
         sets = ", ".join(f"{k} = ?" for k in fields)
         conn.execute(
             f"UPDATE leads SET {sets}, last_activity_at = ({NOW}) WHERE id = ?",
@@ -184,6 +197,8 @@ def find_duplicates(lead_id: int):
 
 @router.post("/merge")
 def merge_leads(body: MergeIn):
+    if body.primary_id == body.duplicate_id:
+        raise HTTPException(400, "primary_id and duplicate_id must differ")
     with get_conn() as conn:
         primary = fetch_lead(conn, body.primary_id)
         dup = fetch_lead(conn, body.duplicate_id)
