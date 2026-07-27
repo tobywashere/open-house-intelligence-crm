@@ -30,6 +30,11 @@ app.include_router(integrations.router, prefix="/api")
 @app.on_event("startup")
 def startup():
     init_db()
+    from .integrations import composio_client as cc
+    if cc.is_live():
+        import asyncio
+        from .integrations.poller import poll_loop
+        asyncio.get_event_loop().create_task(poll_loop())
 
 
 # GB10 single-port hosting: if the dashboard has been built (npm run build),
