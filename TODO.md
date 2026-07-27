@@ -61,7 +61,8 @@ in the 2026-07-26 handoff). The bridge is spawned by Brave as a native-messaging
 
 ### Business-card scan (shipped 2026-07-26, dashboard + additive endpoint)
 - [x] **Johaan**: /scan page (file-attach capture — native camera app on phones — + review-confirm; live viewfinder dropped: plain-http LAN serving isn't a secure context), 📷 buttons on dashboard + leads page, additive `POST /api/scan-card` relay (mock-backed)
-- [ ] **K**: business-card-scanner now has an explicit extraction-only mode and the endpoint's `card-scan` prompt invokes it — remaining: verify on the GB10 that the live agent+model actually honors it end-to-end (image tool reads the saved path, replies JSON-only, creates nothing)
+- [x] **K**: business-card-scanner has an explicit extraction-only mode and the endpoint's `card-scan` prompt invokes it — verified live on the GB10 2026-07-27: agent read the saved file, replied JSON-only (used the skill's `unreadable:` fallback on a bogus payload), created nothing (audit shows `scan_card` only). ⚠ Ops note: a backend started before this feature 405s on `POST /api/scan-card` (SPA catch-all is GET-only) — `systemctl --user restart openhouse-crm` after pulling.
+- [ ] **Toby** (minor): `integrations/composio_client.py` retries POSTs once — fine for reads, but a non-idempotent tool (gcal event create) could double-fire if attempt 1 succeeded and timed out on the wire; consider retrying only idempotent slugs
 
 ### #9 Voice-note intake
 - [ ] **K**: serve Whisper on the GB10 alongside Qwen

@@ -10,8 +10,6 @@ export function LocalBadge({ metrics }: { metrics: Metrics | null }) {
       <span className="text-body">
         {live ? 'Qwen 3.6 35B-A3B · Local on Dell GB10' : `Inference: ${mode} mode`}
       </span>
-      <span className="text-sub/60">|</span>
-      <span className="text-sub">Cloud LLM requests: {metrics?.cloud_llm_requests ?? 0}</span>
     </div>
   )
 }
