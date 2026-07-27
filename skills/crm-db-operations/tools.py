@@ -2,7 +2,7 @@
 
 Thin, zero-dependency (stdlib only) client for the backend REST API described in
 docs/CONTRACT.md. Each function here is one entry in the tool catalog the local
-model is allowed to call — see db-operations-skill.md in this directory for the
+model is allowed to call — see SKILL.md in this directory for the
 full contract, guardrails, and usage examples.
 
 The model must never see or write raw SQL; every DB read/write goes through one
@@ -12,7 +12,8 @@ Configure the backend location with the CRM_API_URL env var
 (default: http://localhost:8080/api — same host as the backend when both run on
 the GB10 for the demo).
 
-Copy this whole directory (tools.py + db-operations-skill.md) to the GB10 instance.
+Copy this whole directory (tools.py + SKILL.md) to ~/.openclaw/skills/crm-db-operations
+on the GB10 instance.
 """
 from __future__ import annotations
 

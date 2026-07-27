@@ -119,7 +119,7 @@ Every tool call MUST write an `audit_log` row (the endpoints do this automatical
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` variant / `GET /leads?neglected=1` |
 | `generate_dashboard_insights()` | `GET /metrics` + LLM summary |
 
-Curl examples for each live in [`skills/db-operations-skill.md`](../skills/db-operations-skill.md).
+Curl examples for each live in [`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
 
 ## 4. Division of change
 

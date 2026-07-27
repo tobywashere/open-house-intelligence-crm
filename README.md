@@ -49,7 +49,7 @@ cd dashboard && npm install && npm run dev
 
 | Person | Owns | Start here |
 |---|---|---|
-| **K** | Agent & local inference on the GB10 (OpenClaw, Qwen 3.6 35B-A3B, skills, prompts, cron) | `skills/` — the CRM skill (`db-operations-skill.md` + `tools.py`) and `daily-command-center/`; `prompts/`. The backend relay you answer through is `backend/app/agent/openclaw.py`; mock behavior to replace is `backend/app/agent/mock.py` |
+| **K** | Agent & local inference on the GB10 (OpenClaw, Qwen 3.6 35B-A3B, skills, prompts, cron) | `skills/` — one directory per skill (`crm-db-operations/` = `SKILL.md` + `tools.py`, plus `business-card-scanner/` and `daily-command-center/`); `prompts/`. The backend relay you answer through is `backend/app/agent/openclaw.py`; mock behavior to replace is `backend/app/agent/mock.py` |
 | **Toby** | Backend, SQLite, calendar & business logic | `backend/` — schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py` |
 | **Johaan** | Dashboard, integration, demo & pitch | `dashboard/src/` — typed API client in `src/api.ts` |
 
@@ -66,7 +66,7 @@ The contract (`docs/CONTRACT.md`) is frozen — breaking changes need all three 
 | `DB_PATH` | `backend/data/crm.db` | SQLite location |
 | `PORT` | `8080` | Serve port for `scripts/gb10.sh` (dev mode uses 8000 + 5173) |
 | `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
-| `CRM_API_URL` | `http://localhost:8000/api` | Backend URL for the agent's `skills/tools.py` |
+| `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (`:8000` on the GB10 is vLLM, not the CRM) |
 
 Everyone develops locally in mock mode. For integration tests, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at the GB10 over Tailscale.
 

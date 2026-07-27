@@ -25,14 +25,18 @@ The entire briefing should take less than three minutes to review.
 
 For local testing, read:
 
-`~/.openclaw/workspace/skills/daily-command-center/sample-crm.json`
+`~/.openclaw/skills/daily-command-center/sample-crm.json`
 
 When the user asks for a sample, demo, or test briefing:
 
 1. Read that file.
 2. Use its appointments, priority contacts, and outstanding responses.
 3. Generate the full Daily Command Center output.
-4. Do not invent any facts beyond the file.## Available Context
+4. Do not invent any facts beyond the file.
+
+---
+
+## Available Context
 
 You may receive:
 

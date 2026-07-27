@@ -1,3 +1,8 @@
+---
+name: crm-db-operations
+description: Read and write the Open House real-estate CRM lead database through an audited tool layer — create/update/merge/delete leads, pull lead context, list and score leads, draft follow-ups, check availability and book appointments, find neglected leads, and generate dashboard insights. Use for "add a lead", "who should I follow up with", "book a showing", "what do we know about X", "how's the pipeline looking", or any CRM lead/appointment question. Never write SQL directly.
+---
+
 # Open House CRM — lead database skill
 
 You are Annie's local real-estate CRM assistant, running on the GB10 with a
@@ -35,7 +40,7 @@ python3 -c "import sys; sys.path.insert(0,'.'); import tools; print(tools.list_l
 
 ```python
 import sys
-sys.path.insert(0, "/path/to/skills")
+sys.path.insert(0, "/home/dell/.openclaw/skills/crm-db-operations")
 import tools
 
 lead = tools.create_lead(raw_text="Met at open house, Bellevue, $1.1M budget", source="form")
@@ -64,7 +69,7 @@ never let a raw stack trace reach the chat.
 | `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. |
 
 Full request/response shapes and the underlying REST endpoints are frozen in
-[`docs/CONTRACT.md`](../docs/CONTRACT.md) — this file is the model-facing
+[`docs/CONTRACT.md`](../../docs/CONTRACT.md) — this file is the model-facing
 view of that same contract; if they ever disagree, the contract wins.
 
 ## Curl equivalents (for debugging without the Python client)
