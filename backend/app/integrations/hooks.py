@@ -42,7 +42,16 @@ def _create_event(lead_id: int | None, args: dict) -> str | None:
             return None
 
 
-def on_tour_booked(lead: dict, appt: dict) -> None:
+def _audit_hook_failure(tool: str, lead_id: int | None, exc: Exception) -> None:
+    """Safely log hook failure to audit log. Never raises, even if DB is broken."""
+    try:
+        with get_conn() as conn:
+            audit(conn, "user", f"{tool} (failed)", {}, {"error": str(exc)}, lead_id)
+    except Exception:
+        pass  # If audit itself fails, swallow it — never let the hook raise
+
+
+def _on_tour_booked_impl(lead: dict, appt: dict) -> None:
     start = datetime.fromisoformat(appt["start_ts"])
     end = datetime.fromisoformat(appt["end_ts"])
     minutes = max(int((end - start).total_seconds() // 60), 15)
@@ -61,7 +70,15 @@ def on_tour_booked(lead: dict, appt: dict) -> None:
                          (event_id, appt["id"]))
 
 
-def on_lead_created(lead: dict) -> None:
+def on_tour_booked(lead: dict, appt: dict) -> None:
+    """Book tour in GCal. Blanket guard ensures this never raises into the calling request."""
+    try:
+        _on_tour_booked_impl(lead, appt)
+    except Exception as e:
+        _audit_hook_failure("gcal_create_event", lead.get("id"), e)
+
+
+def _on_lead_created_impl(lead: dict) -> None:
     start = (datetime.now() + timedelta(minutes=30)).replace(second=0, microsecond=0)
     _create_event(lead["id"], {
         "calendar_id": "primary",
@@ -94,7 +111,15 @@ def on_lead_created(lead: dict) -> None:
                   {"error": str(e)}, lead["id"])
 
 
-def on_reminder_created(reminder: dict) -> None:
+def on_lead_created(lead: dict) -> None:
+    """Create call block + intro draft. Blanket guard ensures this never raises into the calling request."""
+    try:
+        _on_lead_created_impl(lead)
+    except Exception as e:
+        _audit_hook_failure("gmail_create_draft", lead.get("id"), e)
+
+
+def _on_reminder_created_impl(reminder: dict) -> None:
     with get_conn() as conn:
         row = conn.execute("SELECT name FROM leads WHERE id = ?",
                            (reminder["lead_id"],)).fetchone()
@@ -111,3 +136,11 @@ def on_reminder_created(reminder: dict) -> None:
         with get_conn() as conn:
             conn.execute("UPDATE reminders SET gcal_event_id = ? WHERE id = ?",
                          (event_id, reminder["id"]))
+
+
+def on_reminder_created(reminder: dict) -> None:
+    """Create follow-up reminder in GCal. Blanket guard ensures this never raises into the calling request."""
+    try:
+        _on_reminder_created_impl(reminder)
+    except Exception as e:
+        _audit_hook_failure("gcal_create_event", reminder.get("lead_id"), e)

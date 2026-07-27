@@ -59,3 +59,16 @@ def test_hook_failure_never_breaks_request(client, monkeypatch):
     lead = make_lead(client)                      # hook fails silently
     assert lead["id"] > 0
     assert any(t.endswith("(failed)") for t in _audit_tools(client))
+
+
+def test_hook_blanket_guard_non_integration_error(client, monkeypatch):
+    """Verify hooks never raise even when _create_event raises non-IntegrationError."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("unexpected error")
+
+    monkeypatch.setattr("app.integrations.hooks._create_event", boom)
+    lead = make_lead(client)                      # hook must swallow the error
+    assert lead["id"] > 0
+    # The blanket guard caught the RuntimeError and logged it
+    tools = _audit_tools(client)
+    assert any(t.endswith("(failed)") for t in tools)
