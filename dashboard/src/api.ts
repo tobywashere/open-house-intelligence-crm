@@ -94,12 +94,30 @@ export interface Metrics {
   cloud_llm_requests: number
 }
 
+// Non-OK responses throw this. `message` keeps the legacy `"<status>: <body>"`
+// shape (some callers match on the status prefix); `detail` carries the parsed
+// JSON {"detail": "..."} body when the backend sent one.
+export class ApiError extends Error {
+  status: number
+  detail?: string
+  constructor(status: number, body: string) {
+    super(`${status}: ${body}`)
+    this.status = status
+    try {
+      const parsed = JSON.parse(body)
+      if (parsed && typeof parsed.detail === 'string') this.detail = parsed.detail
+    } catch {
+      // body wasn't JSON — no detail
+    }
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new ApiError(res.status, await res.text())
   return res.json()
 }
 

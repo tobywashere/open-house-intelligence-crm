@@ -77,7 +77,7 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 | `GET /chat/history?session_id=` | → `[message]` | |
 | `GET /chat/sessions` | → `[{session_id, message_count, last_at, preview}]` | additive 2026-07-26 (chat history picker) |
 | `DELETE /chat/history?session_id=` | → `{deleted}` | additive 2026-07-26 (clear conversation) |
-| `POST /scan-card` | `{filename, data: base64}` → `{extracted, duplicates, image}` | additive 2026-07-26; extraction ONLY (review-first) — agent reads the saved image via business-card-scanner; mock returns a canned card |
+| `POST /scan-card` | `{filename, data: base64}` → `{extracted, duplicates, image}` | additive 2026-07-26; extraction ONLY (review-first) — agent reads the saved image via business-card-scanner; mock returns a canned card; **413** image > 8 MB, **400** invalid base64, **502** agent couldn't extract |
 | `POST /reminders` | `{lead_id, due_ts, note}` → reminder | schedule a follow-up |
 | `GET /reminders?due=1` | → `[reminder + lead_name]` | dashboard polls this for the reminder banner |
 | `PATCH /reminders/{id}` | → reminder | marks done |

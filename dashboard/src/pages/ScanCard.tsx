@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import { toast } from '../components/Toast'
 
 // Scan a business card → agent extracts → review → confirm → lead created.
-// Live viewfinder when a camera exists (phone or laptop); file picker always.
+// No live viewfinder: getUserMedia needs a secure context and the app is served
+// over plain http on the LAN. The hidden file input with capture="environment"
+// opens the native camera app on phones; elsewhere it's a plain file picker.
 type Phase = 'capture' | 'preview' | 'extracting' | 'review' | 'done'
 
 interface Extracted {
@@ -16,6 +18,29 @@ interface Extracted {
   raw_text?: string
 }
 
+// Downscale to ≤1600px on the longest side (never upscale) and re-encode as
+// JPEG — keeps uploads well under the backend's ~8 MB decoded limit.
+const MAX_DIM = 1600
+async function downscale(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file)
+  try {
+    const scale = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, w, h)
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.85),
+    )
+    if (!blob) throw new Error('JPEG encode failed')
+    return blob
+  } finally {
+    bitmap.close()
+  }
+}
+
 export function ScanCardPage() {
   const navigate = useNavigate()
   const [phase, setPhase] = useState<Phase>('capture')
@@ -24,67 +49,27 @@ export function ScanCardPage() {
   const [fields, setFields] = useState<Extracted>({})
   const [dupes, setDupes] = useState<{ lead: { id: number; name: string }; match_on: string }[]>([])
   const [busy, setBusy] = useState(false)
-  const [camReady, setCamReady] = useState(false)
   const [newLeadId, setNewLeadId] = useState<number | null>(null)
 
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // live viewfinder — no user-agent sniffing: works wherever a camera exists
+  // revoke each object URL once it's replaced or the page unmounts
   useEffect(() => {
-    if (phase !== 'capture') return
-    let cancelled = false
-    navigator.mediaDevices
-      ?.getUserMedia({ video: { facingMode: 'environment' } })
-      .then((stream) => {
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        streamRef.current = stream
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          videoRef.current.play().catch(() => {})
-        }
-        setCamReady(true)
-      })
-      .catch(() => setCamReady(false))
-    return () => {
-      cancelled = true
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-    }
-  }, [phase])
+    if (!imageUrl) return
+    return () => URL.revokeObjectURL(imageUrl)
+  }, [imageUrl])
 
-  const stopCamera = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
-    setCamReady(false)
-  }
-
-  const shoot = () => {
-    const video = videoRef.current
-    if (!video) return
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    canvas.getContext('2d')!.drawImage(video, 0, 0)
-    canvas.toBlob((b) => {
-      if (!b) return
-      setBlob(b)
-      setImageUrl(URL.createObjectURL(b))
-      stopCamera()
-      setPhase('preview')
-    }, 'image/jpeg', 0.92)
-  }
-
-  const onFile = (f: File | undefined) => {
+  const onFile = async (f: File | undefined) => {
     if (!f) return
-    setBlob(f)
-    setImageUrl(URL.createObjectURL(f))
-    stopCamera()
-    setPhase('preview')
+    try {
+      const jpeg = await downscale(f)
+      setBlob(jpeg)
+      setImageUrl(URL.createObjectURL(jpeg))
+      setPhase('preview')
+    } catch {
+      // e.g. HEIC the browser can't decode
+      toast('⚠ Couldn’t read that image — try a JPEG or PNG photo')
+    }
   }
 
   const extract = async () => {
@@ -99,8 +84,9 @@ export function ScanCardPage() {
       setFields(res.extracted ?? {})
       setDupes(res.duplicates ?? [])
       setPhase('review')
-    } catch {
-      toast('⚠ Scan failed — is the backend running?')
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.detail : undefined
+      toast(detail ? `⚠ ${detail}` : '⚠ Scan failed — is the backend running?')
       setPhase('preview')
     }
   }
@@ -122,6 +108,10 @@ export function ScanCardPage() {
       setNewLeadId(lead.id)
       setPhase('done')
       toast(`✓ ${lead.name} added from business card`)
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.detail : undefined
+      toast(`⚠ Couldn’t create the lead${detail ? ` — ${detail}` : ''}`)
+      // stay on review so nothing typed is lost
     } finally {
       setBusy(false)
     }
@@ -145,44 +135,15 @@ export function ScanCardPage() {
 
       {phase === 'capture' && (
         <div className="rounded-2xl border border-tile bg-surface overflow-hidden">
-          {/* instagram-style viewfinder */}
-          <div className="relative bg-black aspect-[4/3]">
-            <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
-            {camReady ? (
-              <>
-                {/* card frame guide */}
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="w-[78%] aspect-[1.75] rounded-xl border-2 border-white/60" />
-                </div>
-                <div className="absolute top-3 inset-x-0 text-center text-xs text-white/70">
-                  Line the card up inside the frame
-                </div>
-              </>
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sub text-sm">
-                <span className="text-3xl">📷</span>
-                No camera available — choose a photo instead
-              </div>
-            )}
-          </div>
-          <div className="flex items-center justify-center gap-8 py-4 bg-bg">
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="text-xs text-body border border-line hover:border-accent/60 hover:text-accent
-                         rounded-full px-3 py-1.5 transition-colors"
-            >
-              🖼 Choose file
-            </button>
-            {camReady && (
-              <button
-                onClick={shoot}
-                aria-label="Take photo"
-                className="h-16 w-16 rounded-full border-4 border-ink bg-ink/20 hover:bg-accent/40
-                           active:scale-95 transition-all"
-              />
-            )}
-            <span className="w-[76px]" />
-          </div>
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="w-full flex flex-col items-center justify-center gap-3 py-16 px-6
+                       hover:bg-bg/60 transition-colors"
+          >
+            <span className="text-4xl">📷</span>
+            <span className="text-sm font-medium text-body">Attach a photo of the card</span>
+            <span className="text-xs text-sub">Opens the camera on phones — or pick an image file</span>
+          </button>
         </div>
       )}
 
@@ -281,7 +242,11 @@ export function ScanCardPage() {
         accept="image/*"
         capture="environment"
         className="hidden"
-        onChange={(e) => onFile(e.target.files?.[0])}
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          e.target.value = '' // allow re-picking the same file (e.g. after a decode failure)
+          void onFile(f)
+        }}
       />
     </div>
   )
