@@ -35,6 +35,9 @@ def create_reminder(body: ReminderIn):
         audit(conn, "agent", "schedule_followup", body.model_dump(), {}, body.lead_id)
         reminder = dict(conn.execute(
             "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
+    # create_reminder is a sync `def` endpoint: FastAPI already runs the
+    # whole handler in the AnyIO threadpool, so this call can't freeze the
+    # event loop — no run_in_threadpool wrapping needed here.
     hooks.on_reminder_created(reminder)
     return reminder
 

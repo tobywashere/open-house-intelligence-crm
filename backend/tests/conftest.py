@@ -17,6 +17,11 @@ from app.main import app  # noqa: E402
 
 
 @pytest.fixture()
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture()
 def client():
     for suffix in ("", "-wal", "-shm"):
         p = Path(str(TEST_DB) + suffix)

@@ -82,6 +82,9 @@ def book_appointment(body: AppointmentIn):
             "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
         audit(conn, "agent", "book_appointment", body.model_dump(),
               {"appointment_id": appt["id"]}, body.lead_id)
+    # book_appointment is a sync `def` endpoint: FastAPI already runs the
+    # whole handler in the AnyIO threadpool, so this call can't freeze the
+    # event loop — no run_in_threadpool wrapping needed here.
     hooks.on_tour_booked(lead, appt)
     return appt
 

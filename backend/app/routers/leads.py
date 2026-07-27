@@ -2,6 +2,7 @@ import difflib
 import json
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ..agent import get_driver
@@ -103,7 +104,10 @@ async def create_lead(body: LeadIn):
             )
         lead = fetch_lead(conn, lead_id)
         audit(conn, "agent", "create_lead", {"source": body.source}, {"lead_id": lead_id}, lead_id)
-    hooks.on_lead_created(lead)
+    # create_lead is `async def`: a synchronous hook call here would freeze the
+    # whole event loop (e.g. Composio's Gmail/GCal calls run ~15-30s live) —
+    # run it in the threadpool so other requests keep flowing.
+    await run_in_threadpool(hooks.on_lead_created, lead)
     return lead
 
 

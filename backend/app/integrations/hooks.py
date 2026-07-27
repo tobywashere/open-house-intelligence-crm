@@ -1,7 +1,13 @@
 """Outbound Google hooks (spec: docs/superpowers/specs/2026-07-26-gcal-gmail-
 integration-design.md). Fire-and-forget: a hook must never raise — failures
 land in audit_log and the triggering request succeeds regardless. Hooks open
-their own connection because they run after the caller's transaction commits."""
+their own connection because they run after the caller's transaction commits.
+
+These functions are synchronous and can block for the full duration of a
+live Composio call (15-30s). Callers in async endpoints MUST wrap these in
+run_in_threadpool (see fastapi.concurrency) or they will freeze the whole
+event loop; sync (`def`) endpoints already run in FastAPI's AnyIO threadpool
+and may call them directly."""
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
