@@ -3,9 +3,11 @@
 Reply idempotence: every logged reply embeds "[gmail:<message_id>]" in the
 event content; a message id seen once is never logged again."""
 import asyncio
+import os
 import re
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ..db import audit, get_conn
 from . import composio_client as cc
@@ -68,6 +70,9 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
         conn.execute(
             "UPDATE reminders SET done = 1 WHERE lead_id = ? AND done = 0 "
             "AND note LIKE 'Check for a reply%'", (lead["id"],))
+        conn.execute(
+            "UPDATE leads SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+            "WHERE id = ?", (lead["id"],))
         audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
               {"message_id": msg_id}, lead["id"])
     try:
@@ -112,7 +117,8 @@ _busy_cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
 def _local_naive(iso: str) -> str:
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     if dt.tzinfo:
-        dt = dt.astimezone().replace(tzinfo=None)
+        tz = ZoneInfo(os.environ.get("GCAL_TIMEZONE", "America/Los_Angeles"))
+        dt = dt.astimezone(tz).replace(tzinfo=None)
     return dt.isoformat()
 
 
@@ -126,7 +132,7 @@ def busy_blocks(date_str: str) -> list[tuple[str, str]]:
         data = cc.execute("GOOGLECALENDAR_FREE_BUSY_QUERY", {
             "time_min": f"{date_str}T00:00:00",
             "time_max": f"{date_str}T23:59:59",
-            "timezone": "America/Los_Angeles",
+            "timezone": os.environ.get("GCAL_TIMEZONE", "America/Los_Angeles"),
             "items": [{"id": "primary"}],
         })
         inner = data.get("response_data") or data

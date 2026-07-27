@@ -229,7 +229,7 @@ function IntegrationsChip() {
     api.integrationsStatus().then(setSt).catch(() => {})
   }, [])
   if (!st) return null
-  const live = st.mode === 'live'
+  const live = st.mode === 'live' && st.gmail
   return (
     <span
       title={live ? 'Gmail + Google Calendar connected (Composio)' : 'Google integrations off — demo-safe mode'}

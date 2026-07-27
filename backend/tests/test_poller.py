@@ -1,4 +1,6 @@
-from .conftest import make_lead
+import time
+
+from .conftest import TEST_DB, make_lead
 from app.integrations import poller
 
 
@@ -15,6 +17,15 @@ def test_reply_logged_reminder_done_and_reprocessed(client, monkeypatch):
     client.post("/api/email/send", json={
         "lead_id": lead["id"], "subject": "s", "body": "b"})  # creates reply-check reminder
 
+    # backdate last_activity_at so a later bump from the reply is unambiguous
+    import sqlite3
+    with sqlite3.connect(TEST_DB) as conn:
+        conn.execute(
+            "UPDATE leads SET last_activity_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+            (lead["id"],))
+        conn.commit()
+    before = client.get(f"/api/leads/{lead['id']}").json()["last_activity_at"]
+
     monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([{
         "messageId": "reply-1",
         "sender": "Test Lead <lead@example.com>",
@@ -30,6 +41,8 @@ def test_reply_logged_reminder_done_and_reprocessed(client, monkeypatch):
     # reply triggered re-processing (extract → score) — wiring, not extraction quality
     tools = [a["tool"] for a in client.get("/api/audit?limit=30").json()]
     assert "score_lead" in tools
+    # reply detection must bump last_activity_at so the lead stops looking neglected
+    assert profile["last_activity_at"] > before
 
 
 def test_reply_dedupe_second_pass_noop(client, monkeypatch):

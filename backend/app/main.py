@@ -31,6 +31,9 @@ app.include_router(integrations.router, prefix="/api")
 def startup():
     init_db()
     from .integrations import composio_client as cc
+    if cc.mode() == "live" and not cc.is_live():
+        print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
+              "running with integrations OFF (simulated).")
     if cc.is_live():
         import asyncio
         from .integrations.poller import poll_loop

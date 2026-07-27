@@ -65,7 +65,7 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
         <a href={icsUrl(booked.id)} className="inline-block text-accent hover:underline">
           Download .ics ↓
         </a>
-        {intg?.mode === 'live' && (
+        {intg?.mode === 'live' && intg.gmail && (
           <div className="text-xs text-accent">✓ Added to Google Calendar</div>
         )}
       </div>
