@@ -68,6 +68,10 @@ The contract (`docs/CONTRACT.md`) is frozen — breaking changes need all three 
 | `PORT` | `8080` | Serve port for `scripts/gb10.sh` (dev mode uses 8000 + 5173) |
 | `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
 | `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (`:8000` on the GB10 is vLLM, not the CRM) |
+| `INTEGRATIONS_MODE` | `off` | `off` (demo-safe, simulated) or `live` (real Gmail + Google Calendar via Composio) |
+| `COMPOSIO_API_KEY` | — | Composio project API key (`ak_…`) — create one at https://app.composio.dev → project settings → API keys |
+| `COMPOSIO_USER_ID` | `default` | Composio connected-account user id |
+| `GCAL_TIMEZONE` | `America/Los_Angeles` | Timezone for created calendar events |
 
 Everyone develops locally in mock mode. For integration tests, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at the GB10 over Tailscale.
 

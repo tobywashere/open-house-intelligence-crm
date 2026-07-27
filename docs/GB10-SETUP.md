@@ -66,3 +66,35 @@ gateway URL/port (`AGENT_GATEWAY_URL`, default `http://localhost:18789`).
 
 Everyone else keeps `bash scripts/dev.sh` (mock mode). To point a local dashboard
 at the GB10 instead: `VITE_API_URL=http://gb10:8080/api npm run dev`.
+
+## Google integrations (Gmail + Calendar)
+
+The app itself calls Composio — nothing to install on the GB10 beyond env vars.
+In the same env file `scripts/gb10.sh` loads, set:
+
+```bash
+INTEGRATIONS_MODE=live
+COMPOSIO_API_KEY=<Composio project API key (ak_…)>
+COMPOSIO_USER_ID=<connected-account user id (usually 'default')>
+GCAL_TIMEZONE=America/Los_Angeles
+```
+
+To create the Composio API key: log into https://app.composio.dev → project settings → API keys → create a new project API key (starts with `ak_`).
+
+Leave `INTEGRATIONS_MODE` unset (= `off`) for the stage demo: every Google
+action is then simulated, audited, and requires no network. The header chip
+shows "● Google live" / "○ Google off" so you always know which mode you're in.
+The reply poller (every 5 min) and GCal busy-filtering only run in live mode.
+K's agent needs no changes: its existing REST tool calls (create_lead,
+book_appointment, schedule_followup) fire the Google hooks automatically.
+
+### Group-chat note (paste-ready)
+
+```
+Additive changes heads-up (no contract breakage):
+1. Two new columns, auto-migrated: appointments.gcal_event_id, reminders.gcal_event_id
+2. Two new endpoints: POST /api/email/send {lead_id,subject,body} and GET /api/integrations/status
+3. New event-type convention: events.type='email' for sent mail + replies (no CHECK constraint, same trick as the offer events); reply dedupe marker [gmail:<id>] in content
+4. Behavior: when INTEGRATIONS_MODE=live on the GB10, create_lead / book_appointment / schedule_followup ALSO create Google Calendar events (+ a Gmail intro draft for leads with email). Off by default; off mode simulates + audits only. K: zero agent changes needed — your existing tool calls trigger it.
+5. New source convention: leads.source='email' for leads auto-intaken from the Gmail inbox poller (unknown sender → raw_text pipeline → extracted lead). Replies from known leads also re-run /process so new info (budget etc.) updates fields + score.
+```

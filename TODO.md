@@ -18,6 +18,10 @@ The AI has exactly four jobs: DB read/write, scheduled summaries, timed reminder
 - [x] **Daily summary persistence** — `daily_summary` table + `GET/POST /api/summary?date=`, matching `prompts/seattle-real-estate-news-reporter.md`'s output shape.
 - Round-tripped all three (POST → GET, plus upsert-not-duplicate) against a live server; verified against the exact TS interfaces in `dashboard/src/{briefing,summary,insights}.ts` so the existing mock-fallback UI now renders real data with zero UI changes once K's crons post to them.
 
+## ✅ Shipped — Google integrations (2026-07-26, Johaan)
+
+- [x] `INTEGRATIONS_MODE=off|live` adapter (Composio): tours/new-leads/reminders → Google Calendar, one-click "Send via Gmail" + free compose with the closed-loop, intro-draft on new lead, reply poller (marks reply-check reminders done, ✉ replied badge), GCal busy-time filtering of availability. Off mode simulates everything (demo-safe, zero network). Spec: docs/superpowers/specs/2026-07-26-gcal-gmail-integration-design.md
+
 ## 🔜 Blocked / teammate parts
 
 ### #12 GB10 hosting issues found in gateway logs (2026-07-26) — K
