@@ -28,6 +28,7 @@ Builds the dashboard and serves the whole product from **one port**: `http://<gb
 
 - `/` — the dashboard: live KPI strip in the navbar, sales funnel (with derived Qualified / Offers Submitted stages), and the deterministic insights engine (`dashboard/src/insights.ts` — computed from DB data, never LLM-invented)
 - `/leads` — prioritized inbox with the "Needs attention" neglect section
+- `/scan` — business-card capture with camera relay into lead intake
 - `/lead/:id` — profile: persona chip + AI relationship summary, activity timeline, follow-up draft with closed-loop "Mark as sent", booking, client-safe export, merge review
 - `/activity` — agent audit stream (every tool call), reachable from the dev icon in the navbar
 - Global resizable **chat rail** — sessions, markdown rendering, `[Name](lead:12)` links into profiles
