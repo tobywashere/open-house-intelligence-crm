@@ -4,7 +4,7 @@
 // insights engine in insights.ts). Tries GET /api/summary; mock until K's cron
 // and Toby's endpoint exist. Same pattern as the briefing: UI never changes.
 import { api, localDateKey } from './api'
-import { pack } from './vertical'
+import { BUILT_IN, pack } from './vertical'
 
 // Shape mirrors prompts/seattle-real-estate-news-reporter.md output fields —
 // only title/source/takeaway are required; the rest render when present.
@@ -60,5 +60,9 @@ export async function fetchDailySummary(): Promise<DailySummary | null> {
 // mode (AGENT_MODE=mock) — see DailySummaryOverlay.tsx, which gates this
 // behind metrics.agent_mode and always tags it "Sample data (mock mode)".
 export function mockSummarySample(): Omit<DailySummary, 'date' | 'generated_at'> {
-  return pack().mock_summary as unknown as Omit<DailySummary, 'date' | 'generated_at'>
+  // Fall back to the built-in real-estate sample if a fetched pack omits
+  // mock_summary entirely (e.g. offline/401/404 before loadVertical resolves,
+  // or a partial third-party pack) — every other Task 3b lookup site has a
+  // `??` fallback; this one previously didn't.
+  return pack().mock_summary ?? BUILT_IN.mock_summary
 }

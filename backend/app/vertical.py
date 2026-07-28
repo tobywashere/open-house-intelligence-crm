@@ -21,6 +21,27 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 KNOWN_RULE_TYPES = {"all", "status_at_least", "status_at_least_or_score",
                     "event_type_or_status", "status_is"}
 
+# Merge semantics (fix round 1, Task 3b): most dict-valued keys (e.g. `labels`,
+# `copy`) benefit from a *partial* override — a pack setting only
+# labels.budget shouldn't have to restate area/timeline/intent too, and the
+# existing tests rely on that. But a few keys are self-contained *content
+# blocks* rather than a bag of independent label overrides, and a one-level
+# dict.update() there silently leaks real-estate content into another
+# vertical's pack:
+#   - "mock_summary": a recruiting pack supplying its own {greeting,
+#     ai_insights} would otherwise keep the real-estate `market_watch` array
+#     (Issaquah/Freddie Mac news) verbatim, since it's a sibling key one
+#     level down that the shallow merge never touches.
+#   - "schedule_titles": a pack setting only "default" would keep
+#     "sell": "Listing appointment" from the real-estate pack.
+#   - "persona_recommendations": keyed by persona name; a pack defining its
+#     own personas would otherwise inherit recommendation text addressed to
+#     real-estate personas it doesn't have (e.g. "Ask about schools first"
+#     for a recruiting pack that never defines "Growing Family").
+# These keys replace wholesale instead: if present (and truthy) in the pack,
+# the pack's value is used as-is, not merged over the default's.
+REPLACE_WHOLESALE_KEYS = {"mock_summary", "schedule_titles", "persona_recommendations"}
+
 DEFAULT_PACK: dict = {
     "name": "real-estate",
     "display_name": "Real estate",
@@ -73,6 +94,7 @@ DEFAULT_PACK: dict = {
         "insights.meeting_verb_phrase": "book a meeting",
         "insights.meeting_noun": "meeting",
         "insights.tour_noun": "tour",
+        "insights.tour_noun_plural": "tours",
         "insights.demand_actor_plural": "active buyers",
         "funnel.action_book_tours_sub": "Only {n} upcoming — tours drive offers",
         "export.upcoming_tours_heading": "## Upcoming tours",
@@ -251,6 +273,9 @@ def load_pack() -> dict:
             sanitized = _sanitize_stages(value)
             if sanitized:
                 pack["stages"] = sanitized
+        elif key in REPLACE_WHOLESALE_KEYS:
+            if value:
+                pack[key] = value
         elif isinstance(value, dict) and isinstance(pack.get(key), dict):
             pack[key].update(value)
         elif value:

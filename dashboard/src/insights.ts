@@ -210,16 +210,20 @@ function bookingPattern(appts: Appointment[]): Insight {
   const rows = days.filter((d) => counts.has(d)).map((d) => ({ label: d, value: counts.get(d)! }))
   const eveningRate = pct(evening, appts.length)
   const tourNoun = copy('insights.tour_noun', 'tour')
+  // Plural is its own pack key (not `${tourNoun}s`) — English "-s" appending
+  // isn't a safe default across verticals/languages (e.g. it would mangle an
+  // irregular plural a future pack might need).
+  const tourNounPlural = copy('insights.tour_noun_plural', 'tours')
   return {
     id: 'booking_pattern',
-    title: `When ${tourNoun}s get booked`,
+    title: `When ${tourNounPlural} get booked`,
     severity: 'info',
     headline: appts.length
-      ? `${eveningRate}% of ${tourNoun}s are evening slots`
-      : `No ${tourNoun}s booked yet`,
+      ? `${eveningRate}% of ${tourNounPlural} are evening slots`
+      : `No ${tourNounPlural} booked yet`,
     detail: appts.length
-      ? `${appts.length} ${tourNoun}${appts.length === 1 ? '' : 's'} on the calendar. Lead with evening availability when proposing times.`
-      : `Booking patterns appear once ${tourNoun}s are on the calendar.`,
+      ? `${appts.length} ${appts.length === 1 ? tourNoun : tourNounPlural} on the calendar. Lead with evening availability when proposing times.`
+      : `Booking patterns appear once ${tourNounPlural} are on the calendar.`,
     data: rows,
   }
 }

@@ -82,26 +82,50 @@ function fieldValue(field: string | undefined, lead: Lead): string | number {
 // Evaluates one persona_rules `when` condition against a lead. `any`/`all`
 // compose sub-conditions (OR/AND); a leaf condition compares `field` via
 // `op`. See vertical.ts's PersonaCond doc comment for why any/all exist.
+//
+// A pack is untrusted, third-party-authored JSON (Task 3b fix round 1):
+// `personaOf` is called directly in render (Inbox.tsx, Lead.tsx) with no
+// ErrorBoundary anywhere in the app, so any shape here that can throw —
+// `{any: "not-an-array"}`, an invalid regex literal like `{op:'regex',
+// value:'['}` — white-screens the Leads pages. Every path below must
+// degrade to `false` instead of throwing; the outer try/catch is a backstop
+// for anything not explicitly guarded (e.g. a future op with an unsafe cast).
 function evalPersonaCond(cond: PersonaCond, lead: Lead): boolean {
-  if (cond.any) return cond.any.some((c) => evalPersonaCond(c, lead))
-  if (cond.all) return cond.all.every((c) => evalPersonaCond(c, lead))
-  const actual = fieldValue(cond.field, lead)
-  switch (cond.op) {
-    case 'eq':
-      return actual === cond.value
-    case 'lt':
-      return (actual as number) < (cond.value as number)
-    case 'lte':
-      return (actual as number) <= (cond.value as number)
-    case 'gt':
-      return (actual as number) > (cond.value as number)
-    case 'gte':
-      return (actual as number) >= (cond.value as number)
-    case 'regex':
-      return new RegExp(String(cond.value ?? ''), cond.flags ?? '').test(String(actual))
-    default:
-      return false
+  try {
+    if (cond.any) return Array.isArray(cond.any) && cond.any.some((c) => evalPersonaCond(c, lead))
+    if (cond.all) return Array.isArray(cond.all) && cond.all.every((c) => evalPersonaCond(c, lead))
+    const actual = fieldValue(cond.field, lead)
+    switch (cond.op) {
+      case 'eq':
+        return actual === cond.value
+      case 'lt':
+        return (actual as number) < (cond.value as number)
+      case 'lte':
+        return (actual as number) <= (cond.value as number)
+      case 'gt':
+        return (actual as number) > (cond.value as number)
+      case 'gte':
+        return (actual as number) >= (cond.value as number)
+      case 'regex':
+        return new RegExp(String(cond.value ?? ''), cond.flags ?? '').test(String(actual))
+      default:
+        return false
+    }
+  } catch {
+    return false
   }
+}
+
+// Plain-object lookup that refuses to resolve to an inherited prototype
+// member. `persona` and `lead.intent` are agent/DB-controlled strings, not
+// developer-chosen literals — a lead persona of "toString" or an intent of
+// "constructor" would otherwise resolve through the JS prototype chain
+// (`{}.toString` is a function, `{}.constructor` is native code) instead of
+// falling through to `fallback`, and callers here `.replace(...)` the result
+// or interpolate it straight into rendered text.
+function lookupString(map: Record<string, string> | undefined, key: string, fallback: string): string {
+  const v = map?.[key]
+  return typeof v === 'string' ? v : fallback
 }
 
 export function personaOf(lead: Lead): string {
@@ -163,10 +187,11 @@ function briefOf(lead: Lead): MeetingBrief {
     ...(lead.preferences ?? []).slice(0, 2).map((p) => `Notes on: ${p}`),
   ]
 
-  const recTemplate =
-    pack().persona_recommendations?.[persona] ??
-    pack().persona_recommendation_default ??
-    'Confirm their timeline and agree the next concrete step.'
+  const recTemplate = lookupString(
+    pack().persona_recommendations,
+    persona,
+    pack().persona_recommendation_default ?? 'Confirm their timeline and agree the next concrete step.',
+  )
   const recommendation = recTemplate.replace('{timeline}', lead.timeline ?? 'tight')
 
   return {
@@ -199,7 +224,7 @@ function mockBriefing(date: string, leads: Lead[], appts: Appointment[]): Briefi
         start: hhmm(a.start_ts),
         end: hhmm(a.end_ts),
         lead: byId.get(a.lead_id)!,
-        title: `${pack().schedule_titles?.default ?? 'Showing'} — ${byId.get(a.lead_id)!.name}${a.location ? ` (${a.location})` : ''}`,
+        title: `${lookupString(pack().schedule_titles, 'default', 'Showing')} — ${byId.get(a.lead_id)!.name}${a.location ? ` (${a.location})` : ''}`,
       }))
   } else {
     const top = open.slice(0, 2)
@@ -211,7 +236,7 @@ function mockBriefing(date: string, leads: Lead[], appts: Appointment[]): Briefi
       start: times[i][0],
       end: times[i][1],
       lead,
-      title: `${pack().schedule_titles?.[lead.intent] ?? pack().schedule_titles?.default ?? 'Showing'} — ${lead.name}${lead.area ? ` (${lead.area})` : ''}`,
+      title: `${lookupString(pack().schedule_titles, lead.intent, lookupString(pack().schedule_titles, 'default', 'Showing'))} — ${lead.name}${lead.area ? ` (${lead.area})` : ''}`,
     }))
   }
   meetings.sort((a, b) => a.start.localeCompare(b.start))

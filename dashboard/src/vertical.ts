@@ -2,6 +2,10 @@
  *  pack value -> built-in default, so the UI renders correctly even if the
  *  request fails. */
 import { api } from './api'
+// Type-only import — erased at compile time (isolatedModules-safe), so this
+// doesn't create a runtime circular dependency even though summary.ts
+// imports `pack`/`BUILT_IN` from this module.
+import type { DailySummary } from './summary'
 
 export interface Stage { key: string; label: string; rule: Record<string, unknown> }
 export interface Persona { key: string; default: boolean }
@@ -47,20 +51,17 @@ export interface Pack {
   // schedule block titles for the mock briefing, keyed by lead intent;
   // 'default' covers everything without a more specific title (e.g. 'sell').
   schedule_titles: Record<string, string>
-  // Sample content for the daily-summary overlay's mock mode (Task 3b) —
-  // same shape as `Omit<DailySummary, 'date' | 'generated_at'>` in summary.ts,
-  // duplicated here (not imported) to avoid a circular import.
-  mock_summary: {
-    greeting: string
-    market_watch: Array<Record<string, unknown>>
-    ai_insights: Array<{ title: string; body: string }>
-  }
+  // Sample content for the daily-summary overlay's mock mode (Task 3b).
+  // Typed against DailySummary itself (type-only import above) so a field
+  // access mistake in DailySummaryOverlay.tsx is a compile error instead of
+  // silently reading `undefined` at runtime.
+  mock_summary: Omit<DailySummary, 'date' | 'generated_at'>
 }
 
 // Mirrors DEFAULT_PACK in backend/app/vertical.py — duplicated by design so
 // the dashboard renders correctly before/without a successful fetch. Keep
 // these in sync by hand; a future task could generate one from the other.
-const BUILT_IN: Pack = {
+export const BUILT_IN: Pack = {
   name: 'real-estate',
   display_name: 'Real estate',
   stages: [
@@ -216,6 +217,7 @@ const BUILT_IN: Pack = {
     'insights.meeting_verb_phrase': 'book a meeting',
     'insights.meeting_noun': 'meeting',
     'insights.tour_noun': 'tour',
+    'insights.tour_noun_plural': 'tours',
     'insights.demand_actor_plural': 'active buyers',
     'funnel.action_book_tours_sub': 'Only {n} upcoming — tours drive offers',
     'export.upcoming_tours_heading': '## Upcoming tours',

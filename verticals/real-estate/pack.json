@@ -120,6 +120,7 @@
     "insights.meeting_verb_phrase": "book a meeting",
     "insights.meeting_noun": "meeting",
     "insights.tour_noun": "tour",
+    "insights.tour_noun_plural": "tours",
     "insights.demand_actor_plural": "active buyers",
     "funnel.action_book_tours_sub": "Only {n} upcoming — tours drive offers",
     "export.upcoming_tours_heading": "## Upcoming tours",

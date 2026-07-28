@@ -114,3 +114,32 @@ def test_persona_rules_reproduce_the_shipped_inference():
     for r in DEFAULT_PACK["persona_recommendations"]:
         assert r in personas, f"recommendation for unknown persona {r}"
     assert set(DEFAULT_PACK["schedule_titles"]) >= {"default", "sell"}
+
+
+def test_partial_mock_summary_does_not_inherit_real_estate_content(tmp_path, monkeypatch):
+    """mock_summary/schedule_titles/persona_recommendations are content blocks,
+    not label bags — a pack partially overriding one must replace it wholesale,
+    not merge, or real-estate news/persona copy leaks into another vertical's
+    demo (fix round 1)."""
+    d = tmp_path / "recruiting"
+    d.mkdir()
+    (d / "pack.json").write_text(json.dumps({
+        "mock_summary": {"greeting": "Good morning — new candidates today.", "ai_insights": []},
+        "schedule_titles": {"default": "Interview"},
+        "persona_recommendations": {"Passive Candidate": "Sell the mission, not the ping-pong table."},
+    }))
+    monkeypatch.setenv("VERTICALS_DIR", str(tmp_path))
+    monkeypatch.setenv("VERTICAL", "recruiting")
+    vertical.clear_cache()
+    pack = vertical.load_pack()
+
+    assert pack["mock_summary"]["greeting"] == "Good morning — new candidates today."
+    assert "market_watch" not in pack["mock_summary"], (
+        "real-estate market_watch leaked into a pack that never set it")
+
+    assert pack["schedule_titles"] == {"default": "Interview"}, (
+        "real-estate 'sell': 'Listing appointment' leaked into a partial schedule_titles override")
+
+    assert pack["persona_recommendations"] == {
+        "Passive Candidate": "Sell the mission, not the ping-pong table."
+    }, "real-estate persona_recommendations leaked into a pack with its own personas"
