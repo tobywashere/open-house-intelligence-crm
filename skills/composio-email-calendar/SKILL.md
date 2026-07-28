@@ -21,8 +21,13 @@ events land on, THAT account.
    of recipient, subject/summary, and content in this conversation. When the
    user's intent is fuzzy, make a **draft** (`create_draft`) instead — drafts
    are always safe.
-2. Never invent an email address. Recipients come from the CRM
-   (`crm-db-operations` → the lead's `email` field) or verbatim from the user.
+2. Never invent an email address. Recipients (`to`, `cc`, and `bcc`) must
+   already be a lead's email in the CRM (`crm-db-operations` → the lead's
+   `email` field) — `send_email` enforces this in code and raises
+   `IntegrationError` for anything else, including an address the user gives
+   you verbatim if it doesn't match an existing lead. If the recipient isn't
+   a lead yet, create the lead first (or use `create_draft`, which has no
+   recipient restriction, so a human reviews and sends it).
 3. For anything tied to a CRM lead, prefer the backend routes so the closed
    loop stays intact: sending a lead follow-up = `POST /api/email/send`
    (logs the timeline event, flips status, creates the reply-check reminder);
@@ -56,7 +61,7 @@ Zero pip dependencies; shells out to the `composio` binary. If it raises
 
 | Tool | Signature | Use it when... |
 |---|---|---|
-| `send_email` | `(to, subject, body, *, cc=None, bcc=None)` | User confirmed a real send to a non-lead, or backend `/email/send` is unavailable (then apply rule 4). |
+| `send_email` | `(to, subject, body, *, cc=None, bcc=None)` | User confirmed a real send to an existing lead (`to`/`cc`/`bcc` all checked against `leads.email`), or backend `/email/send` is unavailable (then apply rule 4). Raises on any recipient not already a lead — use `create_draft` for anyone else. |
 | `create_draft` | `(to, subject, body)` | Prepare mail for human review — the default when unsure. |
 | `fetch_emails` | `(query="in:inbox", max_results=10)` | "Did X reply?", "any new inquiries?" — Gmail search syntax (`from:`, `newer_than:2d`, `is:unread`). |
 | `create_event` | `(summary, start_datetime, *, duration_minutes=30, description="", location="", attendees=None, timezone=..., calendar_id="primary")` | Confirmed calendar block not tied to a CRM appointment. Returns the event (store `id` if CRM-related). |
@@ -73,7 +78,19 @@ the call yourself. To use more Gmail/GCal actions, discover them with
 `ALLOWED_SLUGS` in `tools.py`, then call `tools.execute(slug, args)`. The
 confirmation rules above apply to ALL write actions, catalog or not.
 
-`send_email` additionally refuses to send to any address that isn't
-(case-insensitively) an existing lead's email — it checks via
+`send_email` additionally refuses to send if `to`, or any address in `cc`/
+`bcc`, isn't (case-insensitively) an existing lead's email — it checks via
 `crm-db-operations`' `list_leads`. Use `create_draft` for anyone not yet in
 the CRM.
+
+⚠ **This is a blast-radius reducer, not an exfiltration stop.** The lead set
+it checks against is not a fixed, human-curated allowlist — it's whatever's
+currently in `leads.email`, and the agent itself can extend that set: it can
+`create_lead(email=...)` with an attacker-supplied address and then send to
+it, and the inbox poller (when enabled) auto-intakes unknown senders as
+leads, which would then also pass this check. The guard stops a *casual*
+mistake (a hallucinated or copy-pasted stray address) and narrows where a
+compromised prompt can send mail to "addresses that made it into the CRM
+somehow" — it does not stop a determined prompt-injection that first gets
+its own address added as a lead. Don't rely on it as the only control against
+data exfiltration via email.

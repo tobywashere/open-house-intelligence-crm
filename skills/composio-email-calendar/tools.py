@@ -53,14 +53,21 @@ def _known_lead_emails() -> set:
     import sys as _sys
     key = "_crm_db_operations_tools"
     mod = _sys.modules.get(key)
-    if mod is None:
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "crm-db-operations", "tools.py")
-        spec = importlib.util.spec_from_file_location(key, path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _sys.modules[key] = mod
-    leads = mod.list_leads(sort="recent")
+    try:
+        if mod is None:
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "crm-db-operations", "tools.py")
+            spec = importlib.util.spec_from_file_location(key, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _sys.modules[key] = mod
+        leads = mod.list_leads(sort="recent")
+    except IntegrationError:
+        raise
+    except Exception as e:
+        raise IntegrationError(
+            "cannot verify recipient: crm-db-operations skill not installed "
+            f"alongside this one ({e})") from e
     return {l["email"].strip().lower() for l in leads if l.get("email")}
 
 
@@ -96,11 +103,15 @@ def execute(slug: str, arguments: dict) -> dict:
 def send_email(to: str, subject: str, body: str, *, cc: list | None = None,
                bcc: list | None = None) -> dict:
     """Send a real email. Only call after the user has confirmed recipient + content.
-    Refuses to send to any address that isn't (case-insensitively) an existing
-    lead's email — never invent or accept an arbitrary recipient (SKILL.md rule 2)."""
-    if to.strip().lower() not in _known_lead_emails():
-        raise IntegrationError(
-            f"refusing to send: {to!r} does not match any lead's email in the CRM")
+    Refuses to send if `to`, or ANY address in `cc`/`bcc`, isn't (case-insensitively)
+    an existing lead's email — never invent or accept an arbitrary recipient (SKILL.md
+    rule 2). Every field is checked: a known `to` cannot smuggle an unknown bcc past
+    the guard (the classic prompt-injection exfiltration path)."""
+    known = _known_lead_emails()
+    for addr in [to, *(cc or []), *(bcc or [])]:
+        if addr.strip().lower() not in known:
+            raise IntegrationError(
+                f"refusing to send: {addr!r} does not match any lead's email in the CRM")
     args = {"recipient_email": to, "subject": subject, "body": body}
     if cc:
         args["cc"] = cc

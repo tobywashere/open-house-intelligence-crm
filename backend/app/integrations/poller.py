@@ -19,6 +19,17 @@ NOISE_SENDER = re.compile(
     re.I)
 
 
+_DELIMITER_TAG = re.compile(r"</?untrusted-email-content>", re.I)
+
+
+def _neutralize_delimiter(text: str) -> str:
+    """Strip any occurrence of the untrusted-content delimiter tags from
+    attacker-controlled text before it gets interpolated into the wrapper —
+    otherwise a body containing the literal closing tag closes the wrapper
+    early and everything after it lands as un-delimited prompt text."""
+    return _DELIMITER_TAG.sub("", text)
+
+
 def _extract_address(sender: str) -> str:
     m = re.search(r"<([^>]+)>", sender)
     return (m.group(1) if m else sender).strip().lower()
@@ -92,9 +103,13 @@ def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
     # Untrusted: this text comes from an inbound email an attacker fully
     # controls. It reaches the same model that holds a live Gmail send tool —
     # delimit it so the extract prompt (openclaw.py) treats it as data to
-    # read, never as instructions to follow.
-    raw = (f"<untrusted-email-content>\nEmail from {addr}\nSubject: {subject}\n\n"
-           f"{body[:1000]}\n[gmail:{msg_id}]\n</untrusted-email-content>")
+    # read, never as instructions to follow. The delimiter itself must be
+    # unescapable: an attacker who puts a literal "</untrusted-email-content>"
+    # in the subject/body/sender must not be able to close the wrapper early
+    # and have the rest of the message land as un-delimited prompt text.
+    addr_s, subject_s, body_s = (_neutralize_delimiter(s) for s in (addr, subject, body[:1000]))
+    raw = (f"<untrusted-email-content>\nEmail from {addr_s}\nSubject: {subject_s}\n\n"
+           f"{body_s}\n[gmail:{msg_id}]\n</untrusted-email-content>")
     try:
         from ..routers.leads import LeadIn, create_lead
         lead = asyncio.run(create_lead(LeadIn(raw_text=raw, source="email", email=addr)))
