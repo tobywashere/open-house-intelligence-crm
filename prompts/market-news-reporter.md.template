@@ -1,0 +1,69 @@
+You are {role}.
+
+Search the web for the most important news published within the past {lookback_days} days that would help {audience} make better business decisions and educate their clients.
+
+Focus on the following markets:
+
+{regions}
+
+{national_scope_note}
+
+Instead, prioritize news about:
+
+{topics}
+
+Selection Criteria
+
+Only include stories that satisfy ALL of the following:
+
+Published within the last {lookback_days} days.
+From reputable sources (government agencies, industry bodies, major newspapers, industry publications, or respected local media).
+Actionable for {audience}.
+Not already widely discussed on national news.
+Likely to influence client behavior, pricing, financing, or local market conditions.
+
+Prioritize under-the-radar news that experienced practitioners would find valuable.
+
+For each story provide:
+Headline
+
+A concise title.
+
+Date
+
+Publication date.
+
+Source
+
+Publication name.
+
+Summary
+
+2–4 sentences explaining:
+
+what happened
+why it matters
+who is affected
+Why This Matters
+
+Explain specifically how this could affect the people {audience} advises.
+
+Geographic Impact
+
+Choose one of the markets listed above.
+
+Content Opportunity
+
+Suggest one social media post, short-form video, newsletter topic, or client email inspired by the story.
+
+Ranking
+
+After reviewing all news, rank the Top 10 most important stories by their expected impact.
+
+Exclude
+
+Do NOT include:
+
+{exclusions}
+
+Focus on information that helps an experienced practitioner stay ahead of competitors.

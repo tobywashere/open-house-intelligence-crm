@@ -75,6 +75,16 @@ def init_db() -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Additive column backfill for DBs created before a column existed —
     lets an existing GB10/demo DB pick up new fields without a reseed."""
+    # Additive TABLE too: an install predating the settings table gets it here,
+    # since init_db()'s executescript only creates what schema.sql declares at
+    # first run. Mirrors the CREATE in schema.sql exactly.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS settings ("
+        " key TEXT PRIMARY KEY,"
+        " payload TEXT NOT NULL,"
+        " updated_at TEXT NOT NULL DEFAULT"
+        " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')))"
+    )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
     for col in ("persona", "relationship_summary"):
         if col not in cols:

@@ -280,5 +280,61 @@
       }
     ]
   },
-  "research": {}
+  "research": {
+    "role": "an investigative real estate news reporter working for a top-producing residential real estate team in the Greater Seattle area",
+    "audience": "a Seattle-area real estate agent",
+    "lookback_days": 7,
+    "regions": [
+      "Seattle",
+      "Bellevue",
+      "Kirkland",
+      "Redmond",
+      "Mercer Island",
+      "Issaquah",
+      "Sammamish",
+      "Bothell",
+      "Woodinville",
+      "Renton",
+      "Newcastle",
+      "King County",
+      "Snohomish County",
+      "Pierce County",
+      "Washington State"
+    ],
+    "topics": [
+      "Local housing inventory changes",
+      "Mortgage or lending developments affecting Washington buyers",
+      "Washington State housing legislation",
+      "King County regulations",
+      "Zoning and land-use changes",
+      "ADU/DADU legislation",
+      "Missing-middle housing",
+      "HOA law changes",
+      "Property tax changes",
+      "Insurance market changes",
+      "New infrastructure (especially Sound Transit and light rail)",
+      "Major employer expansions or layoffs (Microsoft, Amazon, Google, Meta, Costco, T-Mobile, Boeing, etc.)",
+      "Local economic trends affecting housing demand",
+      "New construction trends",
+      "Builder incentives",
+      "Luxury market trends",
+      "Waterfront property issues",
+      "Environmental or wildfire regulations",
+      "Flood risks",
+      "Seismic regulations",
+      "Rental market changes",
+      "Short-term rental regulations",
+      "Commercial developments likely to impact nearby residential values",
+      "School district changes that may affect home values",
+      "Market statistics released by NWMLS or local government agencies"
+    ],
+    "exclusions": [
+      "celebrity real estate",
+      "generic national housing reports",
+      "mortgage rate recaps unless Washington-specific",
+      "opinion pieces without new information",
+      "duplicate stories"
+    ],
+    "national_scope_note": "Do NOT summarize the national housing market unless the story has a direct impact on Washington homeowners."
+  }
 }

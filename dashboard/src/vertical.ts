@@ -28,6 +28,19 @@ export interface PersonaCond {
 }
 export interface PersonaRule { persona: string; when?: PersonaCond | null }
 
+/** Daily market-research scope — what the web-search prompt is told to look
+ *  for. Editable at runtime (GET/PUT /api/research-settings); the pack ships
+ *  the defaults. This is the internet-dependent half of the product. */
+export interface ResearchScope {
+  role: string
+  audience: string
+  lookback_days: number
+  regions: string[]
+  topics: string[]
+  exclusions: string[]
+  national_scope_note: string
+}
+
 export interface Pack {
   name: string; display_name: string
   stages: Stage[]
@@ -42,6 +55,10 @@ export interface Pack {
   // App wordmark (Task 3b) — two-tone, e.g. "Open House" + "Intelligence",
   // rendered as plain text + `.brand-gradient` span respectively.
   brand: { name: string; name_accent: string }
+  // Daily market-research scope (Task 5). The pack ships defaults; the
+  // operator edits them at runtime via GET/PUT /api/research-settings, and a
+  // stored row wins over these. Optional so a partial pack still type-checks.
+  research?: ResearchScope
   persona_rules: PersonaRule[]
   // keyed by persona; a persona absent here falls back to
   // persona_recommendation_default (kept outside this map so every key in

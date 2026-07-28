@@ -107,3 +107,13 @@ CREATE TABLE IF NOT EXISTS daily_summary (
   payload TEXT NOT NULL,
   generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
+
+-- key/value settings, JSON payload per key. Distinct from the date-keyed
+-- briefing/insights/daily_summary tables: these are operator preferences that
+-- persist across days. First key: "research" (daily market-search scope,
+-- editable from the dashboard — see routers/settings.py).
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
+);

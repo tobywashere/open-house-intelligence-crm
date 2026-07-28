@@ -51,7 +51,13 @@ KNOWN_RULE_TYPES = {"all", "status_at_least", "status_at_least_or_score",
 #       the default is kept — type-checked so a malformed wholesale value
 #       can't reach the dashboard as-is (dashboard code does `.map()` etc.
 #       assuming the documented shape).
-REPLACE_WHOLESALE_KEYS = {"mock_summary", "schedule_titles", "persona_recommendations"}
+# `research` is here deliberately: a recruiting pack that supplies only
+# {"role": ...} must NOT inherit Seattle's 15 regions and 25 real-estate topics
+# — that is precisely the content leak this key set exists to prevent, and it
+# would send the daily web search hunting for ADU legislation on a recruiter's
+# behalf. Same reasoning as mock_summary.
+REPLACE_WHOLESALE_KEYS = {"mock_summary", "schedule_titles",
+                          "persona_recommendations", "research"}
 
 # persona_rules `when` vocabulary (Task 3b) — see PersonaCond in
 # dashboard/src/vertical.ts for the client-side type. Anything outside this
@@ -255,9 +261,65 @@ DEFAULT_PACK: dict = {
             },
         ],
     },
-    # Filled in by Task 5 from prompts/seattle-real-estate-news-reporter.md.
-    # Present now so the schema shape is stable for downstream consumers.
-    "research": {},
+    # Daily market-research scope, transcribed from the shipped
+    # prompts/seattle-real-estate-news-reporter.md. Rendered into
+    # prompts/market-news-reporter.md.template by routers/settings.py, and
+    # editable at runtime via PUT /api/research-settings (the stored row wins
+    # over these defaults). This is the internet-dependent half of the product;
+    # the CRM briefing itself works fully offline.
+    "research": {
+        "role": (
+            "an investigative real estate news reporter working for a "
+            "top-producing residential real estate team in the Greater Seattle area"
+        ),
+        "audience": "a Seattle-area real estate agent",
+        "lookback_days": 7,
+        "regions": [
+            "Seattle", "Bellevue", "Kirkland", "Redmond", "Mercer Island",
+            "Issaquah", "Sammamish", "Bothell", "Woodinville", "Renton",
+            "Newcastle", "King County", "Snohomish County", "Pierce County",
+            "Washington State",
+        ],
+        "topics": [
+            "Local housing inventory changes",
+            "Mortgage or lending developments affecting Washington buyers",
+            "Washington State housing legislation",
+            "King County regulations",
+            "Zoning and land-use changes",
+            "ADU/DADU legislation",
+            "Missing-middle housing",
+            "HOA law changes",
+            "Property tax changes",
+            "Insurance market changes",
+            "New infrastructure (especially Sound Transit and light rail)",
+            "Major employer expansions or layoffs (Microsoft, Amazon, Google, "
+            "Meta, Costco, T-Mobile, Boeing, etc.)",
+            "Local economic trends affecting housing demand",
+            "New construction trends",
+            "Builder incentives",
+            "Luxury market trends",
+            "Waterfront property issues",
+            "Environmental or wildfire regulations",
+            "Flood risks",
+            "Seismic regulations",
+            "Rental market changes",
+            "Short-term rental regulations",
+            "Commercial developments likely to impact nearby residential values",
+            "School district changes that may affect home values",
+            "Market statistics released by NWMLS or local government agencies",
+        ],
+        "exclusions": [
+            "celebrity real estate",
+            "generic national housing reports",
+            "mortgage rate recaps unless Washington-specific",
+            "opinion pieces without new information",
+            "duplicate stories",
+        ],
+        "national_scope_note": (
+            "Do NOT summarize the national housing market unless the story has "
+            "a direct impact on Washington homeowners."
+        ),
+    },
 }
 
 _cache: dict | None = None

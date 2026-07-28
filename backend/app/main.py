@@ -10,7 +10,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .db import init_db
 from .integrations import router as integrations
-from .routers import calendar, chat, knowledge, leads, misc, reports, scan, vertical
+from .routers import (calendar, chat, knowledge, leads, misc, reports, scan,
+                      settings as settings_router, vertical)
 
 app = FastAPI(title="Open House Intelligence")
 
@@ -55,6 +56,7 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(scan.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(integrations.router, prefix="/api")
+app.include_router(settings_router.router, prefix="/api")
 app.include_router(vertical.router, prefix="/api")
 
 

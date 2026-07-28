@@ -122,3 +122,12 @@ opinion pieces without new information
 duplicate stories
 
 Focus on information that helps an experienced Seattle real estate professional stay ahead of competitors.
+
+---
+
+**Superseded 2026-07-28.** This file is kept because an agent cron may still
+reference it by path. The live prompt is now
+[`market-news-reporter.md.template`](market-news-reporter.md.template), rendered
+from the active vertical pack's `research` block (or the operator's saved
+settings — see `GET /api/research-settings`). Edit the scope from the dashboard
+rather than editing this file.
