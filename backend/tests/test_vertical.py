@@ -59,3 +59,15 @@ def test_shipped_real_estate_pack_matches_defaults():
     os.environ["VERTICAL"] = "real-estate"
     vertical.clear_cache()
     assert vertical.load_pack() == vertical.DEFAULT_PACK
+
+
+def test_qualified_rule_names_both_thresholds_explicitly():
+    """The live funnel qualifies at meeting_booked OR at contacted-with-score.
+    Both thresholds must be explicit — an implicit rank offset is how this rule
+    got mis-encoded the first time."""
+    from app.vertical import DEFAULT_PACK
+    rule = next(s["rule"] for s in DEFAULT_PACK["stages"] if s["key"] == "qualified")
+    assert rule["type"] == "status_at_least_or_score"
+    assert rule["status"] == "meeting_booked"
+    assert rule["score_status"] == "contacted"
+    assert rule["min_score"] == 70

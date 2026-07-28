@@ -23,6 +23,7 @@
       "rule": {
         "type": "status_at_least_or_score",
         "status": "meeting_booked",
+        "score_status": "contacted",
         "min_score": 70
       }
     },

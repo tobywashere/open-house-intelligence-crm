@@ -13,7 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Stage rule vocabulary — anything else is dropped by _sanitize_stages():
 #   {"type": "all"}                              every lead
 #   {"type": "status_at_least", "status": "..."} status rank >= that status
-#   {"type": "status_at_least_or_score", "status": "...", "min_score": 70}
+#   {"type": "status_at_least_or_score", "status": "...", "score_status": "...", "min_score": 70}
+#     auto-qualifies at rank >= "status", OR at rank >= "score_status" with score >= min_score.
+#     Both thresholds are explicit — no implicit rank offset between them.
 #   {"type": "event_type_or_status", "event_type": "offer", "status": "closed"}
 #   {"type": "status_is", "status": "closed"}
 KNOWN_RULE_TYPES = {"all", "status_at_least", "status_at_least_or_score",
@@ -27,7 +29,8 @@ DEFAULT_PACK: dict = {
         {"key": "contacted", "label": "Contacted",
          "rule": {"type": "status_at_least", "status": "contacted"}},
         {"key": "qualified", "label": "Qualified",
-         "rule": {"type": "status_at_least_or_score", "status": "meeting_booked", "min_score": 70}},
+         "rule": {"type": "status_at_least_or_score", "status": "meeting_booked",
+                  "score_status": "contacted", "min_score": 70}},
         {"key": "tours", "label": "Tours booked",
          "rule": {"type": "status_at_least", "status": "meeting_booked"}},
         {"key": "offers", "label": "Offers submitted",
