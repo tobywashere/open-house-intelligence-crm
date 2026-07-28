@@ -30,10 +30,10 @@ Seeds the database and starts the backend (http://localhost:8000, mock agent mod
 ## Production on the GB10 (real agent)
 
 ```bash
-bash scripts/gb10.sh
+bash scripts/serve.sh
 ```
 
-Builds the dashboard and serves the whole product from **one port**: `http://<gb10-tailscale-name>:8080` (`:8000` on the GB10 belongs to the vLLM server). Runs with `AGENT_MODE=openclaw`, relaying chat to the OpenClaw gateway on `:18789`. Full wiring, skill install, and verification checklist: [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md).
+Builds the dashboard and serves the whole product from **one port**: `http://<gb10-tailscale-name>:8080` (`:8000` on the GB10 belongs to the vLLM server). Runs with `AGENT_MODE=openclaw`, relaying chat to the OpenClaw gateway on `:18789`. Full wiring, skill install, and verification checklist: [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md). (`scripts/gb10.sh` still works as a compat shim.)
 
 ## What's in the dashboard
 
@@ -52,7 +52,7 @@ Builds the dashboard and serves the whole product from **one port**: `http://<gb
 ```bash
 # backend (Python 3.11+)
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
-.venv/bin/python backend/seed.py
+.venv/bin/python backend/seed.py --demo
 cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8000
 
 # dashboard (Node 20+), separate terminal
@@ -74,11 +74,11 @@ The contract (`docs/CONTRACT.md`) is frozen — breaking changes go through an i
 | Var | Default | Meaning |
 |---|---|---|
 | `AGENT_MODE` | `mock` | `mock` (dev, no GB10 needed) or `openclaw` (relay to the GB10) |
-| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway; `scripts/gb10.sh` overrides to `http://localhost:18789` since backend and gateway share the box |
+| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway; `scripts/serve.sh` overrides to `http://localhost:18789` since backend and gateway share the box |
 | `AGENT_GATEWAY_TOKEN` | — | Gateway bearer token — only needed if K enables token auth (currently `gateway.auth.mode: "none"`) |
 | `AGENT_CHAT_PATH` | `/v1/chat/completions` | Gateway chat endpoint path |
 | `DB_PATH` | `backend/data/crm.db` | SQLite location |
-| `PORT` | `8080` | Serve port for `scripts/gb10.sh` (dev mode uses 8000 + 5173) |
+| `PORT` | `8080` | Serve port for `scripts/serve.sh` (dev mode uses 8000 + 5173) |
 | `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
 | `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (`:8000` on the GB10 is vLLM, not the CRM) |
 | `INTEGRATIONS_MODE` | `off` | `off` (demo-safe, simulated) or `live` (real Gmail + Google Calendar via Composio) |
@@ -102,5 +102,5 @@ Everyone develops locally in mock mode. For integration tests, point `VITE_API_U
 
 ## Demo helpers
 
-- `python backend/seed.py` — reset to the 15-lead demo dataset (Sarah Chen's un-merged duplicate is leads #1/#2)
+- `python backend/seed.py --demo` — reset to the 15-lead demo dataset (Sarah Chen's un-merged duplicate is leads #1/#2); bare `python backend/seed.py` seeds an empty schema (clean install)
 - `POST /api/demo/advance-time {"days":3}` — backdate activity so the neglected-lead check fires on stage

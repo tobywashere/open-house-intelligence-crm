@@ -98,9 +98,10 @@ The database is `backend/data/crm.db` (SQLite), schema in `backend/schema.sql`.
 You (the agent) never modify these directly — they're listed here so you can
 tell the user how to reset the demo if something goes wrong on stage.
 
-- **Full reset to the 15-lead demo dataset:** `python backend/seed.py` (wipes
-  and recreates the DB; leads #1/#2 are Sarah Chen's un-merged duplicate,
-  built for the merge demo).
+- **Full reset to the 15-lead demo dataset:** `python backend/seed.py --demo`
+  (wipes and recreates the DB; leads #1/#2 are Sarah Chen's un-merged duplicate,
+  built for the merge demo). Bare `python backend/seed.py` resets to an empty
+  schema with no demo leads.
 - **Force the neglect check to fire on stage:** `POST /demo/advance-time
   {"days": 3}` backdates all activity by 3 days first, then runs the same
   check as `find_neglected_leads`.

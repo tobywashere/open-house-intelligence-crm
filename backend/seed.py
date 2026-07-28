@@ -1,7 +1,10 @@
-"""Seed ~15 realistic leads, availability windows, and the Sarah Chen demo setup.
+"""Seed the database schema + availability windows. `--demo` also adds ~15
+realistic leads and the Sarah Chen demo setup.
 
-Run: python backend/seed.py   (wipes and recreates the database)
+Run: python backend/seed.py           (wipes and recreates: schema only, clean install)
+     python backend/seed.py --demo    (wipes and recreates: schema + 15-lead demo dataset)
 """
+import argparse
 import json
 import random
 import sys
@@ -60,38 +63,39 @@ SARAH_EVENTS = [
 AVAILABILITY = [(d, "17:00", "20:00") for d in range(5)] + [(5, "10:00", "16:00")]
 
 
-def main():
+def main(demo: bool):
     if DB_PATH.exists():
         DB_PATH.unlink()
     init_db()
     with get_conn() as conn:
-        for i, (name, phone, email, source, status, budget, area, timeline,
-                intent, prefs, days_ago) in enumerate(LEADS, start=1):
-            lead = {"budget": budget, "timeline": timeline, "intent": intent,
-                    "phone": phone, "email": email}
-            score = score_lead(lead, event_count=random.randint(1, 4))
-            conn.execute(
-                "INSERT INTO leads (id, name, phone, email, source, status, budget, area, "
-                "timeline, intent, preferences, score, score_reason, created_at, last_activity_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,"
-                "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)), "
-                "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)))",
-                (i, name, phone, email, source, status, budget, area, timeline, intent,
-                 json.dumps(prefs), score,
-                 f"Seeded score {score} from budget/timeline/intent signals.",
-                 f"-{days_ago + 1} days", f"-{days_ago} days"),
-            )
-            conn.execute(
-                "INSERT INTO events (lead_id, type, content, created_at) VALUES (?,?,?,"
-                "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)))",
-                (i, source if source in ("form", "text", "note") else "note",
-                 f"Initial contact via {source}.", f"-{days_ago + 1} days"),
-            )
+        if demo:
+            for i, (name, phone, email, source, status, budget, area, timeline,
+                    intent, prefs, days_ago) in enumerate(LEADS, start=1):
+                lead = {"budget": budget, "timeline": timeline, "intent": intent,
+                        "phone": phone, "email": email}
+                score = score_lead(lead, event_count=random.randint(1, 4))
+                conn.execute(
+                    "INSERT INTO leads (id, name, phone, email, source, status, budget, area, "
+                    "timeline, intent, preferences, score, score_reason, created_at, last_activity_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,"
+                    "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)), "
+                    "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)))",
+                    (i, name, phone, email, source, status, budget, area, timeline, intent,
+                     json.dumps(prefs), score,
+                     f"Seeded score {score} from budget/timeline/intent signals.",
+                     f"-{days_ago + 1} days", f"-{days_ago} days"),
+                )
+                conn.execute(
+                    "INSERT INTO events (lead_id, type, content, created_at) VALUES (?,?,?,"
+                    "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)))",
+                    (i, source if source in ("form", "text", "note") else "note",
+                     f"Initial contact via {source}.", f"-{days_ago + 1} days"),
+                )
 
-        for lead_id, etype, content in SARAH_EVENTS:
-            conn.execute(
-                "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-                (lead_id, etype, content))
+            for lead_id, etype, content in SARAH_EVENTS:
+                conn.execute(
+                    "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+                    (lead_id, etype, content))
 
         for weekday, start, end in AVAILABILITY:
             conn.execute(
@@ -101,14 +105,22 @@ def main():
         conn.execute(
             "INSERT INTO audit_log (actor, tool, input, output, lead_id) VALUES "
             "('cron', 'seed_database', '{}', ?, NULL)",
-            (json.dumps({"leads": len(LEADS)}),))
+            (json.dumps({"leads": len(LEADS) if demo else 0}),))
 
-    print(f"Seeded {len(LEADS)} leads → {DB_PATH}")
-    print("Demo tips:")
-    print("  • Leads #1 and #2 are Sarah Chen's un-merged fragments (same phone) — "
-          "use the merge demo.")
-    print("  • POST /api/demo/advance-time {\"days\": 3} flags the stale leads as neglected.")
+    if demo:
+        print(f"Seeded {len(LEADS)} leads → {DB_PATH}")
+        print("Demo tips:")
+        print("  • Leads #1 and #2 are Sarah Chen's un-merged fragments (same phone) — "
+              "use the merge demo.")
+        print("  • POST /api/demo/advance-time {\"days\": 3} flags the stale leads as neglected.")
+    else:
+        print(f"Seeded schema + availability windows (no demo leads) → {DB_PATH}")
+        print("  • Run with --demo to add the 15-lead Sarah Chen demo dataset.")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--demo", action="store_true",
+                         help="also seed the 15-lead Sarah Chen demo dataset")
+    args = parser.parse_args()
+    main(demo=args.demo)

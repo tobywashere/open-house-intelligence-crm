@@ -36,7 +36,7 @@ browser (any teammate, via Tailscale)
 ## 2. Run the product (every boot / demo)
 
 ```bash
-bash scripts/gb10.sh
+bash scripts/serve.sh
 ```
 
 The GB10's gateway currently runs `gateway.auth.mode: "none"`, so no token is needed. If K
@@ -70,7 +70,7 @@ at the GB10 instead: `VITE_API_URL=http://gb10:8080/api npm run dev`.
 ## Google integrations (Gmail + Calendar)
 
 The app itself calls Composio — nothing to install on the GB10 beyond env vars.
-In the same env file `scripts/gb10.sh` loads, set:
+In the same env file `scripts/serve.sh` loads, set:
 
 ```bash
 INTEGRATIONS_MODE=live

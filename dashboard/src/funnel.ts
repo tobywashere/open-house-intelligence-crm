@@ -148,10 +148,12 @@ function compute(
 
   const overallPct = leads.length ? Math.round((closed.length / leads.length) * 1000) / 10 : 0
   const bottleneckStage = stages[worstIdx + 1]
-  const bottleneck = {
-    label: bottleneckStage.label,
-    detail: `${bottleneckStage.count} / ${stages[worstIdx].count} · ${conversions[worstIdx].pct}% conversion — the weakest step in the pipeline.`,
-  }
+  const bottleneck = !leads.length
+    ? { label: 'No data yet', detail: 'Add leads to see where your pipeline is losing them.' }
+    : {
+        label: bottleneckStage.label,
+        detail: `${bottleneckStage.count} / ${stages[worstIdx].count} · ${conversions[worstIdx].pct}% conversion — the weakest step in the pipeline.`,
+      }
 
   // time in stage from status_change events ("a → b"); time-to-close from created → closed
   const enteredAt = (l: Lead, status: string): number | null => {
