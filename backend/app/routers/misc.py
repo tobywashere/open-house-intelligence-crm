@@ -70,6 +70,11 @@ def complete_reminder(reminder_id: int):
         row = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
         if not row:
             raise HTTPException(404, f"reminder {reminder_id} not found")
+        # no crm-db-operations tool marks a reminder done (schedule_followup
+        # only creates them) — the dashboard's reminder banner is the only
+        # caller, so this is a "user" action.
+        audit(conn, "user", "complete_reminder", {"reminder_id": reminder_id},
+              {"done": True}, row["lead_id"])
     return dict(row)
 
 

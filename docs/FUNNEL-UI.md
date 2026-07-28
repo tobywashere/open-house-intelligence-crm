@@ -62,7 +62,7 @@ the contract. Everything here is Johaan's except two conventions flagged for gro
 
 ## Explicitly NOT in scope
 
-- Real `qualified` / `offer_submitted` statuses (breaking — needs all three, see #10)
+- Real `qualified` / `offer_submitted` statuses (breaking — needs an issue/PR discussion, see #10; the "all three" rule this originally referenced is retired)
 - Zillow/Website source ingestion (seed/agent content, not dashboard)
 - Any backend endpoint changes
 

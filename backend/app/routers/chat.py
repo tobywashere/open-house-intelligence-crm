@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from ..agent import get_driver
-from ..db import get_conn
+from ..db import audit, get_conn
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -63,4 +63,9 @@ def sessions():
 def clear_history(session_id: str):
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        # no crm-db-operations (or other) tool clears chat history — only the
+        # dashboard's chat picker calls this, so this is a "user" action.
+        # Not lead-scoped (chat_messages has no lead_id), so lead_id stays None.
+        audit(conn, "user", "clear_chat_history", {"session_id": session_id},
+              {"deleted": cur.rowcount})
     return {"session_id": session_id, "deleted": cur.rowcount}

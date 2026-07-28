@@ -86,7 +86,7 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 | `GET /chat/history?session_id=` | → `[message]` | |
 | `GET /chat/sessions` | → `[{session_id, message_count, last_at, preview}]` | additive 2026-07-26 (chat history picker) |
 | `DELETE /chat/history?session_id=` | → `{deleted}` | additive 2026-07-26 (clear conversation) |
-| `POST /scan-card` | `{filename, data: base64}` → `{extracted, duplicates, image}` | additive 2026-07-26; extraction ONLY (review-first) — agent reads the saved image via business-card-scanner; mock returns a canned card; **413** image > 8 MB, **400** invalid base64, **502** agent couldn't extract |
+| `POST /scan-card` | `{filename, data: base64}` → `{extracted, duplicates, filename}` | additive 2026-07-26; extraction ONLY (review-first) — agent reads the saved image via business-card-scanner; mock returns a canned card; **413** image > 8 MB, **400** invalid base64, **422** not a recognized image (unrecognized extension or content doesn't sniff as one), **502** agent couldn't extract |
 | `POST /reminders` | `{lead_id, due_ts, note}` → reminder | schedule a follow-up |
 | `GET /reminders?due=1` | → `[reminder + lead_name]` | dashboard polls this for the reminder banner |
 | `PATCH /reminders/{id}` | → reminder | marks done |
@@ -122,17 +122,19 @@ driver's requests, which stay on-box.
 
 **Audit reality (corrected 2026-07-27 — the previous "every tool call MUST
 write an audit_log row" claim here was false):** every **write** made through
-the REST layer is audited — every endpoint above that mutates state calls
-`audit()` in the same transaction, with one narrow exception:
-`GET /availability` also audits (it's a read, but is treated as an agent
-tool call for activity-stream purposes since `check_availability` is a
-named tool). **Reads are not audited** (`GET /leads`, `GET /leads/{id}`,
-`GET /metrics`, `GET /audit` itself, etc. write nothing). The optional
-`composio-email-calendar` skill's **direct** Composio calls (used when a
-human explicitly wants to send/schedule something outside the CRM's closed
-loop) bypass the backend entirely and are **not** audited — only the
-backend's own `POST /email/send` path (and the calendar-booking hook) logs
-an `audit_log` row.
+the REST layer is audited — every mutating endpoint calls `audit()` in the
+same transaction, including `POST /leads/{id}/events`, `PATCH
+/reminders/{id}`, and `DELETE /chat/history`, which did not audit until this
+date (fixed 2026-07-27; see `backend/tests/test_audit_coverage.py`). Two
+reads also audit, as an exception, since they're treated as agent tool calls
+for activity-stream purposes: `GET /availability` (`check_availability`) and
+`GET /leads/{id}/duplicates` (`find_duplicate_leads`). All other reads write
+nothing (`GET /leads`, `GET /leads/{id}`, `GET /metrics`, `GET /audit`
+itself, etc.). The optional `composio-email-calendar` skill's **direct**
+Composio calls (used when a human explicitly wants to send/schedule
+something outside the CRM's closed loop) bypass the backend entirely and are
+**not** audited — only the backend's own `POST /email/send` path (and the
+calendar-booking hook) logs an `audit_log` row for outbound comms.
 
 | Tool | Endpoint |
 |---|---|

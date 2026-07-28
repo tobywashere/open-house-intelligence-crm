@@ -67,7 +67,7 @@ cd dashboard && npm install && npm run dev
 | **Toby** | Backend, SQLite, calendar & business logic | `backend/` — schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py` |
 | **Johaan** | Dashboard, integration, demo & pitch | `dashboard/src/` — typed API client in `src/api.ts` |
 
-The contract (`docs/CONTRACT.md`) is frozen — breaking changes need all three of us.
+The contract (`docs/CONTRACT.md`) is frozen — breaking changes go through an issue/PR discussion, per `CONTRIBUTING.md` (the old "needs all three of us" rule is retired now that one person maintains all workstreams).
 
 ## Environment variables
 
