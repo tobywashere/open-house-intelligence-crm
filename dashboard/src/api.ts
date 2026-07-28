@@ -245,7 +245,12 @@ export const fmtSlotTime = (iso: string) => fmtLocal(iso, { hour: 'numeric', min
 export const fmtSlotDay = (iso: string) =>
   fmtLocal(iso, { weekday: 'short', month: 'short', day: 'numeric' })
 
+// Storage is naive local (Task 7) — a bare `new Date(t)` on a `Z`-suffixed
+// legacy row still parses as aware UTC (native Date behavior), and on a
+// naive `T`-separated row parses as local per ES2015+. Forcing `+ 'Z'` onto
+// every non-Z row (the old behavior, correct only when storage was UTC)
+// shifts every new-convention timestamp 7-8h into the future.
 export const fmtDate = (iso: string) =>
-  new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleString(undefined, {
+  new Date(iso.replace(' ', 'T')).toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   })

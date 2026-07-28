@@ -30,7 +30,14 @@ Canonical DDL lives in [`backend/schema.sql`](../backend/schema.sql). Summary:
 | is_neglected | INTEGER 0/1 | set by scheduled check |
 | persona | TEXT | nullable, e.g. "Luxury Executive"; agent-set |
 | relationship_summary | TEXT | nullable, AI-written profile hero paragraph |
-| created_at / last_activity_at | TEXT | ISO-8601 UTC |
+| created_at / last_activity_at | TEXT | ISO-8601, naive local wall-clock (`YYYY-MM-DDTHH:MM:SS`, no `Z`, no offset) |
+
+**Timestamp convention (applies to every `*_ts` / `*_at` field in this
+contract — `due_ts`, `start_ts`, `end_ts`, `created_at`, `last_activity_at`,
+`ts`, `generated_at`, `computed_at`):** naive local wall-clock, not UTC.
+Aware input (e.g. a `Z`-suffixed timestamp) sent to a write endpoint is
+CONVERTED to local time server-side, never simply stripped. Clients must
+write the same convention — see `toNaiveLocal()` in `dashboard/src/api.ts`.
 
 Merging keeps the primary row, moves the duplicate's events over, and deletes the duplicate.
 

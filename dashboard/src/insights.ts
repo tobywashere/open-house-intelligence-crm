@@ -27,10 +27,14 @@ export interface Insights {
   insights: Insight[]
 }
 
-// timestamps arrive in two shapes ("2026-07-26 10:00:00" seeded, "…T10:00:00Z" updated) — normalize both
+// Storage is naive local (Task 7): a bare `new Date(t)` on a `Z`-suffixed
+// legacy row parses as aware UTC (native Date behavior), and on a naive
+// `T`-separated row parses as local per ES2015+ — no forced `+ 'Z'` needed
+// (or wanted: that shifts every new-convention row 7-8h into the future).
+// Space-separated rows are an older legacy shape, normalized to `T` first.
 const parseUtc = (ts: string) => {
   const t = ts.replace(' ', 'T')
-  return new Date(t.endsWith('Z') ? t : t + 'Z').getTime()
+  return new Date(t).getTime()
 }
 
 export const daysIdle = (l: Lead) =>

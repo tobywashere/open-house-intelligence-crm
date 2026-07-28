@@ -151,6 +151,14 @@ _busy_cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
 
 
 def _local_naive(iso: str) -> str:
+    # Assumption: this converts to GCAL_TIMEZONE (defaulting to Pacific)
+    # rather than the process's own local TZ, unlike calendar.parse_ts()
+    # which converts to the process TZ. On a box where the process TZ and
+    # GCAL_TIMEZONE differ, GCal busy blocks and locally-stored appointment
+    # times would compare in two different zones. This assumes the two are
+    # kept in sync operationally (GB10/demo boxes are provisioned Pacific);
+    # if that ever isn't true, switch this to `.astimezone()` (process TZ)
+    # to match parse_ts exactly.
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     if dt.tzinfo:
         tz = ZoneInfo(os.environ.get("GCAL_TIMEZONE", "America/Los_Angeles"))

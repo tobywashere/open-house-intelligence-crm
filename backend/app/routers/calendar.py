@@ -23,10 +23,15 @@ class AppointmentIn(BaseModel):
     @classmethod
     def _parseable(cls, v: str) -> str:
         try:
-            calendar.parse_ts(v)
+            dt = calendar.parse_ts(v)
         except ValueError:
             raise ValueError("must be an ISO-8601 timestamp, e.g. 2026-08-01T17:00:00")
-        return v
+        # normalize through parse_ts, same as ReminderIn: an aware/Z-suffixed
+        # start_ts from a client must be CONVERTED to local before storage,
+        # not stored raw — storing raw here would silently reintroduce the
+        # mixed-convention bug Task 7 fixed, just for appointments instead
+        # of reminders.
+        return dt.isoformat(timespec="seconds")
 
 
 @router.get("/availability")

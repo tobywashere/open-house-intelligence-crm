@@ -66,6 +66,7 @@ def init_db() -> None:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.executescript(SCHEMA_PATH.read_text())
         _migrate(conn)
+        _migrate_timestamps(conn)
         conn.commit()
     finally:
         conn.close()
@@ -82,6 +83,58 @@ def _migrate(conn: sqlite3.Connection) -> None:
         tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if "gcal_event_id" not in tcols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN gcal_event_id TEXT")
+
+
+# Every timestamp column in schema.sql (Task 7's one convention: naive local
+# wall-clock). Keep in sync with schema.sql — availability has no timestamp
+# columns (start_time/end_time are HH:MM only) so it's absent on purpose.
+TIMESTAMP_COLUMNS = {
+    "leads": ["created_at", "last_activity_at"],
+    "events": ["created_at"],
+    "appointments": ["start_ts", "end_ts", "created_at"],
+    "reminders": ["due_ts", "created_at"],
+    "audit_log": ["ts"],
+    "chat_messages": ["created_at"],
+    "briefing": ["generated_at"],
+    "insights": ["computed_at"],
+    "daily_summary": ["generated_at"],
+}
+
+
+def _migrate_timestamps(conn: sqlite3.Connection) -> None:
+    """One-shot, idempotent backfill: normalizes every row written before
+    Task 7 (naive-local-everywhere) to the new convention. Changing a
+    column's DEFAULT only affects rows inserted after the change — an
+    existing GB10/demo DB is left with old `Z`-suffixed UTC rows sitting
+    next to new naive-local rows. That mix is silently wrong: for the same
+    wall-clock instant, the `Z` string sorts AFTER the naive-local string
+    (e.g. '2026-07-27T00:04:27Z' > '2026-07-06T18:16:11'), so old rows read
+    as hours "newer" than they are — due reminders fire late, the neglect
+    check misfires by a timezone, free_slots' range filter mis-includes rows.
+
+    Two legacy shapes get fixed, per column:
+      1. `...Z` (aware UTC) -> converted (not stripped) to naive local,
+         via SQLite's own datetime(): the actual instant is preserved.
+      2. `YYYY-MM-DD HH:MM:SS` (space-separated, already-naive-local from an
+         older code path) -> reformatted to the `T`-separated form only; no
+         zone shift, since it was already local wall-clock.
+    Both UPDATEs are no-ops on a second run: after conversion no row matches
+    either WHERE clause anymore.
+    """
+    for table, cols in TIMESTAMP_COLUMNS.items():
+        tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col in cols:
+            if col not in tcols:
+                continue  # column itself predates this DB; _migrate() above adds it first
+            conn.execute(
+                f"UPDATE {table} SET {col} = "
+                f"strftime('%Y-%m-%dT%H:%M:%S', datetime({col}, 'localtime')) "
+                f"WHERE {col} LIKE '%Z'"
+            )
+            conn.execute(
+                f"UPDATE {table} SET {col} = replace({col}, ' ', 'T') "
+                f"WHERE {col} LIKE '____-__-__ __:__:__%' AND {col} NOT LIKE '%Z'"
+            )
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:

@@ -65,9 +65,14 @@ export interface FunnelData {
 const RANK: Record<Lead['status'], number> = { new: 0, contacted: 1, meeting_booked: 2, closed: 3 }
 const DAY = 86_400_000
 
+// Storage is naive local (Task 7): a bare `new Date(t)` on a `Z`-suffixed
+// legacy row parses as aware UTC (native Date behavior), and on a naive
+// `T`-separated row parses as local per ES2015+ — no forced `+ 'Z'` needed
+// (or wanted: that shifts every new-convention row 7-8h into the future).
+// Space-separated rows are an older legacy shape, normalized to `T` first.
 const parseUtc = (ts: string) => {
   const t = ts.replace(' ', 'T')
-  return new Date(t.endsWith('Z') ? t : t + 'Z').getTime()
+  return new Date(t).getTime()
 }
 
 const parseOfferAmount = (content: string): number | null => {
