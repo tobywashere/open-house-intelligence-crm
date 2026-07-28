@@ -71,11 +71,24 @@ class _Corpus:
 _cache: dict[str, _Corpus] = {}
 
 
+# README.md is the directory's own "how this works" doc (docs/knowledge/README.md),
+# not domain content — indexing it would let retrieve() match chat messages
+# against sentences describing the retrieval mechanism itself (observed: a
+# stray "network call" in its prose made "call" spuriously "discriminative"
+# for a query like "remind me to call my mom"). Excluded by convention, same
+# as a directory listing would skip its own README.
+_EXCLUDED_FILENAMES = {"readme.md"}
+
+
+def _knowledge_files(directory: Path):
+    return sorted(f for f in directory.glob("*.md") if f.name.lower() not in _EXCLUDED_FILENAMES)
+
+
 def _signature(directory: Path) -> frozenset:
     if not directory.is_dir():
         return frozenset()
     sig = set()
-    for f in directory.glob("*.md"):
+    for f in _knowledge_files(directory):
         try:
             sig.add((f.name, f.stat().st_mtime_ns))
         except OSError:
@@ -85,7 +98,7 @@ def _signature(directory: Path) -> frozenset:
 
 def _build(directory: Path) -> list[Chunk]:
     chunks: list[Chunk] = []
-    for f in sorted(directory.glob("*.md")):
+    for f in _knowledge_files(directory):
         try:
             text = f.read_text(encoding="utf-8")
         except OSError:
@@ -115,10 +128,13 @@ def retrieve(
     directory: Path | None = None,
     min_score: float | None = None,
 ) -> list[Hit]:
-    """Top-k BM25 hits for `query`, above the minimum score floor — an
-    unrelated query returns an empty list rather than noisy weak matches.
-    Never raises: a missing/empty knowledge dir or a bad query just yields
-    no hits."""
+    """Top-k BM25 hits for `query`, above the minimum score floor AND
+    containing at least one corpus-discriminative query term (see
+    BM25Index.has_discriminative_match) — an unrelated query, or one built
+    only from words so common in this corpus that matching them is
+    uninformative (e.g. "call", "open", "house" in a real-estate corpus),
+    returns an empty list rather than noisy weak matches. Never raises: a
+    missing/empty knowledge dir or a bad query just yields no hits."""
     query = (query or "").strip()
     if not query:
         return []
@@ -133,10 +149,13 @@ def retrieve(
             return []
         scores = corpus.bm25.score(q_tokens)
         ranked = sorted(
-            ((s, c) for s, c in zip(scores, corpus.chunks) if s > 0 and s >= min_score),
-            key=lambda pair: pair[0],
+            ((s, c, i) for i, (s, c) in enumerate(zip(scores, corpus.chunks))
+             if s > 0 and s >= min_score
+             and corpus.bm25.has_discriminative_match(i, q_tokens)),
+            key=lambda triple: triple[0],
             reverse=True,
         )[:k]
+        ranked = [(s, c) for s, c, _ in ranked]
         return [Hit(doc=c.doc, heading=c.heading, breadcrumb=c.breadcrumb, text=c.text, score=round(s, 4))
                 for s, c in ranked]
     except Exception:

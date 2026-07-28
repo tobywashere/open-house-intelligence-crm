@@ -90,7 +90,9 @@ def test_retrieve_unrelated_query_returns_no_hits(tmp_path):
 
 def test_retrieve_respects_k(tmp_path):
     d = _write_fixture_dir(tmp_path)
-    hits = retrieve("widget", k=1, directory=d, min_score=0.0)
+    # multi-term query so it clears the discriminative-match gate regardless
+    # of any single term's corpus commonness — this test is about k, not gating
+    hits = retrieve("widget bearing lubricant", k=1, directory=d, min_score=0.0)
     assert len(hits) == 1
 
 
@@ -139,6 +141,92 @@ def test_real_report_amazon_rsu_query_retrieves_the_right_section():
     assert hits, "expected the shipped report to be searchable"
     assert any("Vesting" in h.heading or "Equity" in h.heading for h in hits), \
         [h.heading for h in hits]
+
+
+# ── false-positive probes against the real shipped report ──────────────
+#
+# Fix round 1 (team-lead review): the min-score floor alone did not stop an
+# unrelated/CRM-chatter query from retrieving a market-report chunk when it
+# happened to share one coincidental word with some section (a first-person
+# pronoun from an advisory-script quote, or a generic word like "open" that
+# turns up in an unrelated sentence). These reproduce the exact false
+# positives from that review and must return nothing.
+
+FALSE_POSITIVE_QUERIES = [
+    "what should I wear to the open house",
+    "remind me to call my mom",
+    "how do I reset my password",
+    "book a showing for Tuesday",
+]
+
+
+@pytest.mark.parametrize("query", FALSE_POSITIVE_QUERIES)
+def test_real_report_crm_chatter_returns_no_hits(query):
+    hits = retrieve(query, k=3, directory=REAL_KNOWLEDGE_DIR)
+    assert hits == [], f"{query!r} should not retrieve market-report context, got {[h.heading for h in hits]}"
+
+
+# ── good-query regression guard (must keep working after the fix) ──────
+
+GOOD_QUERIES = [
+    ("Amazon L7 with unvested equity, can they afford 3M", ("Vesting", "Equity")),
+    ("seller wants to avoid excise tax", ("Excise", "REET")),
+    ("is Medina or Clyde Hill better for schools", ("Clyde", "Medina", "School")),
+    ("How does Amazon's RSU vesting schedule affect a buyer's liquidity?", ("Vesting", "Equity")),
+]
+
+
+@pytest.mark.parametrize("query,expected_substrings", GOOD_QUERIES)
+def test_real_report_good_domain_queries_still_retrieve_correct_section(query, expected_substrings):
+    hits = retrieve(query, k=3, directory=REAL_KNOWLEDGE_DIR)
+    assert hits, f"expected a hit for {query!r}"
+    assert any(s in hits[0].heading for s in expected_substrings), \
+        (query, hits[0].heading)
+
+
+# ── synthetic-corpus unit test for the discriminative-match gate itself ─
+# (independent of the real report's vocabulary)
+
+def test_discriminative_gate_rejects_single_common_word_match(tmp_path):
+    d = tmp_path / "knowledge"
+    d.mkdir()
+    # "common" appears in every chunk (corpus-wide, uninformative); "unique"
+    # appears in exactly one, alongside "common" — the corpus's rarest term.
+    (d / "a.md").write_text(
+        "# Doc A\n\n## Alpha\ncommon common filler filler words here.\n\n"
+        "## Beta\ncommon common other filler content entirely.\n"
+    )
+    (d / "b.md").write_text(
+        "# Doc B\n\n## Gamma\ncommon common unique special content in this chunk only.\n"
+    )
+    # single-term query on the corpus-common word: no chunk should qualify
+    assert retrieve("common", k=3, directory=d, min_score=0.0) == []
+    # single-term query on the corpus-rare word: should hit Gamma
+    hits = retrieve("unique", k=3, directory=d, min_score=0.0)
+    assert hits and hits[0].heading == "Gamma"
+    # a multi-term query that only overlaps on two *common* words should
+    # still fail — corroboration requires terms that actually appear in the
+    # SAME chunk together, and "common" alone (matched twice) is still one
+    # distinct matched term
+    assert retrieve("common common", k=3, directory=d, min_score=0.0) == []
+    # two distinct terms co-occurring in one chunk passes even though
+    # neither alone need be the rarest word in the corpus
+    hits = retrieve("filler content", k=3, directory=d, min_score=0.0)
+    assert hits
+
+
+def test_readme_in_knowledge_dir_is_not_indexed(tmp_path):
+    d = tmp_path / "knowledge"
+    d.mkdir()
+    (d / "doc.md").write_text("# Title\n\n## Section\nActual domain content about widgets.\n")
+    (d / "README.md").write_text(
+        "# Knowledge base\n\n## About\nDrop a .md file here and it gets indexed; "
+        "no embeddings, no network call required.\n"
+    )
+    hits = retrieve("network call", k=5, directory=d, min_score=0.0)
+    assert hits == [], "README.md describing the mechanism must not itself be indexed"
+    corpus = get_corpus(d)
+    assert all(c.doc != "README.md" for c in corpus.chunks)
 
 
 # ── chat integration ────────────────────────────────────────────────────

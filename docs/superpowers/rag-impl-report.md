@@ -1,6 +1,167 @@
 # Local BM25 knowledge retrieval — implementation report
 
-## What shipped
+## Fix round 1 (team-lead review): discriminative-term gate
+
+**Report of the actual bug, not just the fix theory:** the min-score floor
+alone did not stop a completely unrelated CRM-chatter query from retrieving
+a market-report chunk when it happened to share a single coincidental word
+with some section. Root-caused two distinct issues, not one:
+
+1. **`docs/knowledge/README.md` was itself being indexed.** It's a `.md`
+   file in the knowledge directory (added in the first pass to explain the
+   per-industry swap), and `retrieve()` globs `*.md` indiscriminately. Its
+   own prose ("no embeddings, no vector DB, no model download, no network
+   **call**") put the literal token `call` into the corpus with high IDF
+   (it occurred in exactly one chunk — the README itself), which is exactly
+   why "remind me to **call** my mom" matched a REET script section. Fixed
+   by excluding `README.md` (case-insensitive) from indexing in
+   `_knowledge_files()` (`backend/app/knowledge/index.py`) — it documents
+   the mechanism, it isn't domain content.
+2. **Missing personal pronouns in the stopword list.** The report quotes
+   first-person advisory scripts verbatim ("I am structuring this offer...",
+   "we must reverse-engineer..."), so "i", "me", "my", "we", "us", "they"
+   etc. appear in the corpus with real, sometimes high, IDF (rare because
+   only 1-2 script chunks use first person at all) — completely disconnected
+   from their generic meaning in an unrelated chat message. Expanded
+   `STOPWORDS` in `backend/app/knowledge/bm25.py` with pronouns and a few
+   more generic function words.
+
+Both were necessary but **not sufficient** — one case survived: "what
+should I wear to the **open** house" still matched a script chunk on the
+word "open" alone (it turns up, unrelated, in "...ensure your trading
+window is officially **open**..."). Investigated why a flat/tuned
+min-score floor can't fix this generically: it's not a scoring-magnitude
+problem, it's that a single coincidental content-word overlap is
+indistinguishable *by score alone* from a real single-term hit.
+
+**Discriminative-term gate**, per the review's request, implemented in
+`BM25Index.has_discriminative_match()` (`backend/app/knowledge/bm25.py`).
+Note on a design correction from the literal ask: gating on "IDF strictly
+above the corpus median" alone does not work on a corpus this size (~38
+chunks) — Zipf's law means the majority of unique terms are hapax
+(occur in exactly one chunk), which pushes the *median* itself up to
+essentially the ceiling value, so a strict `>` comparison rejected almost
+everything (including genuine hits like "vesting", "excise", "Medina") the
+first time I wired it in — I caught this because my own regression probes
+on the good queries went to zero hits, not because it looked plausible.
+Root cause, with real numbers from the shipped corpus: "open" and "Clyde"
+(both proper/topical terms one would want to distinguish) have **identical**
+document frequency (df=2) and therefore identical IDF — no single scalar
+per-term statistic can separate them; the difference is semantic, not
+statistical, at this corpus size. The gate that actually works, and is what
+shipped:
+
+> A chunk counts as a genuine hit if either **(a)** at least two distinct
+> query terms matched it (real multi-term corroboration — this is what
+> saves "excise"/"tax"/"seller" and "Medina"/"Clyde"/"schools", regardless
+> of any individual term's rarity), **or (b)** exactly one query term
+> matched and that term's corpus IDF is at/above the corpus's own median
+> (a single genuinely rare/specific term, e.g. "vesting", is still enough
+> alone). A single moderately-common coincidental word ("open" matched
+> alone) satisfies neither and is correctly rejected.
+
+This keeps the requested property — corpus-relative, self-calibrating,
+no magic per-corpus number, recomputes for a different vertical's doc set —
+while actually working on the shipped corpus's real statistics, which the
+literal median-only version didn't.
+
+### Before / after probe tables
+
+**False-positive probes (CRM chatter) — before (main, pre-fix):**
+```
+"what should I wear to the open house"
+  5.068  Script 3: Aligning Escrow with Corporate Liquidity (10b5-1 Planning)
+  3.046  10b5-1 Trading Plans and Escrow Timing Constraints
+  2.735  Tukwila: The Industrial Wealth Engine and Transit Hub
+
+"remind me to call my mom"
+  3.171  Script 1: Negotiating the Graduated REET Burden (Seller Consultation)
+
+"how do I reset my password"
+  3.171  Script 1: Negotiating the Graduated REET Burden (Seller Consultation)
+  2.735  Tukwila: The Industrial Wealth Engine and Transit Hub
+  2.414  The East Link 2 Line Impact
+
+"book a showing for Tuesday"
+  (no hits — already clean)
+```
+
+**Same probes — after (this fix):**
+```
+"what should I wear to the open house"   -> (no hits)
+"remind me to call my mom"               -> (no hits)
+"how do I reset my password"             -> (no hits)
+"book a showing for Tuesday"             -> (no hits)
+```
+
+**Good-query regression guard — before → after (top hit, score):**
+```
+"Amazon L7 with unvested equity, can they afford 3M"
+  before: 7.150  Equity Compensation Mechanics: The Vesting Variance
+  after:  7.022  Equity Compensation Mechanics: The Vesting Variance
+
+"seller wants to avoid excise tax"
+  before: 7.451  The 2026 Graduated Real Estate Excise Tax (REET)
+  after:  7.324  The 2026 Graduated Real Estate Excise Tax (REET)
+
+"is Medina or Clyde Hill better for schools"
+  before: 9.466  Clyde Hill & Yarrow Point ($4.3M to $4.5M+)
+  after:  9.333  Clyde Hill & Yarrow Point ($4.3M to $4.5M+)
+
+"How does Amazon's RSU vesting schedule affect a buyer's liquidity?"
+  before: (already correct, per original report)
+  after:  14.835  Equity Compensation Mechanics: The Vesting Variance
+```
+(Scores shift slightly because the stopword-list expansion changes token
+counts/lengths feeding BM25's length-normalization term; rankings and top
+hits are unchanged.)
+
+### Tests added (10 new, `backend/tests/test_knowledge.py`)
+
+Verified failing against the pre-fix commit (`d9ac638`) first — `git stash`
+of just the fix files (`bm25.py`, `index.py`, `.env.example`), reran, popped
+the stash back:
+```
+FAILED test_real_report_crm_chatter_returns_no_hits[what should I wear to the open house]
+FAILED test_real_report_crm_chatter_returns_no_hits[remind me to call my mom]
+FAILED test_real_report_crm_chatter_returns_no_hits[how do I reset my password]
+FAILED test_discriminative_gate_rejects_single_common_word_match
+FAILED test_readme_in_knowledge_dir_is_not_indexed
+(6 failed, 4 passed — "book a showing" and the 4 good-query regressions
+already passed pre-fix, as expected)
+```
+- `test_real_report_crm_chatter_returns_no_hits` (parametrized, 4 queries) —
+  the exact false positives from the review, against the real report.
+- `test_real_report_good_domain_queries_still_retrieve_correct_section`
+  (parametrized, 4 queries) — regression guard for the known-good queries,
+  including the L7 one from the review.
+- `test_discriminative_gate_rejects_single_common_word_match` — synthetic
+  2-doc corpus built specifically to isolate the gate: a "common" word
+  present in every chunk vs. a "unique" word in exactly one; asserts the
+  common-word-alone query yields nothing, the unique-word-alone query hits
+  the right chunk, and a real two-term co-occurrence passes independent of
+  either term's individual rarity.
+- `test_readme_in_knowledge_dir_is_not_indexed` — a `README.md` dropped
+  alongside a real doc must not itself be searchable content.
+- Adjusted `test_retrieve_respects_k` to a multi-term query (it was
+  incidentally exercising the new gate on a single term whose df crossed
+  the fixture corpus's own median — not what that test is about).
+
+### Gate
+
+```
+cd backend && ../.venv/bin/python -m pytest tests/ -q
+# 146 passed (was 136 after the first pass; +10 new, 0 regressions)
+```
+
+### `.env.example`
+
+Updated the `KNOWLEDGE_MIN_SCORE` comment to describe both gates together —
+the score floor and the (non-configurable) discriminative-term match — and
+to explicitly warn that raising the score floor is not the fix for
+false-positive noise; the term gate is.
+
+## What shipped (original pass)
 
 - `backend/app/knowledge/` — new package, pure stdlib:
   - `chunking.py` — splits a markdown doc on headings (any level), producing
