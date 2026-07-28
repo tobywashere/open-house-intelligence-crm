@@ -74,23 +74,99 @@ def _known_lead_emails() -> set:
 def _as_list(value) -> list:
     """A bare string passed where a list of addresses is expected must become
     a single-element list, not unpack per-character (`for c in "a@b.com"`
-    would iterate letters and reject the call on the first character)."""
+    would iterate letters and reject the call on the first character). Any
+    other non-list, non-string value (int, dict, ...) is wrapped as a single
+    item too — never fed to the stdlib `list()` where it would raise
+    TypeError on a non-iterable — so downstream type checking (not a crash)
+    is what rejects it."""
     if not value:
         return []
     if isinstance(value, str):
         return [value]
-    return list(value)
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
-def _check_recipients_allowed(to, cc=None, bcc=None) -> None:
-    addrs = [a for a in [to, *_as_list(cc), *_as_list(bcc)] if a]
-    if not addrs:  # nothing to validate — don't force a CRM round-trip for no reason
-        return
+# GMAIL_SEND_EMAIL's real input schema (verified against
+# ~/.composio/tool_definitions/GMAIL_SEND_EMAIL.json, not guessed): cc, bcc,
+# body, is_html, subject, user_id, attachment, from_email, recipient_email,
+# extra_recipients. "to" isn't a schema property but recipient_email's own
+# description documents it as an accepted alias, and it works in practice —
+# so it's whitelisted too. Any argument key outside this set is refused: a
+# future schema revision that adds a new recipient-shaped field (or a
+# hand-crafted call using an undocumented one) fails CLOSED, not open.
+_SEND_EMAIL_SAFE_KEYS = frozenset({
+    "recipient_email", "to", "extra_recipients", "cc", "bcc",
+    "subject", "body", "is_html", "user_id", "attachment", "from_email",
+})
+# Every key among the above that can carry a recipient address.
+_SEND_EMAIL_RECIPIENT_KEYS = ("recipient_email", "to", "extra_recipients", "cc", "bcc")
+
+
+def _addr_strings(value) -> list:
+    """Coerce a recipient-shaped argument value into a flat list of address
+    strings, raising IntegrationError (never AttributeError) for anything
+    that isn't a plain string — e.g. a nested list smuggled in as one of the
+    cc/bcc/extra_recipients entries."""
+    out = []
+    for item in _as_list(value):
+        if not isinstance(item, str):
+            raise IntegrationError(
+                f"refusing to send: recipient value {item!r} is not a string")
+        out.append(item)
+    return out
+
+
+def _check_send_email_allowed(arguments: dict) -> None:
+    """Deny-by-default gate for GMAIL_SEND_EMAIL. Two failure modes must both
+    raise, not silently pass: an argument key this file hasn't reviewed
+    (instead of only checking a fixed short list of keys and ignoring
+    everything else), and a call with no recognized recipient field at all
+    (a send must never go out unvalidated just because the recipient lives
+    under a key this guard didn't happen to check)."""
+    unknown_keys = set(arguments) - _SEND_EMAIL_SAFE_KEYS
+    if unknown_keys:
+        raise IntegrationError(
+            f"refusing to send: unrecognized argument(s) {sorted(unknown_keys)} — "
+            "not in the reviewed GMAIL_SEND_EMAIL schema")
+    addrs = []
+    for key in _SEND_EMAIL_RECIPIENT_KEYS:
+        addrs.extend(_addr_strings(arguments.get(key)))
+    if not addrs:
+        raise IntegrationError(
+            "cannot verify recipients: no recipient field recognized in this call")
     known = _known_lead_emails()
     for addr in addrs:
         if addr.strip().lower() not in known:
             raise IntegrationError(
                 f"refusing to send: {addr!r} does not match any lead's email in the CRM")
+
+
+def _attendee_email(item) -> str:
+    """GOOGLECALENDAR_CREATE_EVENT attendees are each either a bare email
+    string or an object with an 'email' key (schema: GOOGLECALENDAR_CREATE_EVENT.json)."""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict) and isinstance(item.get("email"), str):
+        return item["email"]
+    raise IntegrationError(f"refusing to create event: invalid attendee entry {item!r}")
+
+
+def _check_attendees_allowed(arguments: dict) -> None:
+    """GOOGLECALENDAR_CREATE_EVENT is an outbound-mail channel too — Google
+    emails every attendee the event summary/description. `attendees` must
+    pass the same recipient allowlist as GMAIL_SEND_EMAIL."""
+    attendees = arguments.get("attendees")
+    if not attendees:
+        return
+    known = _known_lead_emails()
+    for item in _as_list(attendees):
+        addr = _attendee_email(item)
+        if addr.strip().lower() not in known:
+            raise IntegrationError(
+                f"refusing to create event: attendee {addr!r} does not match "
+                "any lead's email in the CRM")
 
 
 def execute(slug: str, arguments: dict) -> dict:
@@ -104,8 +180,9 @@ def execute(slug: str, arguments: dict) -> dict:
         # (below) is not sufficient on its own — enforce here too, where
         # every GMAIL_SEND_EMAIL call actually goes through regardless of
         # caller.
-        _check_recipients_allowed(arguments.get("recipient_email"),
-                                  arguments.get("cc"), arguments.get("bcc"))
+        _check_send_email_allowed(arguments)
+    elif slug == "GOOGLECALENDAR_CREATE_EVENT":
+        _check_attendees_allowed(arguments)
     try:
         proc = subprocess.run(
             [_cli(), "execute", slug, "-d", json.dumps(arguments)],
@@ -140,17 +217,18 @@ def send_email(to: str, subject: str, body: str, *, cc: list | str | None = None
     the guard (the classic prompt-injection exfiltration path). `cc`/`bcc` may be a
     single address string or a list.
 
-    This checks up front for a friendly, specific early error; execute() enforces the
-    same rule again for calls that go through it directly (e.g. tools.execute(slug,
-    args), which SKILL.md explicitly allows), so the guard cannot be bypassed by
-    skipping this wrapper."""
-    cc, bcc = _as_list(cc), _as_list(bcc)
-    _check_recipients_allowed(to, cc, bcc)
+    This runs the same deny-by-default check execute() enforces at the
+    GMAIL_SEND_EMAIL chokepoint (this wrapper just gives a friendlier early
+    error for the common case) — so the guard cannot be bypassed by skipping
+    this wrapper and calling tools.execute("GMAIL_SEND_EMAIL", ...) directly,
+    which SKILL.md explicitly allows."""
     args = {"recipient_email": to, "subject": subject, "body": body}
+    cc, bcc = _as_list(cc), _as_list(bcc)
     if cc:
         args["cc"] = cc
     if bcc:
         args["bcc"] = bcc
+    _check_send_email_allowed(args)
     return execute("GMAIL_SEND_EMAIL", args)
 
 

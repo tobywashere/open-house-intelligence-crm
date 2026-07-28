@@ -110,9 +110,14 @@ def test_skill_cli_output_with_log_noise_parses(monkeypatch):
     fake = type("P", (), {"returncode": 0,
                           "stdout": 'progress {50%}\n{"successful": true, "data": {"id": "m1"}}\n',
                           "stderr": ""})()
+    # a real GMAIL_SEND_EMAIL call must carry a recognized, known recipient
+    # under round 3's deny-by-default guard — {} alone is now refused before
+    # ever reaching the CLI (see the guard tests below); this test's own
+    # purpose is the log-noise CLI parsing, not the recipient guard.
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
     monkeypatch.setattr(skill_tools, "_cli", lambda: "/usr/bin/composio")
     monkeypatch.setattr(skill_tools.subprocess, "run", lambda *a, **k: fake)
-    out = skill_tools.execute("GMAIL_SEND_EMAIL", {})
+    out = skill_tools.execute("GMAIL_SEND_EMAIL", {"recipient_email": "lead@example.com"})
     assert out.get("id") == "m1"
 
 
@@ -221,6 +226,128 @@ def test_skill_send_email_coerces_string_cc_bcc_to_single_element_list(monkeypat
     monkeypatch.setattr(skill_tools, "execute", fake_execute)
     skill_tools.send_email("lead@example.com", "s", "b", cc="lead@example.com")
     assert called["args"]["cc"] == ["lead@example.com"]
+
+
+# ---- fix round 3: deny-by-default (to/extra_recipients aliases, unknown ---
+# ---- keys, empty recipients, non-string values, attendees) ----------------
+
+def _deny_subprocess(monkeypatch):
+    """Any test asserting a call is refused must also assert the CLI never
+    ran — a refusal that happens to also fail closed at the subprocess layer
+    isn't proof the guard fired first."""
+    monkeypatch.setattr(skill_tools, "_cli",
+                        lambda: (_ for _ in ()).throw(AssertionError("subprocess must not run")))
+
+
+def test_skill_execute_recognizes_to_alias_and_refuses_unknown(monkeypatch):
+    """CRITICAL: 'to' is a documented alias for recipient_email (composio
+    execute GMAIL_SEND_EMAIL --get-schema) but the guard previously only
+    checked recipient_email/cc/bcc, so {"to": attacker} sailed through with
+    zero validation — the addrs set was empty and the old guard returned
+    early instead of refusing."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError) as exc_info:
+        skill_tools.execute("GMAIL_SEND_EMAIL",
+                            {"to": "attacker@evil.example", "subject": "s", "body": "b"})
+    assert "attacker@evil.example" in str(exc_info.value)
+
+
+def test_skill_execute_checks_extra_recipients(monkeypatch):
+    """CRITICAL: extra_recipients is a real additional-'To' field per schema;
+    a known recipient_email must not smuggle an unknown extra_recipients
+    entry past the guard."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError) as exc_info:
+        skill_tools.execute("GMAIL_SEND_EMAIL", {
+            "recipient_email": "lead@example.com",
+            "extra_recipients": ["attacker@evil.example"]})
+    assert "attacker@evil.example" in str(exc_info.value)
+
+
+def test_skill_execute_refuses_when_no_recipient_field_present(monkeypatch):
+    """Deny-by-default: a GMAIL_SEND_EMAIL call with no recognized recipient
+    field at all must be refused, never treated as 'nothing to check'."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError) as exc_info:
+        skill_tools.execute("GMAIL_SEND_EMAIL", {"subject": "s", "body": "b"})
+    assert "no recipient" in str(exc_info.value).lower()
+
+
+def test_skill_execute_refuses_unknown_argument_key(monkeypatch):
+    """Deny-by-default: an argument key outside the reviewed schema must be
+    refused even alongside a perfectly valid, known recipient — a future
+    schema field (or a hand-crafted call) fails closed, not open."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError) as exc_info:
+        skill_tools.execute("GMAIL_SEND_EMAIL", {
+            "recipient_email": "lead@example.com", "reply_to": "attacker@evil.example"})
+    assert "reply_to" in str(exc_info.value)
+
+
+def test_skill_execute_refuses_non_string_recipient_value(monkeypatch):
+    """A nested list (or any non-string) smuggled into a recipient field must
+    raise IntegrationError, not AttributeError from a bare .strip()/.lower()."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError):
+        skill_tools.execute("GMAIL_SEND_EMAIL", {
+            "recipient_email": "lead@example.com", "cc": [["nested@evil.example"]]})
+    with pytest.raises(skill_tools.IntegrationError):
+        skill_tools.execute("GMAIL_SEND_EMAIL", {"recipient_email": 12345})
+
+
+def test_skill_execute_legitimate_known_lead_send_still_succeeds(monkeypatch):
+    """The deny-by-default rewrite must not break the actual happy path."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    monkeypatch.setattr(skill_tools, "_cli", lambda: "/usr/bin/composio")
+    fake = type("P", (), {"returncode": 0,
+                          "stdout": '{"successful": true, "data": {"id": "m1"}}',
+                          "stderr": ""})()
+    monkeypatch.setattr(skill_tools.subprocess, "run", lambda *a, **k: fake)
+    out = skill_tools.execute("GMAIL_SEND_EMAIL", {
+        "recipient_email": "lead@example.com", "subject": "s", "body": "b"})
+    assert out.get("id") == "m1"
+
+
+def test_skill_execute_create_event_refuses_unknown_attendee(monkeypatch):
+    """IMPORTANT: GOOGLECALENDAR_CREATE_EVENT emails every attendee the event
+    summary/description — attendees must pass the same allowlist."""
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError) as exc_info:
+        skill_tools.execute("GOOGLECALENDAR_CREATE_EVENT", {
+            "calendar_id": "primary", "summary": "s", "start_datetime": "2026-08-01T10:00:00",
+            "event_duration_minutes": 30, "timezone": "UTC",
+            "attendees": ["attacker@evil.example"]})
+    assert "attacker@evil.example" in str(exc_info.value)
+
+
+def test_skill_execute_create_event_refuses_unknown_attendee_object_form(monkeypatch):
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    _deny_subprocess(monkeypatch)
+    with pytest.raises(skill_tools.IntegrationError) as exc_info:
+        skill_tools.execute("GOOGLECALENDAR_CREATE_EVENT", {
+            "calendar_id": "primary", "summary": "s", "start_datetime": "2026-08-01T10:00:00",
+            "event_duration_minutes": 30, "timezone": "UTC",
+            "attendees": [{"email": "attacker@evil.example", "optional": True}]})
+    assert "attacker@evil.example" in str(exc_info.value)
+
+
+def test_skill_execute_create_event_allows_known_attendee(monkeypatch):
+    monkeypatch.setattr(skill_tools, "_known_lead_emails", lambda: {"lead@example.com"})
+    monkeypatch.setattr(skill_tools, "_cli", lambda: "/usr/bin/composio")
+    fake = type("P", (), {"returncode": 0,
+                          "stdout": '{"successful": true, "data": {"id": "evt1"}}',
+                          "stderr": ""})()
+    monkeypatch.setattr(skill_tools.subprocess, "run", lambda *a, **k: fake)
+    out = skill_tools.execute("GOOGLECALENDAR_CREATE_EVENT", {
+        "calendar_id": "primary", "summary": "s", "start_datetime": "2026-08-01T10:00:00",
+        "event_duration_minutes": 30, "timezone": "UTC", "attendees": ["lead@example.com"]})
+    assert out.get("id") == "evt1"
 
 
 def test_skill_known_lead_emails_missing_sibling_raises_integration_error(monkeypatch):

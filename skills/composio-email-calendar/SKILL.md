@@ -86,7 +86,21 @@ specific error, and again inside `execute()` itself whenever `slug ==
 "GMAIL_SEND_EMAIL"`** — so calling `tools.execute("GMAIL_SEND_EMAIL", {...})`
 directly (which this doc otherwise tells you is fine for anything beyond the
 named helpers) is refused just the same as calling `send_email` with a bad
-recipient. There is no code path to GMAIL_SEND_EMAIL that skips this guard.
+recipient.
+
+The `execute()` guard for `GMAIL_SEND_EMAIL` is **deny-by-default**, checked
+against the tool's actual input schema (`composio execute GMAIL_SEND_EMAIL
+--get-schema`), not a short list of keys guessed from `send_email`'s own
+signature: it validates every recipient-shaped field the schema documents
+(`recipient_email`, its `to` alias, `extra_recipients`, `cc`, `bcc`), refuses
+the whole call if none of those fields are present (a send is never allowed
+through unvalidated just because the recipient arrived under a field this
+guard doesn't specifically check), and refuses any argument key outside the
+reviewed schema outright — so a future schema revision that adds a new
+recipient-shaped field fails **closed**, not open. `GOOGLECALENDAR_CREATE_EVENT`
+gets the same treatment for `attendees` (Google emails every attendee the
+event summary/description, so it's an outbound-mail channel too) — an
+attendee not in `leads.email` refuses the call.
 
 ⚠ **This is a blast-radius reducer, not an exfiltration stop.** The lead set
 it checks against is not a fixed, human-curated allowlist — it's whatever's
@@ -97,5 +111,8 @@ leads, which would then also pass this check. The guard stops a *casual*
 mistake (a hallucinated or copy-pasted stray address) and narrows where a
 compromised prompt can send mail to "addresses that made it into the CRM
 somehow" — it does not stop a determined prompt-injection that first gets
-its own address added as a lead. Don't rely on it as the only control against
-data exfiltration via email.
+its own address added as a lead. It also doesn't restrict a *permitted*
+send's payload: `send_email`'s `attachment` parameter takes a local file
+path, so a send to a known lead can still carry an arbitrary local file off
+the box. Don't rely on any of this as the only control against data
+exfiltration via email.
