@@ -32,9 +32,14 @@ export function ChatPanel() {
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    // Belt-and-braces: sessionIdRef is also set synchronously in
+    // newChat/openSession (below) since passive effects flush asynchronously
+    // after commit — a reply resolving in that gap would still read a stale
+    // ref if this were the only place it was updated.
     sessionIdRef.current = sessionId
     localStorage.setItem(SESSION_KEY, sessionId)
     api.chatHistory(sessionId).then(setMsgs).catch(() => setMsgs([]))
+    setThinking(false) // reset if a switch happens mid-send
   }, [sessionId])
 
   useEffect(() => {
@@ -51,7 +56,9 @@ export function ChatPanel() {
 
   const newChat = () => {
     setHistoryOpen(false)
-    setSessionId(newSessionId())
+    const id = newSessionId()
+    sessionIdRef.current = id // synchronous — see comment on the [sessionId] effect
+    setSessionId(id)
   }
 
   const clearChat = async () => {
@@ -66,6 +73,7 @@ export function ChatPanel() {
 
   const openSession = (id: string) => {
     setHistoryOpen(false)
+    sessionIdRef.current = id // synchronous — see comment on the [sessionId] effect
     setSessionId(id)
   }
 
@@ -86,7 +94,12 @@ export function ChatPanel() {
       if (issued !== sessionIdRef.current) return
       setMsgs((m) => [...m, { role: 'agent', content: '⚠ Could not reach the agent.' }])
     } finally {
-      if (issued === sessionIdRef.current) setThinking(false)
+      // Unconditional: `thinking` is panel-global UI state (drives the send
+      // button + spinner for whichever session is now active), not
+      // session-specific data — gating this on `issued` left it stuck `true`
+      // forever after a mid-flight session switch, since ChatPanel never
+      // unmounts and no other effect clears it.
+      setThinking(false)
     }
   }
 

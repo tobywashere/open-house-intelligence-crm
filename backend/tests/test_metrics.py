@@ -31,7 +31,7 @@ def test_avg_response_minutes_computed_from_seeded_deltas(client, monkeypatch):
                      ("2026-01-01T10:15:00", lead_b["id"]))  # +15 min
 
     m = client.get("/api/metrics").json()
-    assert round(m["avg_response_minutes"], 3) == 10.0  # mean of 5 and 15 (julianday float precision)
+    assert m["avg_response_minutes"] == 10.0  # mean of 5 and 15, rounded server-side to 1dp
     assert m["cloud_llm_requests"] == 0
 
 

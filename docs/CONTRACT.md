@@ -104,10 +104,16 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 ```json
 {
   "active_leads": 0, "high_priority": 0, "followups_due": 0,
-  "appointments_booked": 0, "avg_response_minutes": 0,
+  "appointments_booked": 0, "avg_response_minutes": null,
   "agent_mode": "mock", "cloud_llm_requests": 0
 }
 ```
+`avg_response_minutes` is `float | null` — the mean minutes from a lead's
+`created_at` to its first event's `created_at`, over leads with ≥1 event;
+`null` when no lead qualifies (don't assume `0`). `cloud_llm_requests` counts
+Composio tool calls (Gmail/Calendar) made on the live path, not local-LLM
+inference — it's always `0` in off mode and never counts the openclaw
+driver's requests, which stay on-box.
 
 ## 3. Agent tools (OpenClaw skill ⇄ REST mapping)
 

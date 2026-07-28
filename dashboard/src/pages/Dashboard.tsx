@@ -17,17 +17,21 @@ const SEVERITY: Record<Insight['severity'], { label: string; cls: string }> = {
   info: { label: 'insight', cls: 'bg-tile text-sub border-line' },
 }
 
+// Keyed by date, not a boolean, and module-level (not per-mount): a dashboard
+// left open overnight (the wall-mounted use case) must still POST the new
+// day's row once the clock rolls over, AND navigating away from `/` and back
+// (a remount, not a reload) must NOT re-POST today's row a second time — each
+// POST writes an audit_log row that agentActivity() (insights.ts) counts, so
+// a per-mount `let` here would self-inflate "agent actions in the last 24h"
+// by one on every visit to `/` (two in StrictMode dev, which double-mounts).
+let persistedDate = ''
+
 export function DashboardPage() {
   const [fd, setFd] = useState<FunnelData | null>(null)
   const [ins, setIns] = useState<Insights | null>(null)
 
   useEffect(() => {
     let live = true
-    // Keyed by date, not a boolean: a dashboard left open overnight (the
-    // wall-mounted use case) must still POST the new day's row once the
-    // clock rolls over — a one-shot `persisted` flag never fires again
-    // after the first tick, so the write-through silently stops.
-    let persistedDate = ''
     const load = () =>
       Promise.all([fetchFunnel(true), api.audit(200)])
         .then(([funnel, audit]) => {

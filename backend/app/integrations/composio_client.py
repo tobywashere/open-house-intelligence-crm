@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 
 import httpx
 
@@ -22,20 +23,20 @@ class IntegrationError(Exception):
 
 
 # Real usage counter for the "no cloud calls in off mode" pitch (dashboard
-# metrics). Incremented only once execute() has confirmed we're actually
-# live (mode == "live" and a key/CLI session is present) — never in off
-# mode, and never per-retry (one user-visible call == one increment).
+# metrics). Counts calls to composio_client.execute() only — i.e. Composio
+# tool calls (Gmail/Calendar), NOT local-LLM inference; the openclaw driver's
+# requests are deliberately excluded since they never leave the box.
+# Incremented only once execute() has confirmed we're actually live
+# (mode == "live" and a key/CLI session is present) — never in off mode, and
+# never per-retry (one user-visible call == one increment). hooks/router/
+# poller reach execute() from FastAPI's threadpool, so the increment is
+# guarded by a lock rather than a bare `+= 1` (non-atomic read-modify-write).
 _REQUEST_COUNT = 0
+_REQUEST_COUNT_LOCK = threading.Lock()
 
 
 def request_count() -> int:
     return _REQUEST_COUNT
-
-
-def reset_request_count() -> None:
-    """Test-only: reset the module counter between test cases."""
-    global _REQUEST_COUNT
-    _REQUEST_COUNT = 0
 
 
 # Every slug this backend actually calls (hooks.py, router.py, poller.py) —
@@ -97,7 +98,8 @@ def execute(slug: str, arguments: dict) -> dict:
     if not is_live():
         raise IntegrationError("integrations disabled (INTEGRATIONS_MODE != live or no key)")
     global _REQUEST_COUNT
-    _REQUEST_COUNT += 1
+    with _REQUEST_COUNT_LOCK:
+        _REQUEST_COUNT += 1
     if transport() == "cli":
         return _execute_cli(slug, arguments)
     key = os.environ.get("COMPOSIO_API_KEY")

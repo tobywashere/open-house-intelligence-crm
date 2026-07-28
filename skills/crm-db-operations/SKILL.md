@@ -66,7 +66,7 @@ never let a raw stack trace reach the chat.
 | `book_appointment` | `(lead_id, start_ts, end_ts, location=None)` | appointment | User agrees to a specific time. Raises 409 on conflict — re-check availability and offer alternatives. Lead status auto-flips to `meeting_booked`. |
 | `schedule_followup` | `(lead_id, due_ts, note=None)` | reminder | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
 | `find_neglected_leads` | `()` | `[lead]` newly flagged | Scheduled/cron check, or "who haven't I talked to" questions. Evaluates every open lead against the 2-day-idle rule right now. |
-| `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. |
+| `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. `avg_response_minutes` can be `null` (no lead has a first-response event yet) — say "not enough data yet" rather than reporting it as `0` or omitting the field silently. |
 | `delete_lead` | `(lead_id, reason="")` | `{deleted, lead_id, name}` | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm the deleted lead's name back to the user afterwards. |
 
 Full request/response shapes and the underlying REST endpoints are frozen in

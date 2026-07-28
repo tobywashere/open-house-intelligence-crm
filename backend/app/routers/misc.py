@@ -127,7 +127,10 @@ def metrics():
             "JOIN (SELECT lead_id, MIN(created_at) AS first_event_at FROM events GROUP BY lead_id) f "
             "ON f.lead_id = l.id"
         ).fetchone()
-        avg_response_minutes = avg_row["avg_min"]
+        raw_avg = avg_row["avg_min"]
+        # julianday() arithmetic isn't bit-exact (e.g. 10.000000409781933 for
+        # an intended 10.0) — round to a sane display precision.
+        avg_response_minutes = round(raw_avg, 1) if raw_avg is not None else None
     return {
         "active_leads": len(leads),
         "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
@@ -135,6 +138,9 @@ def metrics():
         "appointments_booked": appts,
         "avg_response_minutes": avg_response_minutes,
         "agent_mode": os.environ.get("AGENT_MODE", "mock"),
+        # Composio tool calls (Gmail/Calendar) on the live path — NOT
+        # local-LLM inference requests. The openclaw driver's calls are
+        # deliberately excluded: they never leave the box.
         "cloud_llm_requests": composio_client.request_count(),
     }
 
