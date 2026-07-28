@@ -52,7 +52,24 @@ const BUILT_IN: Pack = {
     { key: 'Seller', default: false },
     { key: 'Home Buyer', default: true },
   ],
-  copy: { app_name: 'Open Intelligence CRM' },
+  copy: {
+    app_name: 'Open Intelligence CRM',
+    'booking.booked': 'Tour booked',
+    'booking.cta': 'Book a tour',
+    'chat.example_1': 'Add Minh Nguyen, 425-555-0198, buyer interested in Kirkland and Redmond',
+    'chat.example_2': 'Which active buyers need a follow-up?',
+    'chat.example_3': 'Show me everything we know about Sarah',
+    'lead.subject_with_area': 'Your home search in {area}',
+    'lead.subject_generic': 'Following up on your home search',
+    'inbox.add_placeholder':
+      'New lead from a note, e.g. "Met Alex at the open house, looking in Redmond around $950k…"',
+    'funnel.stage_negotiating': 'In negotiation',
+    'funnel.action_book_tours_title': 'Book more tours this week',
+    'funnel.action_advance_title': 'Advance {n} qualified lead{s} to a tour',
+    'funnel.kpi_qualified_buyers': 'Qualified buyers',
+    'funnel.kpi_tours_scheduled': 'Tours scheduled',
+    'export.upcoming_tours_heading': '## Upcoming tours',
+  },
 }
 
 let active: Pack = BUILT_IN

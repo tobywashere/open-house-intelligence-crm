@@ -2,6 +2,7 @@
 // Deliberately EXCLUDES internal fields — score, score_reason, intent guess,
 // missing_fields, neglect flags, and the raw activity timeline.
 import { fmtSlotDay, fmtSlotTime, LeadProfile } from './api'
+import { copy } from './vertical'
 
 export function clientSafeMarkdown(lead: LeadProfile): string {
   const lines: string[] = [`# Home search summary — ${lead.name}`, '']
@@ -16,7 +17,7 @@ export function clientSafeMarkdown(lead: LeadProfile): string {
 
   const upcoming = lead.appointments.filter((a) => new Date(a.start_ts) > new Date())
   if (upcoming.length) {
-    lines.push('## Upcoming tours')
+    lines.push(copy('export.upcoming_tours_heading', '## Upcoming tours'))
     for (const a of upcoming) {
       lines.push(`- ${fmtSlotDay(a.start_ts)} · ${fmtSlotTime(a.start_ts)}–${fmtSlotTime(a.end_ts)}${a.location ? ` — ${a.location}` : ''}`)
     }

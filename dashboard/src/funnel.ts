@@ -4,6 +4,7 @@
 //   Offers Submitted = has an event with type "offer" (amount parsed from content)
 import { api, Appointment, Lead, LeadProfile, localDateKey } from './api'
 import { Insights } from './insights'
+import { copy, pack } from './vertical'
 
 export interface FunnelStage {
   key: string
@@ -174,10 +175,14 @@ function compute(
     }
   }
   const avg = (xs: number[]) => (xs.length ? Math.round((xs.reduce((t, x) => t + x, 0) / xs.length) * 10) / 10 : null)
+  // Stage names mirror the pack's own stage labels (Task 4's funnel config) so
+  // the velocity card never repeats a stage word the funnel itself renamed.
+  const stageLabel = (key: string, fallback: string) =>
+    pack().stages.find((s) => s.key === key)?.label ?? fallback
   const velocityRaw: VelocityRow[] = [
-    { stage: 'New leads', days: avg(durations.new), slow: false },
-    { stage: 'Contacted', days: avg(durations.contacted), slow: false },
-    { stage: 'Tours booked', days: avg(durations.meeting_booked), slow: false },
+    { stage: stageLabel('new', 'New leads'), days: avg(durations.new), slow: false },
+    { stage: stageLabel('contacted', 'Contacted'), days: avg(durations.contacted), slow: false },
+    { stage: stageLabel('tours', 'Tours booked'), days: avg(durations.meeting_booked), slow: false },
   ]
   const known = velocityRaw.map((v) => v.days).filter((d): d is number => d != null).sort((a, b) => a - b)
   const median = known.length ? known[Math.floor(known.length / 2)] : null
@@ -217,7 +222,11 @@ function compute(
       return {
         lead: l,
         valueLabel: offer?.amount != null ? `${money(offer.amount)} offer` : money(l.budget),
-        stageLabel: offer ? 'In negotiation' : l.status === 'meeting_booked' ? 'Tour booked' : l.status,
+        stageLabel: offer
+          ? copy('funnel.stage_negotiating', 'In negotiation')
+          : l.status === 'meeting_booked'
+            ? stageLabel('tours', 'Tour booked')
+            : l.status,
         heat: (l.score ?? 0) >= 85 ? 'High' : 'Medium',
         estimate: estDays ? `Est. close ~${estDays} days` : l.timeline ? `Timeline: ${l.timeline}` : 'Timeline unknown',
       }
@@ -236,11 +245,14 @@ function compute(
       sub: 'No response in 3+ days', impact: 'High impact' as const, cta: 'View leads', to: '/leads',
     },
     upcoming.length < 3 && {
-      icon: '📅', title: 'Book more tours this week',
+      icon: '📅', title: copy('funnel.action_book_tours_title', 'Book more tours this week'),
       sub: `Only ${upcoming.length} upcoming — tours drive offers`, impact: 'High impact' as const, cta: 'View calendar', to: '/leads',
     },
     warmUntoured.length && {
-      icon: '👥', title: `Advance ${warmUntoured.length} qualified lead${warmUntoured.length > 1 ? 's' : ''} to a tour`,
+      icon: '👥',
+      title: copy('funnel.action_advance_title', 'Advance {n} qualified lead{s} to a tour')
+        .replace('{n}', String(warmUntoured.length))
+        .replace('{s}', warmUntoured.length > 1 ? 's' : ''),
       sub: 'Warm and waiting on a next step', impact: 'Medium impact' as const, cta: 'View leads', to: '/leads',
     },
     negotiating.length && {
@@ -264,9 +276,9 @@ function compute(
   }
   const kpis: Kpi[] = [
     { label: 'Active leads', value: String(active), ...delta(active, yActive) },
-    { label: 'Qualified buyers', value: String(qualified.length) },
+    { label: copy('funnel.kpi_qualified_buyers', 'Qualified buyers'), value: String(qualified.length) },
     { label: 'Follow-ups due', value: String(leads.filter((l) => l.is_neglected).length) },
-    { label: 'Tours scheduled', value: String(upcoming.length) },
+    { label: copy('funnel.kpi_tours_scheduled', 'Tours scheduled'), value: String(upcoming.length) },
     { label: 'Offers submitted', value: String(offered.length) },
     {
       label: 'Close rate',

@@ -66,6 +66,12 @@ DEFAULT_PACK: dict = {
         "lead.subject_with_area": "Your home search in {area}",
         "lead.subject_generic": "Following up on your home search",
         "inbox.add_placeholder": 'New lead from a note, e.g. "Met Alex at the open house, looking in Redmond around $950k…"',
+        "funnel.stage_negotiating": "In negotiation",
+        "funnel.action_book_tours_title": "Book more tours this week",
+        "funnel.action_advance_title": "Advance {n} qualified lead{s} to a tour",
+        "funnel.kpi_qualified_buyers": "Qualified buyers",
+        "funnel.kpi_tours_scheduled": "Tours scheduled",
+        "export.upcoming_tours_heading": "## Upcoming tours",
     },
     # Filled in by Task 5 from prompts/seattle-real-estate-news-reporter.md.
     # Present now so the schema shape is stable for downstream consumers.
