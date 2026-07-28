@@ -38,7 +38,7 @@ export interface Briefing {
   schedule: ScheduleBlock[]
   meeting_briefs: MeetingBrief[]
   suggested_actions: SuggestedAction[]
-  // top insights (AI purpose #4, Johaan's engine) — input for the summary narrative
+  // top insights (AI purpose #4, the deterministic insights engine) — input for the summary narrative
   insight_headlines?: { severity: 'info' | 'good' | 'warn'; headline: string }[]
   mock?: boolean
 }

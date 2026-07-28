@@ -20,6 +20,14 @@ def _tz() -> str:
     return os.environ.get("GCAL_TIMEZONE", "America/Los_Angeles")
 
 
+def _signoff() -> str:
+    """Sign-off block for AI-drafted intro emails. Omitted entirely (not a
+    placeholder) when AGENT_DISPLAY_NAME is unset — an unsigned friendly note
+    reaching a real client is fine; a draft signed "Best,\n<placeholder>" is not."""
+    name = os.environ.get("AGENT_DISPLAY_NAME", "").strip()
+    return f"\n\nBest,\n{name}" if name else ""
+
+
 def _lead_details(lead: dict) -> str:
     budget = f"${lead['budget']:,}" if lead.get("budget") else "—"
     return (f"Phone: {lead.get('phone') or '—'}\n"
@@ -113,8 +121,8 @@ def _on_lead_created_impl(lead: dict) -> None:
     subject = (f"Your home search in {lead['area']}" if lead.get("area")
                else "Great to connect!")
     body = (f"Hi {first},\n\nThanks for reaching out — I'd love to help with "
-            "your home search. When would be a good time for a quick call?\n\n"
-            "Best,\nJohaan")
+            "your home search. When would be a good time for a quick call?"
+            + _signoff())
     args = {"recipient_email": lead["email"], "subject": subject, "body": body}
     # same rule as _create_event: run the Composio call with no get_conn() open.
     if not cc.is_live():

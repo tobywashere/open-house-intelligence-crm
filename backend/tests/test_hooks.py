@@ -1,8 +1,17 @@
+import json
+
 from .conftest import make_lead
 
 
 def _audit_tools(client):
     return [a["tool"] for a in client.get("/api/audit?limit=30").json()]
+
+
+def _draft_body(client):
+    for a in client.get("/api/audit?limit=30").json():
+        if a["tool"] == "gmail_create_draft (simulated)":
+            return json.loads(a["input"])["body"]
+    raise AssertionError("no simulated gmail draft in audit log")
 
 
 def test_booking_hook_simulated(client):
@@ -24,6 +33,20 @@ def test_new_lead_hook_simulated_event_and_draft(client):
 def test_new_lead_without_email_no_draft(client):
     make_lead(client, email=None, name="Phone Only")
     assert "gmail_create_draft (simulated)" not in _audit_tools(client)
+
+
+def test_intro_draft_unsigned_when_display_name_unset(client, monkeypatch):
+    monkeypatch.delenv("AGENT_DISPLAY_NAME", raising=False)
+    make_lead(client)
+    body = _draft_body(client)
+    assert "Best," not in body
+
+
+def test_intro_draft_signed_when_display_name_set(client, monkeypatch):
+    monkeypatch.setenv("AGENT_DISPLAY_NAME", "Alex Rivera")
+    make_lead(client)
+    body = _draft_body(client)
+    assert "Best,\nAlex Rivera" in body
 
 
 def test_reminder_hook_simulated(client):

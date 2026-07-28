@@ -107,7 +107,10 @@ internet, and both are off unless you explicitly turn them on:
   with no human in the loop when enabled. Setup:
   [`skills/composio-email-calendar/SKILL.md`](../skills/composio-email-calendar/SKILL.md)
   and the "Google integrations" section of
-  [`docs/GB10-SETUP.md`](GB10-SETUP.md).
+  [`docs/GB10-SETUP.md`](GB10-SETUP.md). Once live, set `AGENT_DISPLAY_NAME`
+  in `.env.example` if you want AI-drafted intro emails to leads signed with
+  your name — left unset, those drafts go out unsigned rather than with a
+  placeholder name.
 - **Market-news / daily-briefing research** — the "↻ Refresh now" action on
   the daily summary overlay asks the agent to re-run research and repost a
   briefing. This only does real research if your OpenClaw setup gives the

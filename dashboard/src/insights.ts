@@ -1,4 +1,4 @@
-// Insights engine — AI purpose #4, Johaan's lane (docs/INSIGHTS.md).
+// Insights engine — AI purpose #4 (docs/INSIGHTS.md).
 // Deterministic by design: pure functions over CRM data. The dashboard renders
 // this JSON, and the morning summary consumes it as narrative input. No LLM
 // is involved in computing a number here, ever.
