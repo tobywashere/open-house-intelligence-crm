@@ -1,0 +1,276 @@
+{
+  "name": "b2b-saas",
+  "display_name": "B2B SaaS sales",
+  "stages": [
+    {
+      "key": "new",
+      "label": "New leads",
+      "rule": {
+        "type": "all"
+      }
+    },
+    {
+      "key": "contacted",
+      "label": "Contacted",
+      "rule": {
+        "type": "status_at_least",
+        "status": "contacted"
+      }
+    },
+    {
+      "key": "qualified",
+      "label": "Qualified",
+      "rule": {
+        "type": "status_at_least_or_score",
+        "status": "meeting_booked",
+        "score_status": "contacted",
+        "min_score": 70
+      }
+    },
+    {
+      "key": "tours",
+      "label": "Demos booked",
+      "rule": {
+        "type": "status_at_least",
+        "status": "meeting_booked"
+      }
+    },
+    {
+      "key": "offers",
+      "label": "Proposals sent",
+      "rule": {
+        "type": "event_type_or_status",
+        "event_type": "offer",
+        "status": "closed"
+      }
+    },
+    {
+      "key": "closed",
+      "label": "Closed won",
+      "rule": {
+        "type": "status_is",
+        "status": "closed"
+      }
+    }
+  ],
+  "labels": {
+    "budget": "Deal size",
+    "area": "Territory",
+    "timeline": "Timeline",
+    "intent": "Deal type"
+  },
+  "intent_values": [
+    {
+      "value": "buy",
+      "label": "New business"
+    },
+    {
+      "value": "sell",
+      "label": "Renewal"
+    },
+    {
+      "value": "browse",
+      "label": "Evaluating"
+    },
+    {
+      "value": "unknown",
+      "label": "Unknown"
+    }
+  ],
+  "personas": [
+    {
+      "key": "Enterprise Buyer",
+      "default": false
+    },
+    {
+      "key": "Technical Evaluator",
+      "default": false
+    },
+    {
+      "key": "Procurement Lead",
+      "default": false
+    },
+    {
+      "key": "SMB Self-Serve",
+      "default": false
+    },
+    {
+      "key": "Renewal Owner",
+      "default": false
+    },
+    {
+      "key": "Prospect",
+      "default": true
+    }
+  ],
+  "copy": {
+    "booking.booked": "Demo booked",
+    "booking.cta": "Book a demo",
+    "chat.example_1": "Add Priya Raman, priya@northwind.io, evaluating for a 200-seat rollout",
+    "chat.example_2": "Which open opportunities need a follow-up?",
+    "chat.example_3": "Show me everything we know about Northwind",
+    "lead.subject_with_area": "Your evaluation — {area}",
+    "lead.subject_generic": "Following up on your evaluation",
+    "inbox.add_placeholder": "New lead from a note, e.g. \"Met Priya at SaaStr, 200 seats, security review first…\"",
+    "funnel.stage_negotiating": "In procurement",
+    "funnel.action_book_tours_title": "Book more demos this week",
+    "funnel.action_advance_title": "Advance {n} qualified lead{s} to a demo",
+    "funnel.kpi_qualified_buyers": "Qualified opportunities",
+    "funnel.kpi_tours_scheduled": "Demos scheduled",
+    "insights.meeting_verb_phrase": "book a demo",
+    "insights.meeting_noun": "demo",
+    "insights.tour_noun": "demo",
+    "insights.tour_noun_plural": "demos",
+    "insights.demand_actor_plural": "active opportunities",
+    "funnel.action_book_tours_sub": "Only {n} upcoming — demos drive proposals",
+    "export.upcoming_tours_heading": "## Upcoming demos",
+    "export.summary_title": "Evaluation summary",
+    "note.offer_heading": "Log a proposal",
+    "note.offer_chip": "💰 Proposal",
+    "note.offer_saved": "Proposal logged — it now counts in the funnel.",
+    "note.offer_placeholder": "e.g. \"Proposal sent: $84,000 ARR, 200 seats\"",
+    "note.note_placeholder": "e.g. \"Call with Priya — security review clears next week\""
+  },
+  "brand": {
+    "name": "Pipeline",
+    "name_accent": "Intelligence"
+  },
+  "persona_rules": [
+    {
+      "persona": "Renewal Owner",
+      "when": {
+        "field": "intent",
+        "op": "eq",
+        "value": "sell"
+      }
+    },
+    {
+      "persona": "Enterprise Buyer",
+      "when": {
+        "field": "budget",
+        "op": "gte",
+        "value": 100000
+      }
+    },
+    {
+      "persona": "Technical Evaluator",
+      "when": {
+        "any": [
+          {
+            "field": "preferences_text",
+            "op": "regex",
+            "value": "security|integration|api|soc ?2|architecture"
+          },
+          {
+            "field": "name",
+            "op": "regex",
+            "value": "&| and ",
+            "flags": "i"
+          }
+        ]
+      }
+    },
+    {
+      "persona": "Procurement Lead",
+      "when": {
+        "any": [
+          {
+            "field": "preferences_text",
+            "op": "regex",
+            "value": "procure|legal|msa|redline|vendor"
+          },
+          {
+            "field": "timeline",
+            "op": "regex",
+            "value": "quarter|eoq",
+            "flags": "i"
+          }
+        ]
+      }
+    },
+    {
+      "persona": "SMB Self-Serve",
+      "when": {
+        "all": [
+          {
+            "field": "budget",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "field": "budget",
+            "op": "lt",
+            "value": 15000
+          }
+        ]
+      }
+    },
+    {
+      "persona": "Prospect",
+      "when": null
+    }
+  ],
+  "persona_recommendations": {
+    "Enterprise Buyer": "Lead with the business case and a named exec sponsor.",
+    "Technical Evaluator": "Offer a sandbox and the security packet up front.",
+    "Procurement Lead": "Send the MSA and pricing sheet before the call.",
+    "Renewal Owner": "Bring usage data and the renewal quote."
+  },
+  "persona_recommendation_default": "Confirm the evaluation timeline and agree the next concrete step.",
+  "schedule_titles": {
+    "default": "Demo",
+    "sell": "Renewal review"
+  },
+  "mock_summary": {
+    "greeting": "Good morning — here is your pipeline at a glance.",
+    "market_watch": [
+      {
+        "title": "Enterprise buyers consolidate vendors as budgets flatten",
+        "source": "Example Analyst Weekly",
+        "geo": "North America",
+        "takeaway": "Expect more multi-product bundling questions in first calls; lead with platform breadth rather than point-solution depth."
+      },
+      {
+        "title": "SOC 2 Type II now table stakes below $50k ACV",
+        "source": "Example Security Digest",
+        "geo": "North America",
+        "takeaway": "Attach the security packet to the first follow-up — it is increasingly a gate before the technical evaluation, not after."
+      }
+    ],
+    "ai_insights": [
+      {
+        "title": "Demos convert best midweek",
+        "body": "Every demo on the calendar landed Tuesday–Thursday. Offer those slots first to shorten scheduling back-and-forth."
+      }
+    ]
+  },
+  "research": {
+    "role": "a market analyst for a B2B SaaS revenue team",
+    "audience": "a B2B SaaS account executive",
+    "regions": [
+      "North America",
+      "EMEA",
+      "United Kingdom",
+      "DACH",
+      "APAC"
+    ],
+    "topics": [
+      "Enterprise software budget and spending trends",
+      "Procurement and vendor-consolidation shifts",
+      "Security and compliance requirements (SOC 2, ISO 27001, FedRAMP)",
+      "Data-residency and privacy regulation changes",
+      "Competitor funding, pricing, and packaging changes",
+      "Layoffs, hiring, and headcount signals at target accounts",
+      "Category analyst reports and market sizing",
+      "AI adoption affecting buying committees"
+    ],
+    "exclusions": [
+      "consumer software news",
+      "generic funding-round roundups without category relevance",
+      "opinion pieces without new information",
+      "duplicate stories"
+    ],
+    "national_scope_note": "Do NOT summarize general tech-industry news unless it changes how buying committees evaluate, budget for, or procure software.",
+    "lookback_days": 7
+  }
+}

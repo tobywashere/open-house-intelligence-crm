@@ -115,7 +115,14 @@ def get_corpus(directory: Path | None = None) -> _Corpus:
     if cached is not None and cached.signature == sig:
         return cached
     chunks = _build(directory) if sig else []
-    bm25 = BM25Index([tokenize(c.text) for c in chunks])
+    # Index the breadcrumb (H1 > H2 > H3) alongside the body. Without this a
+    # section is unfindable by the words in its own title unless the body
+    # happens to repeat them — e.g. a chunk headed "Buying Committee Size"
+    # scored zero for "buying committee" because the prose below it only ever
+    # said "committees". Headings are where authors put the specific term, so
+    # they belong in the searchable text; the breadcrumb also carries the
+    # parent sections, which is the context a reader would use to find it.
+    bm25 = BM25Index([tokenize(f"{c.breadcrumb} {c.text}") for c in chunks])
     corpus = _Corpus(chunks=chunks, bm25=bm25, signature=sig)
     _cache[key] = corpus
     return corpus

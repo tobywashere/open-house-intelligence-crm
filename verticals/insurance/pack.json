@@ -1,0 +1,276 @@
+{
+  "name": "insurance",
+  "display_name": "Insurance brokerage",
+  "stages": [
+    {
+      "key": "new",
+      "label": "New leads",
+      "rule": {
+        "type": "all"
+      }
+    },
+    {
+      "key": "contacted",
+      "label": "Contacted",
+      "rule": {
+        "type": "status_at_least",
+        "status": "contacted"
+      }
+    },
+    {
+      "key": "qualified",
+      "label": "Qualified",
+      "rule": {
+        "type": "status_at_least_or_score",
+        "status": "meeting_booked",
+        "score_status": "contacted",
+        "min_score": 70
+      }
+    },
+    {
+      "key": "tours",
+      "label": "Quotes requested",
+      "rule": {
+        "type": "status_at_least",
+        "status": "meeting_booked"
+      }
+    },
+    {
+      "key": "offers",
+      "label": "Quotes delivered",
+      "rule": {
+        "type": "event_type_or_status",
+        "event_type": "offer",
+        "status": "closed"
+      }
+    },
+    {
+      "key": "closed",
+      "label": "Bound",
+      "rule": {
+        "type": "status_is",
+        "status": "closed"
+      }
+    }
+  ],
+  "labels": {
+    "budget": "Premium",
+    "area": "Region",
+    "timeline": "Renewal date",
+    "intent": "Coverage type"
+  },
+  "intent_values": [
+    {
+      "value": "buy",
+      "label": "New policy"
+    },
+    {
+      "value": "sell",
+      "label": "Renewal"
+    },
+    {
+      "value": "browse",
+      "label": "Shopping"
+    },
+    {
+      "value": "unknown",
+      "label": "Unknown"
+    }
+  ],
+  "personas": [
+    {
+      "key": "Complex Commercial",
+      "default": false
+    },
+    {
+      "key": "Growing Business",
+      "default": false
+    },
+    {
+      "key": "Claims-Sensitive",
+      "default": false
+    },
+    {
+      "key": "Price Shopper",
+      "default": false
+    },
+    {
+      "key": "Renewal Client",
+      "default": false
+    },
+    {
+      "key": "Prospect",
+      "default": true
+    }
+  ],
+  "copy": {
+    "booking.booked": "Review booked",
+    "booking.cta": "Book a coverage review",
+    "chat.example_1": "Add Tran Logistics, 40 vehicles, fleet coverage renewing in March",
+    "chat.example_2": "Which clients have a renewal in the next 60 days?",
+    "chat.example_3": "Show me everything we know about Tran Logistics",
+    "lead.subject_with_area": "Your coverage review — {area}",
+    "lead.subject_generic": "Following up on your coverage",
+    "inbox.add_placeholder": "New lead from a note, e.g. \"Met Tran Logistics at the chamber event, fleet renews in March…\"",
+    "funnel.stage_negotiating": "In underwriting",
+    "funnel.action_book_tours_title": "Book more coverage reviews this week",
+    "funnel.action_advance_title": "Advance {n} qualified lead{s} to a quote",
+    "funnel.kpi_qualified_buyers": "Qualified accounts",
+    "funnel.kpi_tours_scheduled": "Reviews scheduled",
+    "insights.meeting_verb_phrase": "book a review",
+    "insights.meeting_noun": "review",
+    "insights.tour_noun": "review",
+    "insights.tour_noun_plural": "reviews",
+    "insights.demand_actor_plural": "active accounts",
+    "funnel.action_book_tours_sub": "Only {n} upcoming — reviews drive quotes",
+    "export.upcoming_tours_heading": "## Upcoming reviews",
+    "export.summary_title": "Coverage summary",
+    "note.offer_heading": "Log a quote",
+    "note.offer_chip": "💰 Quote",
+    "note.offer_saved": "Quote logged — it now counts in the funnel.",
+    "note.offer_placeholder": "e.g. \"Quote delivered: $42,000 premium, $10k retention\"",
+    "note.note_placeholder": "e.g. \"Call with Tran — adding two vehicles before renewal\""
+  },
+  "brand": {
+    "name": "Broker",
+    "name_accent": "Intelligence"
+  },
+  "persona_rules": [
+    {
+      "persona": "Renewal Client",
+      "when": {
+        "field": "intent",
+        "op": "eq",
+        "value": "sell"
+      }
+    },
+    {
+      "persona": "Complex Commercial",
+      "when": {
+        "field": "budget",
+        "op": "gte",
+        "value": 250000
+      }
+    },
+    {
+      "persona": "Claims-Sensitive",
+      "when": {
+        "any": [
+          {
+            "field": "preferences_text",
+            "op": "regex",
+            "value": "claim|loss run|litigation|prior carrier"
+          },
+          {
+            "field": "name",
+            "op": "regex",
+            "value": "&| and ",
+            "flags": "i"
+          }
+        ]
+      }
+    },
+    {
+      "persona": "Growing Business",
+      "when": {
+        "any": [
+          {
+            "field": "preferences_text",
+            "op": "regex",
+            "value": "expand|new location|headcount|acquisition"
+          },
+          {
+            "field": "timeline",
+            "op": "regex",
+            "value": "week|asap",
+            "flags": "i"
+          }
+        ]
+      }
+    },
+    {
+      "persona": "Price Shopper",
+      "when": {
+        "all": [
+          {
+            "field": "budget",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "field": "budget",
+            "op": "lt",
+            "value": 10000
+          }
+        ]
+      }
+    },
+    {
+      "persona": "Prospect",
+      "when": null
+    }
+  ],
+  "persona_recommendations": {
+    "Complex Commercial": "Bring the carrier appetite map and a layered structure option.",
+    "Growing Business": "Ask what changed this year before quoting anything.",
+    "Claims-Sensitive": "Lead with the loss-run review and remediation story.",
+    "Renewal Client": "Bring the renewal comparison and any rate-change drivers."
+  },
+  "persona_recommendation_default": "Confirm the renewal date and agree the next concrete step.",
+  "schedule_titles": {
+    "default": "Coverage review",
+    "sell": "Renewal meeting"
+  },
+  "mock_summary": {
+    "greeting": "Good morning — here is your book at a glance.",
+    "market_watch": [
+      {
+        "title": "Regional carrier tightens wildfire appetite ahead of renewal season",
+        "source": "Example Insurance Journal",
+        "geo": "Washington State",
+        "takeaway": "Accounts with wildland-urban-interface exposure should be remarketed early — capacity is likely to be scarcer at renewal."
+      },
+      {
+        "title": "Commercial auto rates rise for a ninth straight quarter",
+        "source": "Example Market Report",
+        "geo": "United States",
+        "takeaway": "Set fleet-client expectations before the renewal meeting; lead with loss-control measures that earn credits."
+      }
+    ],
+    "ai_insights": [
+      {
+        "title": "Renewal reviews cluster too close to the deadline",
+        "body": "Most upcoming reviews sit inside 30 days of renewal. Moving them to 60 days out leaves room to remarket."
+      }
+    ]
+  },
+  "research": {
+    "role": "a market analyst for a commercial insurance brokerage",
+    "audience": "a commercial insurance broker",
+    "regions": [
+      "Washington State",
+      "Oregon",
+      "California",
+      "Pacific Northwest",
+      "United States"
+    ],
+    "topics": [
+      "Carrier appetite and underwriting-guideline changes",
+      "Rate filings and premium trends by line of business",
+      "State insurance regulation and legislative changes",
+      "Excess and surplus lines market capacity",
+      "Catastrophe exposure — wildfire, flood, seismic",
+      "Reinsurance market conditions",
+      "Large claims and litigation trends affecting pricing",
+      "Carrier financial-strength rating changes"
+    ],
+    "exclusions": [
+      "personal lines consumer tips",
+      "generic national economic commentary",
+      "opinion pieces without new information",
+      "duplicate stories"
+    ],
+    "national_scope_note": "Do NOT summarize national insurance news unless it changes carrier appetite, pricing, or availability for clients in these regions.",
+    "lookback_days": 7
+  }
+}
