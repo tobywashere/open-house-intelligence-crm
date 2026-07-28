@@ -89,11 +89,19 @@ def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
         return 0
     if _seen(msg_id):
         return 0
-    raw = f"Email from {addr}\nSubject: {subject}\n\n{body[:1000]}\n[gmail:{msg_id}]"
+    # Untrusted: this text comes from an inbound email an attacker fully
+    # controls. It reaches the same model that holds a live Gmail send tool —
+    # delimit it so the extract prompt (openclaw.py) treats it as data to
+    # read, never as instructions to follow.
+    raw = (f"<untrusted-email-content>\nEmail from {addr}\nSubject: {subject}\n\n"
+           f"{body[:1000]}\n[gmail:{msg_id}]\n</untrusted-email-content>")
     try:
         from ..routers.leads import LeadIn, create_lead
         lead = asyncio.run(create_lead(LeadIn(raw_text=raw, source="email", email=addr)))
-    except Exception:
+    except Exception as e:
+        with get_conn() as conn:
+            audit(conn, "cron", "email_intake_failed",
+                  {"from": addr, "subject": subject}, {"error": str(e)})
         return 0
     with get_conn() as conn:
         audit(conn, "cron", "email_lead_intake", {"from": addr, "subject": subject},

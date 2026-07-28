@@ -21,6 +21,19 @@ class IntegrationError(Exception):
     pass
 
 
+# Every slug this backend actually calls (hooks.py, router.py, poller.py) —
+# the single gate all cc.execute() traffic passes through. Destructive/
+# unreviewed slugs (e.g. GMAIL_DELETE_MESSAGE) are refused even if the model
+# tries to invoke them via a future direct-execute path.
+ALLOWED_SLUGS = frozenset({
+    "GOOGLECALENDAR_CREATE_EVENT",   # hooks.py: lead-created call block, tour booked, reminder
+    "GMAIL_CREATE_EMAIL_DRAFT",      # hooks.py: lead-created intro draft
+    "GMAIL_SEND_EMAIL",              # router.py: /api/email/send
+    "GMAIL_FETCH_EMAILS",            # poller.py: inbox polling
+    "GOOGLECALENDAR_FREE_BUSY_QUERY",  # poller.py: busy cache
+})
+
+
 def mode() -> str:
     return os.environ.get("INTEGRATIONS_MODE", "off")
 
@@ -41,21 +54,29 @@ def _execute_cli(slug: str, arguments: dict) -> dict:
         raise IntegrationError(f"{slug}: composio CLI not found")
     try:
         proc = subprocess.run([path, "execute", slug, "-d", json.dumps(arguments)],
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=30,
+                              stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         raise IntegrationError(f"{slug}: CLI timed out")
-    out = proc.stdout.strip()
-    try:
-        payload = json.loads(out[out.index("{"):]) if "{" in out else {}
-    except ValueError:
-        payload = {}
+    payload = {}
+    for line in reversed([l for l in proc.stdout.splitlines() if l.strip()]):
+        try:
+            payload = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            continue
     if proc.returncode == 0 and payload.get("successful"):
         return payload.get("data") or {}
-    err = payload.get("error") or proc.stderr.strip()[:300] or f"exit {proc.returncode}"
+    # never surface raw stderr (may contain tokens/paths/tracebacks) into chat
+    err = payload.get("error") or (
+        "composio CLI failed — check `composio link` / logs" if proc.stderr.strip()
+        else f"exit {proc.returncode}")
     raise IntegrationError(f"{slug}: {err}")
 
 
 def execute(slug: str, arguments: dict) -> dict:
+    if slug not in ALLOWED_SLUGS:
+        raise IntegrationError(f"{slug}: not in the approved catalog")
     if not is_live():
         raise IntegrationError("integrations disabled (INTEGRATIONS_MODE != live or no key)")
     if transport() == "cli":

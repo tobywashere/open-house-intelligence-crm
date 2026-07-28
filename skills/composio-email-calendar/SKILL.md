@@ -63,7 +63,17 @@ Zero pip dependencies; shells out to the `composio` binary. If it raises
 | `free_busy` | `(time_min, time_max, calendar_ids=None)` | Before offering/booking any slot. |
 | `list_events` | `(time_min, time_max, calendar_id="primary")` | "What's on my calendar today/this week?" |
 
-More Gmail/GCal actions exist beyond this catalog — discover with
-`composio search "<task>"` and inspect inputs with
-`composio execute <SLUG> --get-schema`, then call `tools.execute(slug, args)`.
-The confirmation rules above apply to ALL write actions, catalog or not.
+`tools.execute(slug, args)` enforces a hard allowlist (`tools.ALLOWED_SLUGS`) —
+only the slugs the table above actually uses. Any other slug (including
+destructive ones like `GMAIL_DELETE_MESSAGE`, or a slug beyond this catalog)
+raises `IntegrationError` before it reaches the CLI, even if you construct
+the call yourself. To use more Gmail/GCal actions, discover them with
+`composio search "<task>"`, inspect inputs with
+`composio execute <SLUG> --get-schema`, get the slug added to
+`ALLOWED_SLUGS` in `tools.py`, then call `tools.execute(slug, args)`. The
+confirmation rules above apply to ALL write actions, catalog or not.
+
+`send_email` additionally refuses to send to any address that isn't
+(case-insensitively) an existing lead's email — it checks via
+`crm-db-operations`' `list_leads`. Use `create_draft` for anyone not yet in
+the CRM.

@@ -22,6 +22,20 @@ class IntegrationError(Exception):
     """Raised when the Composio tool call fails (auth, network, bad args...)."""
 
 
+# Every slug this file's own named helpers call below — the single gate all
+# tools.execute() traffic passes through. Destructive/unreviewed slugs (e.g.
+# GMAIL_DELETE_MESSAGE) are refused even if the model tries to invoke them
+# directly via tools.execute(slug, args).
+ALLOWED_SLUGS = frozenset({
+    "GMAIL_SEND_EMAIL",                # send_email
+    "GMAIL_CREATE_EMAIL_DRAFT",        # create_draft
+    "GMAIL_FETCH_EMAILS",              # fetch_emails
+    "GOOGLECALENDAR_CREATE_EVENT",     # create_event
+    "GOOGLECALENDAR_FREE_BUSY_QUERY",  # free_busy
+    "GOOGLECALENDAR_EVENTS_LIST",      # list_events
+})
+
+
 def _cli() -> str:
     path = shutil.which("composio") or os.path.expanduser("~/.composio/composio")
     if not os.path.exists(path):
@@ -29,22 +43,51 @@ def _cli() -> str:
     return path
 
 
+def _known_lead_emails() -> set:
+    """Case-insensitive lead emails from the CRM (crm-db-operations skill,
+    installed as a sibling directory per SKILL.md rule 2) — gates
+    send_email's recipient. Loaded by file path under a distinct module name
+    (not `import tools`) since this file is itself named tools.py and a bare
+    `import tools` would collide with this module in sys.modules."""
+    import importlib.util
+    import sys as _sys
+    key = "_crm_db_operations_tools"
+    mod = _sys.modules.get(key)
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "crm-db-operations", "tools.py")
+        spec = importlib.util.spec_from_file_location(key, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _sys.modules[key] = mod
+    leads = mod.list_leads(sort="recent")
+    return {l["email"].strip().lower() for l in leads if l.get("email")}
+
+
 def execute(slug: str, arguments: dict) -> dict:
     """Run one Composio tool. Returns the `data` payload or raises IntegrationError."""
+    if slug not in ALLOWED_SLUGS:
+        raise IntegrationError(f"{slug}: not in the approved catalog")
     try:
         proc = subprocess.run(
             [_cli(), "execute", slug, "-d", json.dumps(arguments)],
-            capture_output=True, text=True, timeout=TIMEOUT)
+            capture_output=True, text=True, timeout=TIMEOUT,
+            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         raise IntegrationError(f"{slug}: timed out after {TIMEOUT}s")
-    out = proc.stdout.strip()
-    try:
-        payload = json.loads(out[out.index("{"):]) if "{" in out else {}
-    except (ValueError, json.JSONDecodeError):
-        payload = {}
+    payload = {}
+    for line in reversed([l for l in proc.stdout.splitlines() if l.strip()]):
+        try:
+            payload = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            continue
     if proc.returncode == 0 and payload.get("successful"):
         return payload.get("data") or {}
-    err = payload.get("error") or proc.stderr.strip()[:300] or f"exit {proc.returncode}"
+    # never surface raw stderr (may contain tokens/paths/tracebacks) into chat
+    err = payload.get("error") or (
+        "composio CLI failed — check `composio link` / logs" if proc.stderr.strip()
+        else f"exit {proc.returncode}")
     raise IntegrationError(f"{slug}: {err}")
 
 
@@ -52,7 +95,12 @@ def execute(slug: str, arguments: dict) -> dict:
 
 def send_email(to: str, subject: str, body: str, *, cc: list | None = None,
                bcc: list | None = None) -> dict:
-    """Send a real email. Only call after the user has confirmed recipient + content."""
+    """Send a real email. Only call after the user has confirmed recipient + content.
+    Refuses to send to any address that isn't (case-insensitively) an existing
+    lead's email — never invent or accept an arbitrary recipient (SKILL.md rule 2)."""
+    if to.strip().lower() not in _known_lead_emails():
+        raise IntegrationError(
+            f"refusing to send: {to!r} does not match any lead's email in the CRM")
     args = {"recipient_email": to, "subject": subject, "body": body}
     if cc:
         args["cc"] = cc

@@ -62,13 +62,13 @@ def startup():
     if cc.mode() == "live" and not cc.is_live():
         print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
               "running with integrations OFF (simulated).")
-    # INTEGRATIONS_POLLER=off keeps live sends/events but skips the inbox
-    # poller — with the CLI transport the connected mailbox is a PERSONAL
-    # account, and auto-intake would turn its real mail into CRM leads.
-    if cc.is_live() and os.environ.get("INTEGRATIONS_POLLER", "on") != "off":
+    # INTEGRATIONS_POLLER must be explicitly opted in — with the CLI transport
+    # the connected mailbox is a PERSONAL account, and auto-intake turns real
+    # inbound mail into CRM leads (and model input) with no human in the loop.
+    if cc.is_live() and os.environ.get("INTEGRATIONS_POLLER", "off") == "on":
         import asyncio
         from .integrations.poller import poll_loop
-        asyncio.get_event_loop().create_task(poll_loop())
+        app.state.poller_task = asyncio.get_event_loop().create_task(poll_loop())
 
 
 # GB10 single-port hosting: if the dashboard has been built (npm run build),

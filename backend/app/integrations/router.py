@@ -22,12 +22,23 @@ def status():
     return {"mode": cc.mode(), "gmail": live, "gcal": live}
 
 
+def _recipient_is_known_lead(email: str) -> bool:
+    """Case-insensitive check that `email` matches an existing leads.email row.
+    Own short get_conn() block — never open across the cc.execute() call."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM leads WHERE lower(email) = lower(?)", (email,)
+        ).fetchone() is not None
+
+
 @router.post("/email/send")
 def send_email(body: EmailIn):
     with get_conn() as conn:
         lead = fetch_lead(conn, body.lead_id)
     if not lead.get("email"):
         raise HTTPException(400, "lead has no email address")
+    if not _recipient_is_known_lead(lead["email"]):
+        raise HTTPException(400, "recipient does not match a known lead")
 
     simulated = not cc.is_live()
     marker = ""
