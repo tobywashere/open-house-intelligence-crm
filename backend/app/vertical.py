@@ -71,7 +71,9 @@ DEFAULT_PACK: dict = {
         "funnel.action_advance_title": "Advance {n} qualified lead{s} to a tour",
         "funnel.kpi_qualified_buyers": "Qualified buyers",
         "funnel.kpi_tours_scheduled": "Tours scheduled",
+        "funnel.action_book_tours_sub": "Only {n} upcoming — tours drive offers",
         "export.upcoming_tours_heading": "## Upcoming tours",
+        "export.summary_title": "Home search summary",
     },
     # Filled in by Task 5 from prompts/seattle-real-estate-news-reporter.md.
     # Present now so the schema shape is stable for downstream consumers.

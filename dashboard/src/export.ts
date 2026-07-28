@@ -5,7 +5,7 @@ import { fmtSlotDay, fmtSlotTime, LeadProfile } from './api'
 import { copy } from './vertical'
 
 export function clientSafeMarkdown(lead: LeadProfile): string {
-  const lines: string[] = [`# Home search summary — ${lead.name}`, '']
+  const lines: string[] = [`# ${copy('export.summary_title', 'Home search summary')} — ${lead.name}`, '']
   lines.push(`Prepared ${new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}`, '')
 
   lines.push('## Your search')

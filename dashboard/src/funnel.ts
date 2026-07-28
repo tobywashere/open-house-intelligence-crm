@@ -246,7 +246,11 @@ function compute(
     },
     upcoming.length < 3 && {
       icon: '📅', title: copy('funnel.action_book_tours_title', 'Book more tours this week'),
-      sub: `Only ${upcoming.length} upcoming — tours drive offers`, impact: 'High impact' as const, cta: 'View calendar', to: '/leads',
+      sub: copy('funnel.action_book_tours_sub', 'Only {n} upcoming — tours drive offers').replace(
+        '{n}',
+        String(upcoming.length),
+      ),
+      impact: 'High impact' as const, cta: 'View calendar', to: '/leads',
     },
     warmUntoured.length && {
       icon: '👥',
