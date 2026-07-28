@@ -103,6 +103,10 @@ def advance_time(body: AdvanceTimeIn):
                 "UPDATE leads SET last_activity_at = "
                 "strftime('%Y-%m-%dT%H:%M:%S', datetime(last_activity_at, ?)) ",
                 (f"-{body.days} days",))
+            # unconditional: this rewrites last_activity_at on every open lead
+            # even when none of them cross the neglect threshold below, so the
+            # conditional audit in run_neglect_check() alone would miss it.
+            audit(conn, "user", "advance_time", {"days": body.days}, {})
         neglected = run_neglect_check(conn)
     return {"neglected": neglected}
 

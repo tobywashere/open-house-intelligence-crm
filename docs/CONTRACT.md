@@ -120,21 +120,35 @@ driver's requests, which stay on-box.
 
 ## 3. Agent tools (OpenClaw skill ⇄ REST mapping)
 
-**Audit reality (corrected 2026-07-27 — the previous "every tool call MUST
-write an audit_log row" claim here was false):** every **write** made through
-the REST layer is audited — every mutating endpoint calls `audit()` in the
-same transaction, including `POST /leads/{id}/events`, `PATCH
-/reminders/{id}`, and `DELETE /chat/history`, which did not audit until this
-date (fixed 2026-07-27; see `backend/tests/test_audit_coverage.py`). Two
-reads also audit, as an exception, since they're treated as agent tool calls
-for activity-stream purposes: `GET /availability` (`check_availability`) and
-`GET /leads/{id}/duplicates` (`find_duplicate_leads`). All other reads write
-nothing (`GET /leads`, `GET /leads/{id}`, `GET /metrics`, `GET /audit`
-itself, etc.). The optional `composio-email-calendar` skill's **direct**
-Composio calls (used when a human explicitly wants to send/schedule
-something outside the CRM's closed loop) bypass the backend entirely and are
-**not** audited — only the backend's own `POST /email/send` path (and the
-calendar-booking hook) logs an `audit_log` row for outbound comms.
+**Audit reality (corrected 2026-07-27, refined 2026-07-28 — the previous
+"every tool call MUST write an audit_log row" claim here was false):** every
+**write** made through the REST layer is audited, with exactly one
+carve-out — **`POST /chat` is not audited.** A chat turn is already
+durably recorded in `chat_messages` (the transcript table `GET
+/chat/history` and `GET /chat/sessions` serve); writing it a second time to
+`audit_log` would double-log the same fact and flood the dashboard's
+activity stream with every user message. Every other mutating endpoint
+calls `audit()` in the same transaction, including `POST
+/leads/{id}/events`, `PATCH /reminders/{id}`, and `DELETE /chat/history`
+(none of which audited before 2026-07-27), and `POST /demo/advance-time`,
+whose backdate step now audits **unconditionally** as of 2026-07-28 — it
+previously only got a trail via the neglect check's own `if neglected:`
+guard, so a call that backdated every open lead's `last_activity_at`
+without tripping the 2-day threshold left zero record of the mutation (see
+`backend/tests/test_audit_coverage.py` for both this and the round-1
+fixes). Two reads also audit, as an exception, since they're treated as
+agent tool calls for activity-stream purposes: `GET /availability`
+(`check_availability`) and `GET /leads/{id}/duplicates`
+(`find_duplicate_leads`). All other reads write nothing (`GET /leads`, `GET
+/leads/{id}`, `GET /metrics`, `GET /audit` itself, etc.). The optional
+`composio-email-calendar` skill's **direct** Composio calls (used when a
+human explicitly wants to send/schedule something outside the CRM's closed
+loop) bypass the backend entirely and are **not** audited — only the
+backend's own `POST /email/send` path (and the calendar-booking hook) logs
+an `audit_log` row for outbound comms. Note for readers of the dashboard:
+`audit_log` rows carry an `actor` of `agent`, `user`, *or* `cron` (see the
+`audit_log` table in §1) — the dashboard's "agent activity" stream is
+really an **audit activity** stream covering all three, not agent-only.
 
 | Tool | Endpoint |
 |---|---|

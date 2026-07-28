@@ -1,6 +1,7 @@
 """Every write through the REST layer must leave an audit_log row (Task 11
 fix round 1 — docs/CONTRACT.md §3 previously claimed this while three write
 endpoints silently skipped it). Pins the fix so it can't regress."""
+import json
 
 
 def _mk(client, **kw):
@@ -46,3 +47,20 @@ def test_clear_chat_history_is_audited(client):
     row = _last_audit_row(client, "clear_chat_history")
     assert row["actor"] == "user"
     assert row["lead_id"] is None
+
+
+def test_advance_time_is_audited_even_without_neglect(client):
+    # NEGLECT_AFTER_DAYS is 2 (backend/app/routers/misc.py). A fresh lead's
+    # last_activity_at is "now", so backdating it by 1 day still leaves it
+    # short of the 2-day threshold: run_neglect_check() flags nothing, and
+    # its conditional `if neglected:` audit never fires. The unconditional
+    # advance_time audit must still land — advance_time backdates EVERY
+    # open lead's last_activity_at regardless of whether anyone crosses the
+    # threshold, so that mutation needs its own trail.
+    lead = _mk(client)
+    r = client.post("/api/demo/advance-time", json={"days": 1})
+    assert r.status_code == 200
+    assert r.json()["neglected"] == []  # confirms the conditional audit path did NOT fire
+    row = _last_audit_row(client, "advance_time")
+    assert row["actor"] == "user"
+    assert json.loads(row["input"]) == {"days": 1}
