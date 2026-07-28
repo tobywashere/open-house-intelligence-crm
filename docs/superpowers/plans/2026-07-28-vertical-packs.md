@@ -465,6 +465,29 @@ Verify `status_at_least_or_score` reproduces `funnel.ts:130`'s `RANK[l.status] >
 
 ---
 
+### Task 4b: Funnel's derived sections use the same stage evaluator
+
+**Files:**
+- Modify: `dashboard/src/funnel.ts` (the `reachedContact`/`qualified`/`toured`/`offered`/`closed` locals and their consumers: velocity, sources, next-best-actions, KPI strip)
+- Test: no-op comparison harness (as in Task 4) + `backend/tests/test_vertical.py` if the pack gains keys
+
+**Why:** Task 4 made the six funnel STAGES pack-driven, but the velocity cards, source-conversion rates, next-best-actions, and the KPI strip still compute from hardcoded filters that duplicate the same logic. Under a pack defining `qualified` as `min_score: 50`, the funnel bar would say 50 while the "Qualified buyers" KPI beside it still says 70 — two different numbers for the same concept on one screen. The same applies to `warmUntoured` (hardcodes "tours"), `sources.won` (hardcodes `RANK>=2`), `negotiating` (hardcodes offers), and velocity's `chain = ['new','contacted','meeting_booked','closed']` (hardcodes the status ladder). Unreachable while real-estate is the only pack; a live wrong-number bug the moment Task 8's packs land.
+
+**Interfaces:**
+- Produces: `matchedByStage(leads, eventsByLead, stages): Map<string, Lead[]>` exported from `funnel.ts`; `stagesFromPack` becomes a thin count-map over it.
+
+- [ ] **Step 1: Extract the shared evaluator.** Refactor `stagesFromPack` so both it and the derived sections read one source of truth. `matchedByStage` returns the matched lead array per stage key; `stagesFromPack` maps it to `{key, label, count}`.
+
+- [ ] **Step 2: Rewrite the five locals** as `byStage.get('<key>') ?? <today's hardcoded filter>`. The `??` fallback is required, not optional: a pack may omit a stage key entirely, and the derived sections must then degrade to current behavior rather than showing zero.
+
+- [ ] **Step 3: Handle the status ladder.** Velocity's `chain` and `sources.won` assume the real-estate status progression. Derive what you can from the pack's stage order; where a genuine schema status is required (the `leads.status` enum is NOT pack-driven — it stays `new|contacted|meeting_booked|closed`), keep it and add a comment saying why. Do not invent pack keys for schema-level concepts.
+
+- [ ] **Step 4: Prove the no-op.** Same harness style as Task 4: old locals vs new `byStage` lookups over the 15 seeded demo leads plus a synthetic cross of statuses × scores × offer-events. Every derived number — velocity days, source rates, action counts, all six KPIs — must be identical under the real-estate pack. Report the comparison count.
+
+- [ ] **Step 5: Gates + commit** — `cd backend && ../.venv/bin/python -m pytest tests/ -q`, `cd dashboard && npx tsc -b && npm run build`. `feat: funnel derived sections read the same pack-driven stage evaluator`
+
+---
+
 ### Task 5: Research settings — storage, API, and templated prompt
 
 **Files:**
@@ -728,6 +751,6 @@ Topics that give retrieval something to bite on: b2b-saas → procurement/securi
 
 ## Self-Review (done at write time)
 
-- **Spec coverage:** pack definition/loader → T1; serving + dashboard resolution → T2; copy/labels/personas → T3; mock briefing generator → T3b; funnel stages+rules → T4; research scope config, templated prompt, storage/API → T5; knowledge upload/list/delete + panel → T6; research settings UI → T7; three example packs with knowledge → T8; `docs/VERTICALS.md` + cross-links → T9. Non-goals (runtime switching, schema renames, PDF ingestion, marketplace) are excluded throughout. Testing strategy (real-estate no-op, pack-loading degradation, adversarial upload tests, 12 locked queries untouched) is distributed across T1/T3/T6/T8.
+- **Spec coverage:** pack definition/loader → T1; serving + dashboard resolution → T2; copy/labels/personas → T3; mock briefing generator → T3b; funnel stages+rules → T4; derived funnel sections → T4b; research scope config, templated prompt, storage/API → T5; knowledge upload/list/delete + panel → T6; research settings UI → T7; three example packs with knowledge → T8; `docs/VERTICALS.md` + cross-links → T9. Non-goals (runtime switching, schema renames, PDF ingestion, marketplace) are excluded throughout. Testing strategy (real-estate no-op, pack-loading degradation, adversarial upload tests, 12 locked queries untouched) is distributed across T1/T3/T6/T8.
 - **Placeholders:** the `DEFAULT_PACK` body in T1 and `BUILT_IN` in T2 are deliberately marked "transcribe from the live code" rather than invented — the shipped values are the source of truth and a fabricated list here would be wrong. Every other step carries real content.
 - **Type consistency:** `load_pack()`/`clear_cache()`/`DEFAULT_PACK`/`KNOWN_RULE_TYPES` (T1) are consumed by T2/T4/T5/T8 under those exact names; `pack()`/`copy()`/`loadVertical()`/`Pack`/`Stage` (T2) by T3/T4; `render_research_prompt()` (T5) by T7 via the API; the T3 copy-coverage test is extended in T8 to cover all shipped packs.
