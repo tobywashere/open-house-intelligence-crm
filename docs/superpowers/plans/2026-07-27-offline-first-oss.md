@@ -282,8 +282,11 @@ async def test_slow_hook_does_not_block_event_loop(monkeypatch):
                 async def create():
                     await ac.post("/api/leads", json={"name": "Slow", "source": "note"})
                 tg.start_soon(create)
-                await anyio.sleep(0.3)          # let create reach the hook
+                # NOTE (fixed post-review): t0 must be stamped BEFORE the settle
+                # sleep — a frozen loop delays that sleep too, so a later t0 is a
+                # false negative. See test_hooks_nonblocking.py for the shipped form.
                 t0 = time.monotonic()
+                await anyio.sleep(0.3)          # let create reach the hook
                 r = await ac.get("/api/health")
                 elapsed = time.monotonic() - t0
         assert r.status_code == 200
