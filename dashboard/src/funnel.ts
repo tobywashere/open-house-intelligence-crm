@@ -91,24 +91,42 @@ const RULE_EVAL: Record<string, (l: Lead, r: any, ev: Map<number, LeadProfile['e
     (ev.get(l.id) ?? []).some((e) => e.type === r.event_type) || l.status === r.status,
 }
 
+// Task 4b: single source of truth for "which leads are in stage X" — both
+// the funnel bar (stagesFromPack, below) and the derived sections further
+// down this file (velocity/sources/actions/KPIs) read this same map, so a
+// pack's definition of e.g. "qualified" can never disagree between the two.
+// Defense-in-depth (same policy as the persona `when` evaluator in
+// briefing.ts, per vertical.py's comment: TS-side guards stay in place for a
+// dashboard that might be served by a backend predating the sanitizer).
+// `_sanitize_stages` on the current backend already rejects a non-list
+// `stages` and a stage with a non-object `rule`, but this client must not
+// assume it's always talking to the current backend — a missing/unknown
+// stage key or rule type must degrade to an empty match list, never throw.
+export function matchedByStage(
+  leads: Lead[],
+  eventsByLead: Map<number, LeadProfile['events']>,
+  stages: Stage[],
+): Map<string, Lead[]> {
+  const byStage = new Map<string, Lead[]>()
+  if (!Array.isArray(stages)) return byStage
+  for (const s of stages) {
+    const rule = (s as any)?.rule ?? {}
+    const evaluate = RULE_EVAL[(rule as any).type as string]
+    byStage.set(s.key, evaluate ? leads.filter((l) => evaluate(l, rule, eventsByLead)) : [])
+  }
+  return byStage
+}
+
 export function stagesFromPack(
   leads: Lead[],
   eventsByLead: Map<number, LeadProfile['events']>,
   stages: Stage[],
 ): FunnelStage[] {
-  // Defense-in-depth (same policy as the persona `when` evaluator in
-  // briefing.ts, per vertical.py's comment: TS-side guards stay in place
-  // for a dashboard that might be served by a backend predating the
-  // sanitizer). `_sanitize_stages` on the current backend already rejects a
-  // non-list `stages` and a stage with a non-object `rule`, but this client
-  // must not assume it's always talking to the current backend.
   if (!Array.isArray(stages)) return []
+  const byStage = matchedByStage(leads, eventsByLead, stages)
   return stages.map((s) => {
-    const rule = s.rule ?? {}
-    const evaluate = RULE_EVAL[(rule as any).type as string]
-    const matched = evaluate ? leads.filter((l) => evaluate(l, rule, eventsByLead)) : []
     const label = typeof s.label === 'string' && s.label ? s.label : s.key
-    return { key: s.key, label, count: matched.length }
+    return { key: s.key, label, count: (byStage.get(s.key) ?? []).length }
   })
 }
 
@@ -167,11 +185,25 @@ function compute(
     return ev ? { at: parseUtc(ev.created_at), amount: parseOfferAmount(ev.content) } : null
   }
 
-  const reachedContact = leads.filter((l) => RANK[l.status] >= 1)
-  const qualified = leads.filter((l) => RANK[l.status] >= 2 || (RANK[l.status] >= 1 && (l.score ?? 0) >= 70))
-  const toured = leads.filter((l) => RANK[l.status] >= 2)
-  const offered = leads.filter((l) => offerOf(l) !== null || l.status === 'closed')
-  const closed = leads.filter((l) => l.status === 'closed')
+  // Task 4b: velocity/sources/actions/KPIs read the SAME per-stage match
+  // sets the funnel bar itself is built from (matchedByStage/RULE_EVAL) —
+  // no forked "qualified"/"tours"/etc. logic. The `??` fallback is required,
+  // not cosmetic: a pack may validly omit a stage key (the backend sanitizer
+  // only requires >=2 valid stages total), and these sections must then
+  // degrade to today's exact hardcoded formula rather than reading an empty
+  // array and showing zero.
+  const byStage = matchedByStage(leads, eventsByLead, pack().stages)
+  const reachedContact = byStage.get('contacted') ?? leads.filter((l) => RANK[l.status] >= 1)
+  const qualified =
+    byStage.get('qualified') ?? leads.filter((l) => RANK[l.status] >= 2 || (RANK[l.status] >= 1 && (l.score ?? 0) >= 70))
+  const toured = byStage.get('tours') ?? leads.filter((l) => RANK[l.status] >= 2)
+  const offered = byStage.get('offers') ?? leads.filter((l) => offerOf(l) !== null || l.status === 'closed')
+  const closed = byStage.get('closed') ?? leads.filter((l) => l.status === 'closed')
+  // Membership check for "has this lead reached the pack's tours stage" —
+  // used below by warmUntoured and sources.won so both read the same
+  // `toured` set instead of re-deriving it via a second hardcoded RANK>=2
+  // filter (that was the exact class of duplication this task removes).
+  const touredSet = new Set(toured)
 
   const stages: FunnelStage[] = stagesFromPack(leads, eventsByLead, pack().stages)
 
@@ -201,6 +233,13 @@ function compute(
     return ev ?? null
   }
   const durations: Record<string, number[]> = { new: [], contacted: [], meeting_booked: [] }
+  // Schema-level, not pack-driven (Task 4b): this walks `status_change`
+  // event content literally containing "→ contacted" / "→ meeting_booked" /
+  // etc., i.e. it depends on `leads.status`'s fixed 4-value enum
+  // (new|contacted|meeting_booked|closed), not on any pack stage key or
+  // rule. A pack cannot rename or redefine what "contacted" means at the
+  // schema layer, so there is no pack-driven equivalent to derive this
+  // from — keep the literal status ladder here.
   const chain = ['new', 'contacted', 'meeting_booked', 'closed']
   for (const l of leads) {
     for (let i = 0; i < 3; i++) {
@@ -234,12 +273,14 @@ function compute(
     .filter((d) => d >= 0)
   const avgDaysToClose = avg(closeDurations)
 
-  // source → booked-or-closed rate
+  // source → booked-or-closed rate. "won" here means "reached the pack's
+  // tours stage" (Task 4b: was a hardcoded RANK>=2 filter — now reads the
+  // same `touredSet` the tours KPI/stage count itself is built from).
   const srcNames = [...new Set(leads.map((l) => l.source ?? 'unknown'))]
   const sources = srcNames
     .map((s) => {
       const of = leads.filter((l) => (l.source ?? 'unknown') === s)
-      const won = of.filter((l) => RANK[l.status] >= 2).length
+      const won = of.filter((l) => touredSet.has(l)).length
       return { label: s, won, total: of.length, rate: of.length ? Math.round((won / of.length) * 1000) / 10 : 0 }
     })
     .sort((a, b) => b.rate - a.rate)
@@ -272,7 +313,14 @@ function compute(
     (l) => l.status === 'contacted' && (Date.now() - parseUtc(l.last_activity_at)) / DAY >= 3,
   )
   const upcoming = appts.filter((a) => new Date(a.start_ts) > new Date())
-  const warmUntoured = qualified.filter((l) => RANK[l.status] < 2)
+  // Task 4b: "warm but not yet toured" — was a hardcoded RANK<2 filter, now
+  // reads the same `touredSet` used above so a pack redefining "tours"
+  // can't disagree with this count.
+  const warmUntoured = qualified.filter((l) => !touredSet.has(l))
+  // `l.status !== 'closed'` here is schema-level (leads.status enum), not a
+  // pack concept — "closed" as a lifecycle terminus is a schema fact, and
+  // `offered` itself is already pack-driven above, so this filter doesn't
+  // need to be.
   const negotiating = offered.filter((l) => l.status !== 'closed')
   const actions: NextAction[] = [
     staleContacted.length && {
