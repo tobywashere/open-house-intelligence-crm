@@ -22,6 +22,7 @@ export function ChatPanel() {
         ? 'Ask about this client…'
         : 'Ask anything about your leads'
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(SESSION_KEY) ?? 'dashboard')
+  const sessionIdRef = useRef(sessionId)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -31,6 +32,7 @@ export function ChatPanel() {
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    sessionIdRef.current = sessionId
     localStorage.setItem(SESSION_KEY, sessionId)
     api.chatHistory(sessionId).then(setMsgs).catch(() => setMsgs([]))
   }, [sessionId])
@@ -70,16 +72,21 @@ export function ChatPanel() {
   const send = async (preset?: string) => {
     const message = (preset ?? input).trim()
     if (!message || thinking) return
+    const issued = sessionId
     setInput('')
     setMsgs((m) => [...m, { role: 'user', content: message }])
     setThinking(true)
     try {
-      const { reply } = await api.chat(message, sessionId)
+      const { reply } = await api.chat(message, issued)
+      // The user may have switched/started a new chat while this request was
+      // in flight — don't splice a reply for a stale session into the new one.
+      if (issued !== sessionIdRef.current) return
       setMsgs((m) => [...m, { role: 'agent', content: reply }])
     } catch {
+      if (issued !== sessionIdRef.current) return
       setMsgs((m) => [...m, { role: 'agent', content: '⚠ Could not reach the agent.' }])
     } finally {
-      setThinking(false)
+      if (issued === sessionIdRef.current) setThinking(false)
     }
   }
 

@@ -40,6 +40,8 @@ export function LeadPage() {
       setDraft(res.followup_draft)
       setSubject(lead?.area ? `Your home search in ${lead.area}` : 'Following up on your home search')
       load()
+    } catch {
+      toast('Something went wrong — the backend may be down')
     } finally {
       setBusy(false)
     }
@@ -54,6 +56,8 @@ export function LeadPage() {
       setReviewing(null)
       toast(`✓ Merged ${reviewing.name} into this profile`)
       load()
+    } catch {
+      toast('Something went wrong — the backend may be down')
     } finally {
       setMerging(false)
     }

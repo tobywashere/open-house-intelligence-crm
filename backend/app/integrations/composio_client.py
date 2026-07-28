@@ -21,6 +21,23 @@ class IntegrationError(Exception):
     pass
 
 
+# Real usage counter for the "no cloud calls in off mode" pitch (dashboard
+# metrics). Incremented only once execute() has confirmed we're actually
+# live (mode == "live" and a key/CLI session is present) — never in off
+# mode, and never per-retry (one user-visible call == one increment).
+_REQUEST_COUNT = 0
+
+
+def request_count() -> int:
+    return _REQUEST_COUNT
+
+
+def reset_request_count() -> None:
+    """Test-only: reset the module counter between test cases."""
+    global _REQUEST_COUNT
+    _REQUEST_COUNT = 0
+
+
 # Every slug this backend actually calls (hooks.py, router.py, poller.py) —
 # the single gate all cc.execute() traffic passes through. Destructive/
 # unreviewed slugs (e.g. GMAIL_DELETE_MESSAGE) are refused even if the model
@@ -79,6 +96,8 @@ def execute(slug: str, arguments: dict) -> dict:
         raise IntegrationError(f"{slug}: not in the approved catalog")
     if not is_live():
         raise IntegrationError("integrations disabled (INTEGRATIONS_MODE != live or no key)")
+    global _REQUEST_COUNT
+    _REQUEST_COUNT += 1
     if transport() == "cli":
         return _execute_cli(slug, arguments)
     key = os.environ.get("COMPOSIO_API_KEY")

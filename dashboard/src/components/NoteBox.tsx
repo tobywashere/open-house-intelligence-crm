@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api, toNaiveLocal } from '../api'
+import { toast } from './Toast'
 
 // Demo story step 3: "Annie records a note and schedules a follow-up."
 // "in 1 min" exists for the live demo — the reminder visibly fires in the
@@ -37,6 +38,8 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
       setConfirmation(msg)
       setTimeout(() => setConfirmation(null), 4000)
       onSaved()
+    } catch {
+      toast('Something went wrong — the backend may be down')
     } finally {
       setBusy(false)
     }

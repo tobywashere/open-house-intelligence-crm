@@ -95,7 +95,7 @@ export interface Metrics {
   high_priority: number
   followups_due: number
   appointments_booked: number
-  avg_response_minutes: number
+  avg_response_minutes: number | null
   agent_mode: string
   cloud_llm_requests: number
 }

@@ -7,6 +7,7 @@ from ..agent import get_driver
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
 from ..integrations import hooks
+from ..integrations import composio_client
 from .leads import fetch_lead
 from ..scoring import is_high_priority
 
@@ -116,14 +117,25 @@ def metrics():
         leads = [row_to_dict(r) for r in conn.execute(
             "SELECT * FROM leads WHERE status != 'closed'")]
         appts = conn.execute("SELECT COUNT(*) c FROM appointments").fetchone()["c"]
+        # Mean minutes from a lead's created_at to its first event's created_at,
+        # over leads with >=1 event only. Timestamps are naive-local strings
+        # (Task 7), so julianday() differences are directly comparable — no
+        # timezone normalization needed. NULL (no qualifying lead) -> None.
+        avg_row = conn.execute(
+            "SELECT AVG((julianday(f.first_event_at) - julianday(l.created_at)) * 1440.0) AS avg_min "
+            "FROM leads l "
+            "JOIN (SELECT lead_id, MIN(created_at) AS first_event_at FROM events GROUP BY lead_id) f "
+            "ON f.lead_id = l.id"
+        ).fetchone()
+        avg_response_minutes = avg_row["avg_min"]
     return {
         "active_leads": len(leads),
         "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
         "followups_due": sum(1 for l in leads if l["is_neglected"]),
         "appointments_booked": appts,
-        "avg_response_minutes": 4,  # TODO(Toby): compute from events once real data flows
+        "avg_response_minutes": avg_response_minutes,
         "agent_mode": os.environ.get("AGENT_MODE", "mock"),
-        "cloud_llm_requests": 0,
+        "cloud_llm_requests": composio_client.request_count(),
     }
 
 

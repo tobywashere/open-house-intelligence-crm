@@ -33,6 +33,13 @@ export function downloadMarkdown(filename: string, content: string) {
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(url)
+  // Firefox-safe: revoke/remove on next tick, after the click has been
+  // processed — a click on an element that was never attached to the DOM
+  // (or is removed before the click resolves) silently no-ops in Firefox.
+  setTimeout(() => {
+    URL.revokeObjectURL(url)
+    a.remove()
+  }, 0)
 }

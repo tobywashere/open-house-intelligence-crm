@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, Appointment, downloadIcs, fmtSlotDay, fmtSlotTime, IntegrationsStatus, localDateKey } from '../api'
+import { api, ApiError, Appointment, downloadIcs, fmtSlotDay, fmtSlotTime, IntegrationsStatus, localDateKey } from '../api'
 
 interface Slot {
   start_ts: string
@@ -43,7 +43,7 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
       setBooked(appt)
       onBooked()
     } catch (e) {
-      if (e instanceof Error && e.message.startsWith('409')) {
+      if (e instanceof ApiError && e.status === 409) {
         setError('That slot just got taken — pick another.')
         loadSlots(date)
       } else {

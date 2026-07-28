@@ -60,6 +60,11 @@ export interface FunnelData {
   opportunities: Opportunity[]
   actions: NextAction[]
   kpis: Kpi[]
+  // Raw lists already fetched to build the funnel — exposed so callers (the
+  // dashboard tick) can feed computeInsights() without a second network
+  // round-trip for the same data.
+  leads: Lead[]
+  appts: Appointment[]
 }
 
 const RANK: Record<Lead['status'], number> = { new: 0, contacted: 1, meeting_booked: 2, closed: 3 }
@@ -280,5 +285,6 @@ function compute(
     overallPct,
     overallLabel: `${closed.length} closed / ${leads.length} new leads`,
     bottleneck, avgDaysToClose, velocity, sources, opportunities, actions, kpis,
+    leads, appts,
   }
 }

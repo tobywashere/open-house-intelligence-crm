@@ -23,17 +23,23 @@ export function DashboardPage() {
 
   useEffect(() => {
     let live = true
-    let persisted = false
+    // Keyed by date, not a boolean: a dashboard left open overnight (the
+    // wall-mounted use case) must still POST the new day's row once the
+    // clock rolls over — a one-shot `persisted` flag never fires again
+    // after the first tick, so the write-through silently stops.
+    let persistedDate = ''
     const load = () =>
-      Promise.all([fetchFunnel(true), api.leads(), api.appointments(), api.audit(200)])
-        .then(([funnel, leads, appts, audit]) => {
+      Promise.all([fetchFunnel(true), api.audit(200)])
+        .then(([funnel, audit]) => {
           if (!live) return
           setFd(funnel)
-          const computed = computeInsights(leads, appts, audit)
+          // leads/appts already fetched inside fetchFunnel — reuse them
+          // instead of issuing a second round-trip for the same data.
+          const computed = computeInsights(funnel.leads, funnel.appts, audit)
           setIns(computed)
-          if (!persisted) {
+          if (computed.date !== persistedDate) {
             // daily write-through: K's morning-summary cron reads this back
-            persisted = true
+            persistedDate = computed.date
             api.postInsights(computed).catch(() => {})
           }
         })
