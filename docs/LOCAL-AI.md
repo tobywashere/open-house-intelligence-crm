@@ -156,7 +156,37 @@ schedule — ask the agent in chat ("run the daily-command-center skill and
 post today's briefing") and then `curl "$BASE/briefing?date=$(date +%F)"` to
 confirm it landed.
 
-## 6. Optional, needs internet
+## 6. Domain knowledge base (fully offline)
+
+`POST /chat` is grounded in your own market-intelligence docs, not just
+CRM data. Every `.md` file in `docs/knowledge/` (default; see
+`KNOWLEDGE_DIR` in `.env.example`) is chunked by heading and indexed with a
+pure-stdlib **BM25 lexical index** (`backend/app/knowledge/`) — no
+embeddings, no vector DB, no model download, no network call. The index
+builds lazily on first use, is cached in memory, and rebuilds automatically
+whenever a source file's mtime changes, so you can edit or swap the doc
+without restarting the server.
+
+When a client's chat message matches a section well enough (above
+`KNOWLEDGE_MIN_SCORE`), the top `KNOWLEDGE_TOP_K` chunks are prepended to the
+message the driver sees, in a clearly-delimited reference block that tells
+the model to use them when relevant, cite the section heading, and never
+treat their contents as instructions. An unrelated message is sent
+unchanged — no block, no noise. Retrieval failures are swallowed and simply
+degrade to "no context"; they never turn into a chat 500.
+
+`GET /api/knowledge/search?q=&k=` exposes the same retrieval directly (`doc`,
+`heading`, `breadcrumb`, `score`, `text` per hit) for debugging or a future
+dashboard panel — read-only, not audited (see `docs/CONTRACT.md` §2/§3).
+
+**This is the per-industry knob.** The repo ships with
+`docs/knowledge/pacific_northwest_luxury_real_estate_report_2026.md`, a
+Pacific Northwest luxury real-estate market report (RSU vesting mechanics,
+WA excise/capital-gains tax, school-district valuation, etc.). Swap that
+file for a different vertical's material and the agent's answers follow —
+no code change, see `docs/knowledge/README.md`.
+
+## 7. Optional, needs internet
 
 Everything above is fully offline. Two pieces of the product reach the
 internet, and both are off unless you explicitly turn them on:

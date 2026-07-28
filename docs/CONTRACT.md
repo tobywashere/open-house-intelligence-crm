@@ -102,6 +102,7 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 | `POST /summary` | summary JSON (must include `date`) → same JSON | upsert by date |
 | `GET /integrations/status` | → `{mode, gmail, gcal}` | additive, recorded 2026-07-27; `mode` is `INTEGRATIONS_MODE`, `gmail`/`gcal` reflect whether Composio is actually live (mode=live AND a key is configured) |
 | `POST /email/send` | `{lead_id, subject, body}` → `{sent: true, simulated}` | additive, recorded 2026-07-27; recipient must be the lead's own `email` (400 otherwise); `simulated: true` when integrations aren't live; logs an `events` row + reminder + audit row; this is the only outbound-email path that is audited (see §3 preamble) |
+| `GET /knowledge/search?q=&k=` | → `[{doc, heading, breadcrumb, score, text}]` | additive, recorded 2026-07-28; local BM25 lexical search over `docs/knowledge/*.md` (`backend/app/knowledge/`), ranked highest-score-first, empty list if nothing clears `KNOWLEDGE_MIN_SCORE`; `q` required non-empty (422 otherwise), `k` bounded 1-10; debug/dashboard endpoint — the same retrieval also runs inside `POST /chat` (see §3) to ground agent replies in the operator's own market-intelligence doc; read-only, does **not** audit (see §3 preamble — it is not one of the two audited reads) |
 
 `GET /metrics` returns:
 ```json
@@ -140,7 +141,8 @@ fixes). Two reads also audit, as an exception, since they're treated as
 agent tool calls for activity-stream purposes: `GET /availability`
 (`check_availability`) and `GET /leads/{id}/duplicates`
 (`find_duplicate_leads`). All other reads write nothing (`GET /leads`, `GET
-/leads/{id}`, `GET /metrics`, `GET /audit` itself, etc.). The optional
+/leads/{id}`, `GET /metrics`, `GET /audit` itself, `GET /knowledge/search`
+(additive, recorded 2026-07-28), etc.). The optional
 `composio-email-calendar` skill's **direct** Composio calls (used when a
 human explicitly wants to send/schedule something outside the CRM's closed
 loop) bypass the backend entirely and are **not** audited — only the
@@ -212,3 +214,4 @@ free to evolve without a contract change.
 | `AGENT_MODE` | `mock` | backend (`mock` \| `openclaw`) |
 | `HOST` | `127.0.0.1` | backend (bind interface) |
 | `PORT` | `8000` dev / `8080` single-port serve | backend launcher scripts |
+| `KNOWLEDGE_DIR` | `docs/knowledge` | backend (`backend/app/knowledge/`) — local BM25 retrieval corpus, chunked/indexed for `POST /chat` and `GET /knowledge/search` |
