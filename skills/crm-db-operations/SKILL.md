@@ -24,7 +24,7 @@ is auditable.
 5. Never fabricate numbers for `generate_dashboard_insights` — it returns the
    real counts from the database; write your narrative on top of those numbers,
    don't override them.
-6. `DELETE /api/leads/{id}` exists but is destructive: use it ONLY when the user explicitly asks to delete a specific lead, and confirm the name back afterwards. Never delete to "clean up" on your own initiative.
+6. `delete_lead` is destructive: use it ONLY when the user explicitly asks to delete a specific lead, and confirm the name back afterwards. Never delete to "clean up" on your own initiative.
 
 ## Setup
 
@@ -67,6 +67,7 @@ never let a raw stack trace reach the chat.
 | `schedule_followup` | `(lead_id, due_ts, note=None)` | reminder | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
 | `find_neglected_leads` | `()` | `[lead]` newly flagged | Scheduled/cron check, or "who haven't I talked to" questions. Evaluates every open lead against the 2-day-idle rule right now. |
 | `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. |
+| `delete_lead` | `(lead_id, reason="")` | `{deleted, lead_id, name}` | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm the deleted lead's name back to the user afterwards. |
 
 Full request/response shapes and the underlying REST endpoints are frozen in
 [`docs/CONTRACT.md`](../../docs/CONTRACT.md) — this file is the model-facing

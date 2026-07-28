@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 BASE_URL = os.environ.get("CRM_API_URL", "http://localhost:8080/api").rstrip("/")
-TIMEOUT = float(os.environ.get("CRM_API_TIMEOUT_SECONDS", "10"))
+TIMEOUT = float(os.environ.get("CRM_API_TIMEOUT_SECONDS", "120"))
 
 
 class CRMError(Exception):
@@ -59,6 +59,8 @@ def _request(method: str, path: str, *, params: dict | None = None,
         raise CRMError(e.code, str(detail)) from None
     except urllib.error.URLError as e:
         raise CRMError(0, f"could not reach CRM backend at {BASE_URL}: {e.reason}") from None
+    except (TimeoutError, OSError) as e:  # read-timeouts bypass URLError wrapping
+        raise CRMError(0, f"CRM backend timed out or dropped the connection: {e}") from None
 
 
 # --------------------------------------------------------------------------
@@ -205,6 +207,8 @@ def generate_dashboard_insights() -> dict:
 
 
 def delete_lead(lead_id: int, reason: str = "") -> dict:
-    """Destructive: removes the lead and its events/appointments/reminders
-    (audit rows survive). Only call when the user explicitly asked."""
-    return _req("DELETE", f"/leads/{lead_id}", {"reason": reason})
+    """Permanently delete a lead. Destructive — the skill doc requires explicit
+    user confirmation before calling this. Removes the lead and its
+    events/appointments/reminders (audit rows survive)."""
+    return _request("DELETE", f"/leads/{int(lead_id)}",
+                     body={"reason": reason} if reason else None)
