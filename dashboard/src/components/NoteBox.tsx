@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, toNaiveLocal } from '../api'
 import { toast } from './Toast'
+import { copy } from '../vertical'
 
 // Demo story step 3: "Annie records a note and schedules a follow-up."
 // "in 1 min" exists for the live demo — the reminder visibly fires in the
@@ -25,7 +26,7 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
       // "offer" events are the agreed convention that feeds the funnel's
       // Offers Submitted stage (docs/FUNNEL-UI.md) — amount parsed from text
       await api.addEvent(leadId, isOffer ? 'offer' : 'note', note.trim())
-      let msg = isOffer ? 'Offer logged — it now counts in the funnel.' : 'Note saved.'
+      let msg = isOffer ? copy('note.offer_saved', 'Offer logged — it now counts in the funnel.') : 'Note saved.'
       if (followupMins !== null) {
         const due = new Date(Date.now() + followupMins * 60_000)
         if (followupMins >= 1440) due.setHours(9, 0, 0, 0)
@@ -48,11 +49,13 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
   return (
     <div className="rounded-lg border border-tile bg-surface p-4 space-y-2">
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold">{isOffer ? 'Log an offer' : 'Log a note'}</h2>
+        <h2 className="text-sm font-semibold">
+          {isOffer ? copy('note.offer_heading', 'Log an offer') : 'Log a note'}
+        </h2>
         <div className="ml-auto flex gap-1">
           {[
             { label: 'Note', offer: false },
-            { label: '💰 Offer', offer: true },
+            { label: copy('note.offer_chip', '💰 Offer'), offer: true },
           ].map((t) => (
             <button
               key={t.label}
@@ -74,8 +77,11 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
         rows={2}
         placeholder={
           isOffer
-            ? 'e.g. "Offer submitted: $1,250,000 on the Lakemont house"'
-            : 'e.g. "Spoke on the phone — wants to see the Lakemont house this weekend"'
+            ? copy('note.offer_placeholder', 'e.g. "Offer submitted: $1,250,000 on the Lakemont house"')
+            : copy(
+                'note.note_placeholder',
+                'e.g. "Spoke on the phone — wants to see the Lakemont house this weekend"',
+              )
         }
         className="w-full rounded-md bg-surface border border-tile px-3 py-2 text-sm resize-y
                    placeholder:text-sub/50 focus:outline-none focus:border-accent"

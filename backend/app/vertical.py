@@ -74,6 +74,11 @@ DEFAULT_PACK: dict = {
         "funnel.action_book_tours_sub": "Only {n} upcoming — tours drive offers",
         "export.upcoming_tours_heading": "## Upcoming tours",
         "export.summary_title": "Home search summary",
+        "note.offer_heading": "Log an offer",
+        "note.offer_chip": "💰 Offer",
+        "note.offer_saved": "Offer logged — it now counts in the funnel.",
+        "note.offer_placeholder": 'e.g. "Offer submitted: $1,250,000 on the Lakemont house"',
+        "note.note_placeholder": 'e.g. "Spoke on the phone — wants to see the Lakemont house this weekend"',
     },
     # Filled in by Task 5 from prompts/seattle-real-estate-news-reporter.md.
     # Present now so the schema shape is stable for downstream consumers.
