@@ -1,3 +1,6 @@
+> Example deployment on our original demo hardware — the generic,
+> hardware-agnostic guide is [`docs/LOCAL-AI.md`](LOCAL-AI.md).
+
 # GB10 setup — dashboard + backend + OpenClaw on one box
 
 Target state: `http://<gb10>:8080` (over Tailscale) serves the dashboard; the same

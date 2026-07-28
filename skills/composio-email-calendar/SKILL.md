@@ -11,9 +11,9 @@ This is the OpenClaw-side counterpart of the backend's
 `INTEGRATIONS_MODE=live` hooks; use it when the user asks *you* to email or
 schedule something, not for flows the backend already automates.
 
-⚠ **The connected Google account is the CLI's logged-in account** (currently
-zhenkai.kay@gmail.com — check with `composio whoami`). Mail sends from, and
-events land on, THAT account.
+⚠ **The connected Google account is the CLI's logged-in account** (check
+which one with `composio whoami` — e.g. `<your-connected-gmail-account>`).
+Mail sends from, and events land on, THAT account.
 
 ## Rules
 

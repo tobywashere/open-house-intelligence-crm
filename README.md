@@ -8,6 +8,17 @@ And it's **local-first**: all inference runs on the Dell Pro Max GB10, so client
 
 **[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`PLAN.md`](PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
 
+## Quickstart
+
+```bash
+git clone <this repo> && cd open-intelligence-crm
+bash scripts/dev.sh
+```
+
+Open **http://localhost:5173**. That's it — you're running the full product in **mock-agent mode**: every dashboard page, the chat rail, business-card scan, follow-up drafts, and the daily briefing all work against a deterministic mock agent (canned, realistic AI responses) and a seeded set of 15 demo leads. No GPU, no local model, and no API keys required.
+
+**Going fully local:** to swap the mock agent for a real local model (any tool-capable model, not just the hardware this project was built on), see [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md).
+
 ## Architecture
 
 ![OpenHouse Intelligence architecture: Capture (text, voice notes, Discord) → Virtual AI (unstructured conversation → structured intents) → OpenClaw orchestrator ↔ Client DB (SQLite), enriched by hyper-local market data, with scheduled briefs pushed back to the agent and a live dashboard reading the DB](docs/images/pitch-architecture.png)
@@ -27,13 +38,13 @@ bash scripts/dev.sh
 
 Seeds the database and starts the backend (http://localhost:8000, mock agent mode) + dashboard (http://localhost:5173). API docs at http://localhost:8000/docs.
 
-## Production on the GB10 (real agent)
+## Production (real agent)
 
 ```bash
 bash scripts/serve.sh
 ```
 
-Builds the dashboard and serves the whole product from **one port**: `http://<gb10-tailscale-name>:8080` (`:8000` on the GB10 belongs to the vLLM server). Runs with `AGENT_MODE=openclaw`, relaying chat to the OpenClaw gateway on `:18789`. Full wiring, skill install, and verification checklist: [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md). (`scripts/gb10.sh` still works as a compat shim.)
+Builds the dashboard and serves the whole product from **one port** (default `:8080`) with `AGENT_MODE=openclaw`, relaying chat to a local OpenClaw gateway. Hardware-agnostic setup guide: [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md). [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) walks through one example deployment (the original demo hardware) end to end. (`scripts/gb10.sh` still works as a compat shim for `serve.sh`.)
 
 ## What's in the dashboard
 
@@ -59,42 +70,51 @@ cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8000
 cd dashboard && npm install && npm run dev
 ```
 
-## Who owns what
+## Project layout
 
-| Person | Owns | Start here |
+| Path | Holds | Start here |
 |---|---|---|
-| **K** | Agent & local inference on the GB10 (OpenClaw, Qwen 3.6 35B-A3B, skills, prompts, cron) | `skills/` — one directory per skill (`crm-db-operations/` = `SKILL.md` + `tools.py`, plus `business-card-scanner/` and `daily-command-center/`); `prompts/`. The backend relay you answer through is `backend/app/agent/openclaw.py`; mock behavior to replace is `backend/app/agent/mock.py` |
-| **Toby** | Backend, SQLite, calendar & business logic | `backend/` — schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py` |
-| **Johaan** | Dashboard, integration, demo & pitch | `dashboard/src/` — typed API client in `src/api.ts` |
+| `backend/` | FastAPI app, SQLite schema & business logic | schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py`, agent drivers in `app/agent/` (`mock.py` for dev, `openclaw.py` for the real relay) |
+| `dashboard/` | React + TypeScript + Vite frontend | typed API client in `src/api.ts`, deterministic insights in `src/insights.ts` |
+| `skills/` | Stdlib-only tools the agent calls (never third-party deps) | one directory per skill — `crm-db-operations/` (`SKILL.md` + `tools.py`) is the core one; `business-card-scanner/` and `daily-command-center/` build on it; `composio-email-calendar/` is the optional Gmail/Calendar integration |
+| `docs/` | Design docs, the frozen contract, setup guides | [`docs/CONTRACT.md`](docs/CONTRACT.md) is the schema/API/tool source of truth; [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md) for running a real local model |
+| `scripts/` | Dev & production launchers | `dev.sh` (mock mode), `serve.sh` (production, real agent) |
 
-The contract (`docs/CONTRACT.md`) is frozen — breaking changes go through an issue/PR discussion, per `CONTRIBUTING.md` (the old "needs all three of us" rule is retired now that one person maintains all workstreams).
+The contract (`docs/CONTRACT.md`) is frozen — breaking changes go through an issue/PR discussion, per [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Environment variables
 
 | Var | Default | Meaning |
 |---|---|---|
-| `AGENT_MODE` | `mock` | `mock` (dev, no GB10 needed) or `openclaw` (relay to the GB10) |
-| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway; `scripts/serve.sh` overrides to `http://localhost:18789` since backend and gateway share the box |
-| `AGENT_GATEWAY_TOKEN` | — | Gateway bearer token — only needed if K enables token auth (currently `gateway.auth.mode: "none"`) |
+| `AGENT_MODE` | `mock` | `mock` (dev, no local model needed) or `openclaw` (relay to a real local model via OpenClaw) |
+| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway; default hostname is from the original demo box (see [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md)) — `scripts/serve.sh` overrides to `http://localhost:18789` when backend and gateway share the same box |
+| `AGENT_GATEWAY_TOKEN` | — | Gateway bearer token — only needed if the gateway has token auth enabled (default is `gateway.auth.mode: "none"`) |
 | `AGENT_CHAT_PATH` | `/v1/chat/completions` | Gateway chat endpoint path |
 | `DB_PATH` | `backend/data/crm.db` | SQLite location |
 | `PORT` | `8080` | Serve port for `scripts/serve.sh` (dev mode uses 8000 + 5173) |
 | `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
-| `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (`:8000` on the GB10 is vLLM, not the CRM) |
+| `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (the vLLM/model server has its own port — this must point at the CRM backend, not it) |
 | `INTEGRATIONS_MODE` | `off` | `off` (demo-safe, simulated) or `live` (real Gmail + Google Calendar via Composio) |
 | `COMPOSIO_API_KEY` | — | Composio project API key (`ak_…`) — create one at https://app.composio.dev → project settings → API keys. Not needed with `COMPOSIO_TRANSPORT=cli` |
 | `COMPOSIO_TRANSPORT` | `api` | `api` (REST, needs `COMPOSIO_API_KEY`) or `cli` (shell out to the GB10's logged-in `composio` CLI — managed OAuth, no key; the CLI's `uak_` session key does NOT work with the REST API) |
 | `COMPOSIO_USER_ID` | `default` | Composio connected-account user id |
 | `GCAL_TIMEZONE` | `America/Los_Angeles` | Timezone for created calendar events |
 
-Everyone develops locally in mock mode. For integration tests, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at the GB10 over Tailscale.
+Everyone develops locally in mock mode. For integration tests against a real local model, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at that machine over Tailscale (or your own network).
+
+## Origins
+
+OpenHouse Intelligence was built at the **Dell × NVIDIA BuilderBase hackathon in Seattle**, where it placed among the **top-8 finalist teams**. It's grown past the hackathon build since — see [`docs/CONTRACT.md`](docs/CONTRACT.md) for the current source of truth — but that's where the local-first premise and the core product loop started. Full pitch deck: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
+
+Team: **Johaan, K, Chris, and Toby**.
 
 ## Docs index
 
 - [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf) — the pitch deck: vision, problem, architecture, demo story
 - [`docs/CONTRACT.md`](docs/CONTRACT.md) — frozen schema / API / agent tools (source of truth)
 - [`TODO.md`](TODO.md) — post-MVP work, tracked by owner
-- [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) — hosting the product on the GB10
+- [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md) — running a real local model (hardware-agnostic)
+- [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) — one example deployment, on the original demo hardware
 - [`docs/INSIGHTS.md`](docs/INSIGHTS.md) — deterministic insights engine
 - [`docs/BRIEFING-UI.md`](docs/BRIEFING-UI.md), [`docs/FUNNEL-UI.md`](docs/FUNNEL-UI.md) — briefing & funnel design docs (nav has since merged into `/`)
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — approved specs (Google Calendar + Gmail integration)
