@@ -101,3 +101,16 @@ def test_every_copy_key_used_by_the_dashboard_exists_in_the_pack():
         used |= set(re.findall(r"copy\(\s*'([a-z0-9_.]+)'", f.read_text()))
     missing = used - set(DEFAULT_PACK["copy"])
     assert not missing, f"copy keys used in the dashboard but absent from the pack: {sorted(missing)}"
+
+
+def test_persona_rules_reproduce_the_shipped_inference():
+    """The mock generator's persona inference must be pack-driven and must
+    still produce today's real-estate personas for the real-estate pack."""
+    from app.vertical import DEFAULT_PACK
+    rules = DEFAULT_PACK["persona_rules"]
+    assert rules[-1].get("when") is None, "last rule must be the unconditional default"
+    personas = {r["persona"] for r in rules}
+    assert {"Seller", "First-Time Buyer", "Home Buyer"} <= personas
+    for r in DEFAULT_PACK["persona_recommendations"]:
+        assert r in personas, f"recommendation for unknown persona {r}"
+    assert set(DEFAULT_PACK["schedule_titles"]) >= {"default", "sell"}

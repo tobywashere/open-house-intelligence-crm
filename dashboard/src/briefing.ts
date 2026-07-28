@@ -3,7 +3,7 @@
 // so the page is fully demoable today and flips to real content with zero UI changes.
 import { api, Appointment, fmtMoney, Lead, localDateKey } from './api'
 import { computeInsights } from './insights'
-import { pack } from './vertical'
+import { pack, PersonaCond } from './vertical'
 
 export interface ScheduleBlock {
   start: string // "HH:MM"
@@ -59,15 +59,58 @@ export async function fetchBriefing(): Promise<Briefing> {
   }
 }
 
+// Resolves one field referenced by a persona rule's `when` condition off a
+// Lead. Field vocabulary is intentionally small — just what today's rules
+// need — so a pack can only reference fields the evaluator understands.
+function fieldValue(field: string | undefined, lead: Lead): string | number {
+  switch (field) {
+    case 'intent':
+      return lead.intent
+    case 'budget':
+      return lead.budget ?? 0
+    case 'preferences_text':
+      return (lead.preferences ?? []).join(' ').toLowerCase()
+    case 'name':
+      return lead.name
+    case 'timeline':
+      return lead.timeline ?? ''
+    default:
+      return ''
+  }
+}
+
+// Evaluates one persona_rules `when` condition against a lead. `any`/`all`
+// compose sub-conditions (OR/AND); a leaf condition compares `field` via
+// `op`. See vertical.ts's PersonaCond doc comment for why any/all exist.
+function evalPersonaCond(cond: PersonaCond, lead: Lead): boolean {
+  if (cond.any) return cond.any.some((c) => evalPersonaCond(c, lead))
+  if (cond.all) return cond.all.every((c) => evalPersonaCond(c, lead))
+  const actual = fieldValue(cond.field, lead)
+  switch (cond.op) {
+    case 'eq':
+      return actual === cond.value
+    case 'lt':
+      return (actual as number) < (cond.value as number)
+    case 'lte':
+      return (actual as number) <= (cond.value as number)
+    case 'gt':
+      return (actual as number) > (cond.value as number)
+    case 'gte':
+      return (actual as number) >= (cond.value as number)
+    case 'regex':
+      return new RegExp(String(cond.value ?? ''), cond.flags ?? '').test(String(actual))
+    default:
+      return false
+  }
+}
+
 export function personaOf(lead: Lead): string {
   if (lead.persona) return lead.persona
-  const prefs = (lead.preferences ?? []).join(' ').toLowerCase()
-  if (lead.intent === 'sell') return 'Seller'
-  if ((lead.budget ?? 0) >= 1_400_000) return 'Luxury Executive'
-  if (/school|yard|family|cul-de-sac/.test(prefs) || /&| and /i.test(lead.name)) return 'Growing Family'
-  if (/relocat/.test(prefs) || /week|asap/i.test(lead.timeline ?? '')) return 'Relocating Professional'
-  if ((lead.budget ?? 0) > 0 && (lead.budget ?? 0) < 700_000) return 'First-Time Buyer'
-  return 'Home Buyer'
+  const rules = pack().persona_rules ?? []
+  for (const rule of rules) {
+    if (!rule.when || evalPersonaCond(rule.when, lead)) return rule.persona
+  }
+  return defaultPersonaKey()
 }
 
 // deck palette: accent washes (sky/indigo family), alert red only for the last
@@ -120,11 +163,11 @@ function briefOf(lead: Lead): MeetingBrief {
     ...(lead.preferences ?? []).slice(0, 2).map((p) => `Notes on: ${p}`),
   ]
 
-  let recommendation = 'Confirm their timeline and agree the next concrete step.'
-  if (persona === 'Luxury Executive') recommendation = 'Lead with data — comps and market evidence, not opinions.'
-  else if (persona === 'Growing Family') recommendation = 'Ask about schools first; keep the shortlist to three homes.'
-  else if (persona === 'Relocating Professional') recommendation = `Move fast — their ${lead.timeline ?? 'tight'} timeline is the priority.`
-  else if (persona === 'Seller') recommendation = 'Bring the listing presentation and a pricing range.'
+  const recTemplate =
+    pack().persona_recommendations?.[persona] ??
+    pack().persona_recommendation_default ??
+    'Confirm their timeline and agree the next concrete step.'
+  const recommendation = recTemplate.replace('{timeline}', lead.timeline ?? 'tight')
 
   return {
     lead_id: lead.id,
@@ -156,7 +199,7 @@ function mockBriefing(date: string, leads: Lead[], appts: Appointment[]): Briefi
         start: hhmm(a.start_ts),
         end: hhmm(a.end_ts),
         lead: byId.get(a.lead_id)!,
-        title: `Showing — ${byId.get(a.lead_id)!.name}${a.location ? ` (${a.location})` : ''}`,
+        title: `${pack().schedule_titles?.default ?? 'Showing'} — ${byId.get(a.lead_id)!.name}${a.location ? ` (${a.location})` : ''}`,
       }))
   } else {
     const top = open.slice(0, 2)
@@ -168,7 +211,7 @@ function mockBriefing(date: string, leads: Lead[], appts: Appointment[]): Briefi
       start: times[i][0],
       end: times[i][1],
       lead,
-      title: `${lead.intent === 'sell' ? 'Listing appointment' : 'Showing'} — ${lead.name}${lead.area ? ` (${lead.area})` : ''}`,
+      title: `${pack().schedule_titles?.[lead.intent] ?? pack().schedule_titles?.default ?? 'Showing'} — ${lead.name}${lead.area ? ` (${lead.area})` : ''}`,
     }))
   }
   meetings.sort((a, b) => a.start.localeCompare(b.start))

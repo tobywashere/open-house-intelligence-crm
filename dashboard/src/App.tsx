@@ -8,7 +8,7 @@ import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { fetchFunnel, Kpi } from './funnel'
-import { loadVertical, Pack } from './vertical'
+import { loadVertical, pack, Pack } from './vertical'
 import { DashboardPage } from './pages/Dashboard'
 import { ScanCardPage } from './pages/ScanCard'
 import { Inbox } from './pages/Inbox'
@@ -108,7 +108,7 @@ export default function App() {
     <div className="h-screen flex flex-col overflow-hidden">
       <header className="shrink-0 border-b border-tile bg-bg/90 backdrop-blur px-6 py-2.5 flex items-center gap-5">
         <Link to="/" className="text-[17px] font-semibold tracking-tight text-ink">
-          Open House <span className="brand-gradient">Intelligence</span>
+          {pack().brand?.name ?? 'Open House'} <span className="brand-gradient">{pack().brand?.name_accent ?? 'Intelligence'}</span>
         </Link>
         <nav className="flex gap-1 text-sm">
           <NavLink to="/leads" className={navCls}>Leads</NavLink>

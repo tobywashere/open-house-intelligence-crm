@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, localDateKey, Metrics } from '../api'
-import { DailySummary, fetchDailySummary, MOCK_SUMMARY_SAMPLE } from '../summary'
+import { DailySummary, fetchDailySummary, mockSummarySample } from '../summary'
 import { BriefingSection } from './BriefingSection'
 import { Markdown } from './Markdown'
 import { Skeleton } from './Skeleton'
@@ -34,8 +34,8 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
         setSummary(fetched)
       } else if (isMock) {
         // Mock mode only: labeled sample data so the overlay is demoable
-        // with no backend content yet. See MOCK_SUMMARY_SAMPLE's own comment.
-        setSummary({ ...MOCK_SUMMARY_SAMPLE, date: localDateKey(), generated_at: new Date().toISOString(), mock: true })
+        // with no backend content yet. See mockSummarySample's own comment.
+        setSummary({ ...mockSummarySample(), date: localDateKey(), generated_at: new Date().toISOString(), mock: true })
       } else {
         // Real agent, nothing posted yet — honest empty state, never sample data.
         setOffline(true)

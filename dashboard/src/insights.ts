@@ -3,6 +3,7 @@
 // this JSON, and the morning summary consumes it as narrative input. No LLM
 // is involved in computing a number here, ever.
 import { Appointment, AuditRow, fmtMoney, Lead, localDateKey } from './api'
+import { copy } from './vertical'
 
 export interface InsightDatum {
   label: string
@@ -76,12 +77,14 @@ function funnel(leads: Lead[]): Insight {
   const contactRate = pct(reachedContact, leads.length)
   const bookRate = pct(reachedBooking, reachedContact)
   const bottleneck =
-    contactRate <= bookRate ? 'first contact (new → contacted)' : 'booking (contacted → meeting)'
+    contactRate <= bookRate
+      ? 'first contact (new → contacted)'
+      : `booking (contacted → ${copy('insights.meeting_noun', 'meeting')})`
   return {
     id: 'funnel',
     title: 'Pipeline funnel',
     severity: stages.new > reachedContact ? 'warn' : 'info',
-    headline: `${bookRate}% of contacted leads book a meeting`,
+    headline: `${bookRate}% of contacted leads ${copy('insights.meeting_verb_phrase', 'book a meeting')}`,
     detail: `${stages.new} new → ${reachedContact} contacted (${contactRate}%) → ${reachedBooking} booked (${bookRate}%). Bottleneck: ${bottleneck}.`,
     data: [
       { label: 'New', value: stages.new },
@@ -157,7 +160,9 @@ function demandMap(open: Lead[]): Insight {
     id: 'demand_map',
     title: 'Demand by area',
     severity: 'info',
-    headline: top ? `${top.label} leads demand — ${top.value} active buyers` : 'No area data yet',
+    headline: top
+      ? `${top.label} leads demand — ${top.value} ${copy('insights.demand_actor_plural', 'active buyers')}`
+      : 'No area data yet',
     detail: rows.map((r) => `${r.label}: ${r.value}${r.avg ? ` (avg ${fmtMoney(Math.round(r.avg))})` : ''}`).join(' · '),
     data: rows.map((r) => ({
       label: r.label,
@@ -204,16 +209,17 @@ function bookingPattern(appts: Appointment[]): Insight {
   }
   const rows = days.filter((d) => counts.has(d)).map((d) => ({ label: d, value: counts.get(d)! }))
   const eveningRate = pct(evening, appts.length)
+  const tourNoun = copy('insights.tour_noun', 'tour')
   return {
     id: 'booking_pattern',
-    title: 'When tours get booked',
+    title: `When ${tourNoun}s get booked`,
     severity: 'info',
     headline: appts.length
-      ? `${eveningRate}% of tours are evening slots`
-      : 'No tours booked yet',
+      ? `${eveningRate}% of ${tourNoun}s are evening slots`
+      : `No ${tourNoun}s booked yet`,
     detail: appts.length
-      ? `${appts.length} tour${appts.length === 1 ? '' : 's'} on the calendar. Lead with evening availability when proposing times.`
-      : 'Booking patterns appear once tours are on the calendar.',
+      ? `${appts.length} ${tourNoun}${appts.length === 1 ? '' : 's'} on the calendar. Lead with evening availability when proposing times.`
+      : `Booking patterns appear once ${tourNoun}s are on the calendar.`,
     data: rows,
   }
 }
