@@ -30,6 +30,17 @@ export function ChatPanel() {
   const [thinking, setThinking] = useState(false)
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
+  // Per-send sequence token: only the LATEST send's `finally` is allowed to
+  // clear `thinking`. An unconditional clear (round 1) let a stale send's
+  // `finally` fire after a newer send in a different session was already in
+  // flight, prematurely re-enabling the send button mid-request and letting
+  // two concurrent /chat calls race. A guard tied to `issued`/session (like
+  // the msgs guards below) reintroduces the opposite bug — permanent deadlock
+  // — because switching sessions must ALSO clear a stale send's spinner, not
+  // just skip appending its reply. Sequence number solves both: incremented
+  // on every send, and the [sessionId] effect resets it too so a switch still
+  // clears the spinner for whichever send was in flight at that moment.
+  const sendSeq = useRef(0)
 
   useEffect(() => {
     // Belt-and-braces: sessionIdRef is also set synchronously in
@@ -81,6 +92,7 @@ export function ChatPanel() {
     const message = (preset ?? input).trim()
     if (!message || thinking) return
     const issued = sessionId
+    const my = ++sendSeq.current
     setInput('')
     setMsgs((m) => [...m, { role: 'user', content: message }])
     setThinking(true)
@@ -94,12 +106,10 @@ export function ChatPanel() {
       if (issued !== sessionIdRef.current) return
       setMsgs((m) => [...m, { role: 'agent', content: '⚠ Could not reach the agent.' }])
     } finally {
-      // Unconditional: `thinking` is panel-global UI state (drives the send
-      // button + spinner for whichever session is now active), not
-      // session-specific data — gating this on `issued` left it stuck `true`
-      // forever after a mid-flight session switch, since ChatPanel never
-      // unmounts and no other effect clears it.
-      setThinking(false)
+      // Only the latest send owns clearing `thinking` — a stale send's
+      // finally (from a session already switched away from) must not clear
+      // the spinner for a newer send that's still in flight.
+      if (my === sendSeq.current) setThinking(false)
     }
   }
 
