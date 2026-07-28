@@ -175,7 +175,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
         )}
 
         <footer className="mt-12 text-center text-xs text-sub/60">
-          Qwen 3.6 35B-A3B · generated locally on the GB10
+          Generated locally · nothing here leaves this machine
         </footer>
       </div>
     </div>

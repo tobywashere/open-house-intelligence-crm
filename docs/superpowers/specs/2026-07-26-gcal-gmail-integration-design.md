@@ -3,7 +3,7 @@
 **Date:** 2026-07-26 · **Owner:** Johaan (dashboard/integration) · **Status:** approved
 
 Connect the CRM to Johaan's real Google account (via Composio, already authed as
-johaan.joseph@gmail.com) so that appointments, reminders, and new leads land on
+<your-google-account>) so that appointments, reminders, and new leads land on
 Google Calendar, and AI-drafted follow-ups are sendable via Gmail with one click.
 Everything sits behind a mode flag, **off by default**, honoring the on-record rule
 that the demo must never depend on venue internet or live OAuth

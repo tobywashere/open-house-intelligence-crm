@@ -39,8 +39,8 @@ python3 -c "import sys; sys.path.insert(0,'.'); import tools; print(tools.list_l
 ```
 
 ```python
-import sys
-sys.path.insert(0, "/home/dell/.openclaw/skills/crm-db-operations")
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations"))
 import tools
 
 lead = tools.create_lead(raw_text="Met at open house, Bellevue, $1.1M budget", source="form")

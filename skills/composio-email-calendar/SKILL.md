@@ -46,8 +46,8 @@ Mail sends from, and events land on, THAT account.
 ## Setup
 
 ```python
-import sys
-sys.path.insert(0, "/home/dell/.openclaw/skills/composio-email-calendar")
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/composio-email-calendar"))
 import tools
 
 tools.fetch_emails("newer_than:1d", 5)   # smoke test, read-only

@@ -11,7 +11,8 @@ and that supports tool/function calling will work.
 
 ## 1. Install OpenClaw and point it at a local model
 
-Install OpenClaw on the machine that will run inference, and configure its
+This repo doesn't ship or install OpenClaw — follow the OpenClaw project's
+own install docs for your platform first. Once it's installed, configure its
 gateway to serve an OpenAI-compatible chat endpoint backed by your local
 model. The shape of that config (adjust to whatever OpenClaw version/schema
 you're on — check `openclaw --help` or its own docs for the authoritative
@@ -78,6 +79,16 @@ gateway on `:18789`. Binds to `127.0.0.1` unless you set `HOST` — see
 `.env.example` before exposing it beyond localhost (`OHI_API_TOKEN` gates the
 API once `HOST` is network-reachable).
 
+If this is the first run, `serve.sh` seeds the database only if it's
+missing — and a fresh seed is **schema-only, no leads**, since that's the
+correct starting point for real use. If you want the 15-lead demo dataset to
+explore the product with (what §4 below assumes), seed it explicitly before
+or after your first `serve.sh` run:
+
+```bash
+.venv/bin/python backend/seed.py --demo
+```
+
 ## 4. Verify the wiring
 
 Work through these in order — each one isolates a different link in the chain.
@@ -87,7 +98,7 @@ Work through these in order — each one isolates a different link in the chain.
 | `curl localhost:8080/api/health` | `{"ok":true,"agent_mode":"openclaw","agent_connected":true}` |
 | `CRM_API_URL=http://localhost:8080/api python3 -c "import sys;sys.path.insert(0,'skills/crm-db-operations');import tools;print(tools.list_leads()[0]['name'])"` | a lead name — the skill reaches the backend |
 | Dashboard chat: "who needs a follow-up?" | a real answer from your model, grounded in tool calls (watch them land in `/activity`) |
-| Header badge | green pulse showing your model name, local |
+| Header badge | green pulse reading "Local agent · live" |
 
 If chat 401s → gateway token mismatch (`AGENT_GATEWAY_TOKEN`). If the agent
 answers but invents data → the skill isn't loaded (check the OpenClaw skills

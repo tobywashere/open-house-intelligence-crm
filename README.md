@@ -4,7 +4,7 @@
 
 Real estate agents have data everywhere but intelligence nowhere — leads scattered across text messages, voice notes, emails, business cards, spreadsheets, and legacy CRMs, where information gets lost and nothing helps the agent get better. OpenHouse Intelligence turns those scattered conversations into an intelligent, always-on real estate operation: **just tell your agent what happened** ("I met Sarah Chen at the open house — she wants a 3-bed in Bellevue under $1.2M") and the AI reads and writes the CRM through natural language, drafts the follow-ups, books the tours, and generates real analytics — pipeline health, conversion, lead aging, source performance, next-best actions — with zero manual data entry. The result: less administration, faster follow-up, more closed deals.
 
-And it's **local-first**: all inference runs on the Dell Pro Max GB10, so client PII — budgets, financial situations, relocation reasons — never leaves the machine. Full story: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
+And it's **local-first**: inference runs on your own machine (a local model via OpenClaw — originally demoed on a Dell Pro Max GB10 running Qwen 3.6 35B-A3B, but any tool-capable local model works), so client PII — budgets, financial situations, relocation reasons — never leaves the machine. Full story: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
 
 **[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`PLAN.md`](PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
 
@@ -14,6 +14,8 @@ And it's **local-first**: all inference runs on the Dell Pro Max GB10, so client
 git clone <this repo> && cd open-intelligence-crm
 bash scripts/dev.sh
 ```
+
+Needs Python 3.11+ and Node 20+ on your PATH; the first run takes a few minutes while it creates a venv and installs `pip`/`npm` dependencies.
 
 Open **http://localhost:5173**. That's it — you're running the full product in **mock-agent mode**: every dashboard page, the chat rail, business-card scan, follow-up drafts, and the daily briefing all work against a deterministic mock agent (canned, realistic AI responses) and a seeded set of 15 demo leads. No GPU, no local model, and no API keys required.
 

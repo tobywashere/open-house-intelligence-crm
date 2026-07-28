@@ -59,7 +59,7 @@ dashboard itself — **one port, one URL: `http://gb10:8080`**.
 | `CRM_API_URL=http://localhost:8080/api python3 -c "import sys;sys.path.insert(0,'skills/crm-db-operations');import tools;print(tools.list_leads()[0]['name'])"` | a lead name — the skill reaches the backend |
 | Dashboard chat: "who needs a follow-up?" | a real Qwen answer grounded in tool calls (watch them land in Agent activity) |
 | Discord: same question | same behavior, same audit trail |
-| Header badge | green pulse: "Qwen 3.6 35B-A3B · Local on Dell GB10" |
+| Header badge | green pulse: "Local agent · live" |
 
 If chat 401s → token mismatch. If the agent answers but invents data → the skill
 isn't loaded (check the OpenClaw workspace path). If `agent_connected:false` →

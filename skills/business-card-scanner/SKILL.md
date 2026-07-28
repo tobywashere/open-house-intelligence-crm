@@ -75,7 +75,7 @@ Use the `image` tool to analyze the business card image. Read all visible text:
 Before creating the lead, search existing leads to see if this person is already in the CRM:
 
 ```python
-import sys; sys.path.insert(0, "/home/dell/.openclaw/skills/crm-db-operations"); import tools
+import os, sys; sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations")); import tools
 all_leads = tools.list_leads()
 # Look for exact phone or email match in the returned list
 # Also fuzzy name match if you have it
@@ -90,7 +90,7 @@ If no strong match, proceed to create.
 ### 4. Create the lead
 
 ```python
-import sys; sys.path.insert(0, "/home/dell/.openclaw/skills/crm-db-operations"); import tools
+import os, sys; sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations")); import tools
 lead = tools.create_lead(
     name="Jessica Martinez",
     phone="(555) 123-4567",

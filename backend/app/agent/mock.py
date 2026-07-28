@@ -1,6 +1,7 @@
-"""Deterministic stand-in for the real agent so dashboard/backend dev never blocks on the GB10.
+"""Deterministic stand-in for the real agent so dashboard/backend dev never blocks
+on a local model being wired up.
 
-K: the real behavior replaces this behind the same AgentDriver interface —
+The real behavior replaces this behind the same AgentDriver interface —
 endpoints, response shapes, and the dashboard don't change.
 """
 import re
@@ -26,9 +27,9 @@ class MockDriver(AgentDriver):
             return ("[mock] [Sarah Chen](lead:1): Bellevue buyer, $1.1M budget, relocating "
                     "on a 6-week timeline, husband wants to tour. High priority — "
                     "draft follow-up is ready on her profile.")
-        return ("[mock] I'm the placeholder agent (AGENT_MODE=mock). On the GB10 this "
-                "reply comes from the local model via OpenClaw. Ask about Sarah, "
-                "booking, or neglected leads for canned demo replies.")
+        return ("[mock] I'm the placeholder agent (AGENT_MODE=mock). With "
+                "AGENT_MODE=openclaw this reply comes from your local model instead. "
+                "Ask about Sarah, booking, or neglected leads for canned demo replies.")
 
     async def extract(self, raw_text: str) -> dict:
         text = raw_text
