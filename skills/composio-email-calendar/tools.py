@@ -71,10 +71,41 @@ def _known_lead_emails() -> set:
     return {l["email"].strip().lower() for l in leads if l.get("email")}
 
 
+def _as_list(value) -> list:
+    """A bare string passed where a list of addresses is expected must become
+    a single-element list, not unpack per-character (`for c in "a@b.com"`
+    would iterate letters and reject the call on the first character)."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)
+
+
+def _check_recipients_allowed(to, cc=None, bcc=None) -> None:
+    addrs = [a for a in [to, *_as_list(cc), *_as_list(bcc)] if a]
+    if not addrs:  # nothing to validate — don't force a CRM round-trip for no reason
+        return
+    known = _known_lead_emails()
+    for addr in addrs:
+        if addr.strip().lower() not in known:
+            raise IntegrationError(
+                f"refusing to send: {addr!r} does not match any lead's email in the CRM")
+
+
 def execute(slug: str, arguments: dict) -> dict:
     """Run one Composio tool. Returns the `data` payload or raises IntegrationError."""
     if slug not in ALLOWED_SLUGS:
         raise IntegrationError(f"{slug}: not in the approved catalog")
+    if slug == "GMAIL_SEND_EMAIL":
+        # Chokepoint: SKILL.md explicitly tells the agent it may call
+        # tools.execute(slug, args) directly for anything beyond the
+        # send_email/create_draft/... wrappers, so send_email's own guard
+        # (below) is not sufficient on its own — enforce here too, where
+        # every GMAIL_SEND_EMAIL call actually goes through regardless of
+        # caller.
+        _check_recipients_allowed(arguments.get("recipient_email"),
+                                  arguments.get("cc"), arguments.get("bcc"))
     try:
         proc = subprocess.run(
             [_cli(), "execute", slug, "-d", json.dumps(arguments)],
@@ -100,18 +131,21 @@ def execute(slug: str, arguments: dict) -> dict:
 
 # ---- Gmail -----------------------------------------------------------------
 
-def send_email(to: str, subject: str, body: str, *, cc: list | None = None,
-               bcc: list | None = None) -> dict:
+def send_email(to: str, subject: str, body: str, *, cc: list | str | None = None,
+               bcc: list | str | None = None) -> dict:
     """Send a real email. Only call after the user has confirmed recipient + content.
     Refuses to send if `to`, or ANY address in `cc`/`bcc`, isn't (case-insensitively)
     an existing lead's email — never invent or accept an arbitrary recipient (SKILL.md
     rule 2). Every field is checked: a known `to` cannot smuggle an unknown bcc past
-    the guard (the classic prompt-injection exfiltration path)."""
-    known = _known_lead_emails()
-    for addr in [to, *(cc or []), *(bcc or [])]:
-        if addr.strip().lower() not in known:
-            raise IntegrationError(
-                f"refusing to send: {addr!r} does not match any lead's email in the CRM")
+    the guard (the classic prompt-injection exfiltration path). `cc`/`bcc` may be a
+    single address string or a list.
+
+    This checks up front for a friendly, specific early error; execute() enforces the
+    same rule again for calls that go through it directly (e.g. tools.execute(slug,
+    args), which SKILL.md explicitly allows), so the guard cannot be bypassed by
+    skipping this wrapper."""
+    cc, bcc = _as_list(cc), _as_list(bcc)
+    _check_recipients_allowed(to, cc, bcc)
     args = {"recipient_email": to, "subject": subject, "body": body}
     if cc:
         args["cc"] = cc

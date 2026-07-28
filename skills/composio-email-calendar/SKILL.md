@@ -81,7 +81,12 @@ confirmation rules above apply to ALL write actions, catalog or not.
 `send_email` additionally refuses to send if `to`, or any address in `cc`/
 `bcc`, isn't (case-insensitively) an existing lead's email — it checks via
 `crm-db-operations`' `list_leads`. Use `create_draft` for anyone not yet in
-the CRM.
+the CRM. **This check is enforced twice: once in `send_email` for a fast,
+specific error, and again inside `execute()` itself whenever `slug ==
+"GMAIL_SEND_EMAIL"`** — so calling `tools.execute("GMAIL_SEND_EMAIL", {...})`
+directly (which this doc otherwise tells you is fine for anything beyond the
+named helpers) is refused just the same as calling `send_email` with a bad
+recipient. There is no code path to GMAIL_SEND_EMAIL that skips this guard.
 
 ⚠ **This is a blast-radius reducer, not an exfiltration stop.** The lead set
 it checks against is not a fixed, human-curated allowlist — it's whatever's

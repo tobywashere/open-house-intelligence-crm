@@ -5,6 +5,7 @@ event content; a message id seen once is never logged again."""
 import asyncio
 import os
 import re
+import secrets
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -19,15 +20,30 @@ NOISE_SENDER = re.compile(
     re.I)
 
 
-_DELIMITER_TAG = re.compile(r"</?untrusted-email-content>", re.I)
+def _escape_untrusted(text: str) -> str:
+    """Escape every '<' in attacker-controlled text so no fragment of it can
+    ever be reassembled into a tag — a single regex pass that strips a
+    literal "</untrusted-email-content>" is bypassable by splitting the tag
+    across two fragments that fuse back together once the inner one is
+    removed (e.g. "</untrusted-<untrusted-email-content>email-content>"), and
+    whitespace variants ("< / untrusted-email-content >") slip past a
+    pattern match entirely. Escaping is unconditional and idempotent: there
+    is no way to reconstruct a real '<' from '&lt;' text, regardless of how
+    the input is composed. Content is preserved for the model to read, just
+    never parseable as markup."""
+    return text.replace("<", "&lt;")
 
 
-def _neutralize_delimiter(text: str) -> str:
-    """Strip any occurrence of the untrusted-content delimiter tags from
-    attacker-controlled text before it gets interpolated into the wrapper —
-    otherwise a body containing the literal closing tag closes the wrapper
-    early and everything after it lands as un-delimited prompt text."""
-    return _DELIMITER_TAG.sub("", text)
+def _wrap_untrusted(addr: str, subject: str, body: str, msg_id: str) -> str:
+    """Wrap inbound-email-derived text before it reaches the model. The tag
+    carries a random per-message nonce (`secrets.token_hex`, never
+    attacker-predictable) so even if escaping were somehow bypassed, the
+    attacker cannot know the exact closing tag to forge."""
+    nonce = secrets.token_hex(3)
+    tag = f"untrusted-email-content-{nonce}"
+    addr_e, subject_e, body_e = (_escape_untrusted(s) for s in (addr, subject, body))
+    return (f"<{tag}>\nEmail from {addr_e}\nSubject: {subject_e}\n\n"
+            f"{body_e}\n[gmail:{msg_id}]\n</{tag}>")
 
 
 def _extract_address(sender: str) -> str:
@@ -103,13 +119,10 @@ def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
     # Untrusted: this text comes from an inbound email an attacker fully
     # controls. It reaches the same model that holds a live Gmail send tool —
     # delimit it so the extract prompt (openclaw.py) treats it as data to
-    # read, never as instructions to follow. The delimiter itself must be
-    # unescapable: an attacker who puts a literal "</untrusted-email-content>"
-    # in the subject/body/sender must not be able to close the wrapper early
-    # and have the rest of the message land as un-delimited prompt text.
-    addr_s, subject_s, body_s = (_neutralize_delimiter(s) for s in (addr, subject, body[:1000]))
-    raw = (f"<untrusted-email-content>\nEmail from {addr_s}\nSubject: {subject_s}\n\n"
-           f"{body_s}\n[gmail:{msg_id}]\n</untrusted-email-content>")
+    # read, never as instructions to follow. See _wrap_untrusted for why the
+    # wrapper is escaping-based and nonce-tagged rather than a stripped
+    # literal tag.
+    raw = _wrap_untrusted(addr, subject, body[:1000], msg_id)
     try:
         from ..routers.leads import LeadIn, create_lead
         lead = asyncio.run(create_lead(LeadIn(raw_text=raw, source="email", email=addr)))
