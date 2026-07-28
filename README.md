@@ -19,6 +19,8 @@ Needs Python 3.11+ and Node 20+ on your PATH; the first run takes a few minutes 
 
 Open **http://localhost:5173**. That's it — you're running the full product in **mock-agent mode**: every dashboard page, the chat rail, business-card scan, follow-up drafts, and the daily briefing all work against a deterministic mock agent (canned, realistic AI responses) and a seeded set of 15 demo leads. No GPU, no local model, and no API keys required.
 
+**Another industry?** The real-estate specifics — funnel stages, field labels, UI copy, personas, and the market-research scope — live in a swappable [vertical pack](docs/VERTICALS.md). Example packs for B2B SaaS, insurance, and recruiting ship in `verticals/`.
+
 **Going fully local:** to swap the mock agent for a real local model (any tool-capable model, not just the hardware this project was built on), see [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md).
 
 ## Architecture
@@ -113,6 +115,7 @@ Team: **Johaan, K, Chris, and Toby**.
 ## Docs index
 
 - [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf) — the pitch deck: vision, problem, architecture, demo story
+- [`docs/VERTICALS.md`](docs/VERTICALS.md) — adapt the CRM to another industry (vertical packs)
 - [`docs/CONTRACT.md`](docs/CONTRACT.md) — frozen schema / API / agent tools (source of truth)
 - [`docs/history/TODO.md`](docs/history/TODO.md) — post-MVP work, tracked by owner
 - [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md) — running a real local model (hardware-agnostic)

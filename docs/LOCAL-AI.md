@@ -235,3 +235,9 @@ internet, and both are off unless you explicitly turn them on:
   mode, it returns static/canned content instead of live market data. There's
   no separate on/off flag for it — it's simply bounded by what tools your
   agent actually has.
+
+## Another industry?
+
+The knowledge base is per-vertical: the corpus, the funnel stages, the UI copy,
+and the daily research scope all come from a swappable pack. See
+[`VERTICALS.md`](VERTICALS.md).
