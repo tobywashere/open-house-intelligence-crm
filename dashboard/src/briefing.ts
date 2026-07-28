@@ -130,9 +130,15 @@ function lookupString(map: Record<string, string> | undefined, key: string, fall
 
 export function personaOf(lead: Lead): string {
   if (lead.persona) return lead.persona
-  const rules = pack().persona_rules ?? []
+  // Defense in depth (fix round 2): the backend now sanitizes persona_rules
+  // at the loader (_sanitize_persona_rules in vertical.py), but this
+  // dashboard build could be served by a backend that predates that
+  // sanitizer, so these guards stay. `persona_rules` not being an array
+  // (e.g. `{"x": 1}`) would otherwise throw "is not iterable"; a non-object
+  // rule entry (e.g. `[null]`) would throw reading `.when` of null.
+  const rules = Array.isArray(pack().persona_rules) ? pack().persona_rules : []
   for (const rule of rules) {
-    if (!rule.when || evalPersonaCond(rule.when, lead)) return rule.persona
+    if (!rule?.when || evalPersonaCond(rule.when, lead)) return rule?.persona ?? defaultPersonaKey()
   }
   return defaultPersonaKey()
 }

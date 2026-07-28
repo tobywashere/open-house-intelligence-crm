@@ -1,7 +1,12 @@
 """Pack loading must degrade to real-estate defaults, never crash."""
 import json
+from pathlib import Path
+
 import pytest
 from app import vertical
+
+VERTICALS_ROOT = Path(__file__).resolve().parents[2] / "verticals"
+SHIPPED_PACKS = sorted(VERTICALS_ROOT.glob("*/pack.json"))
 
 
 def test_missing_pack_falls_back_to_defaults(tmp_path, monkeypatch):
@@ -143,3 +148,75 @@ def test_partial_mock_summary_does_not_inherit_real_estate_content(tmp_path, mon
     assert pack["persona_recommendations"] == {
         "Passive Candidate": "Sell the mission, not the ping-pong table."
     }, "real-estate persona_recommendations leaked into a pack with its own personas"
+
+
+def test_default_pack_persona_rules_pass_the_sanitizer_unchanged():
+    """The sanitizer must never quietly rewrite/drop anything from our own
+    shipped rules — if it does, either the vocabulary drifted from what the
+    sanitizer allows, or the sanitizer is too strict."""
+    rules = vertical.DEFAULT_PACK["persona_rules"]
+    assert vertical._sanitize_persona_rules(rules) == rules
+
+
+@pytest.mark.parametrize("pack_path", SHIPPED_PACKS, ids=lambda p: p.parent.name)
+def test_shipped_pack_persona_rules_pass_the_sanitizer_unchanged(pack_path):
+    """Every verticals/*/pack.json that overrides persona_rules must ship
+    rules the sanitizer accepts whole — parametrized over the directory glob
+    so packs added by later tasks are covered automatically, without anyone
+    having to remember to extend this test."""
+    raw = json.loads(pack_path.read_text())
+    rules = raw.get("persona_rules")
+    if rules is None:
+        pytest.skip(f"{pack_path} does not override persona_rules")
+    assert vertical._sanitize_persona_rules(rules) == rules
+
+
+def test_sanitizer_drops_malformed_persona_rules_but_keeps_good_ones():
+    rules = [
+        {"persona": "Seller", "when": {"field": "intent", "op": "eq", "value": "sell"}},
+        "not-an-object",
+        {"when": {"field": "intent", "op": "eq", "value": "sell"}},  # missing persona
+        {"persona": 42, "when": None},  # non-string persona
+        {"persona": "Bad Regex", "when": {"field": "name", "op": "regex", "value": "["}},
+        {"persona": "Bad Op", "when": {"field": "budget", "op": "telepathy", "value": 1}},
+        {"persona": "Bad Any", "when": {"any": "not-a-list"}},
+        {
+            "persona": "Mixed Any",
+            "when": {"any": [
+                {"field": "name", "op": "regex", "value": "["},  # dropped leaf
+                {"field": "intent", "op": "eq", "value": "sell"},  # survives
+            ]},
+        },
+        {"persona": "Home Buyer", "when": None},
+    ]
+    sanitized = vertical._sanitize_persona_rules(rules)
+    personas = [r["persona"] for r in sanitized]
+    assert personas == ["Seller", "Mixed Any", "Home Buyer"]
+    # the bad leaf inside "Mixed Any"'s `any` was dropped; the good sibling survived
+    assert sanitized[1]["when"]["any"] == [{"field": "intent", "op": "eq", "value": "sell"}]
+
+
+def test_sanitizer_falls_back_to_default_when_nothing_survives(tmp_path, monkeypatch):
+    d = tmp_path / "all-bad"
+    d.mkdir()
+    (d / "pack.json").write_text(json.dumps({"persona_rules": ["nonsense", {"persona": 1}]}))
+    monkeypatch.setenv("VERTICALS_DIR", str(tmp_path))
+    monkeypatch.setenv("VERTICAL", "all-bad")
+    vertical.clear_cache()
+    pack = vertical.load_pack()
+    assert pack["persona_rules"] == vertical.DEFAULT_PACK["persona_rules"]
+
+
+def test_non_dict_wholesale_value_is_rejected(tmp_path, monkeypatch):
+    """A malformed wholesale-replace value (e.g. a string instead of an
+    object) must not reach the dashboard verbatim — DailySummaryOverlay.tsx
+    assumes mock_summary is an object with market_watch/ai_insights arrays
+    and would throw on `.map()` over a string."""
+    d = tmp_path / "bad-wholesale"
+    d.mkdir()
+    (d / "pack.json").write_text(json.dumps({"mock_summary": "nonsense"}))
+    monkeypatch.setenv("VERTICALS_DIR", str(tmp_path))
+    monkeypatch.setenv("VERTICAL", "bad-wholesale")
+    vertical.clear_cache()
+    pack = vertical.load_pack()
+    assert pack["mock_summary"] == vertical.DEFAULT_PACK["mock_summary"]
