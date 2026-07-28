@@ -96,10 +96,19 @@ export function stagesFromPack(
   eventsByLead: Map<number, LeadProfile['events']>,
   stages: Stage[],
 ): FunnelStage[] {
+  // Defense-in-depth (same policy as the persona `when` evaluator in
+  // briefing.ts, per vertical.py's comment: TS-side guards stay in place
+  // for a dashboard that might be served by a backend predating the
+  // sanitizer). `_sanitize_stages` on the current backend already rejects a
+  // non-list `stages` and a stage with a non-object `rule`, but this client
+  // must not assume it's always talking to the current backend.
+  if (!Array.isArray(stages)) return []
   return stages.map((s) => {
-    const evaluate = RULE_EVAL[s.rule.type as string]
-    const matched = evaluate ? leads.filter((l) => evaluate(l, s.rule, eventsByLead)) : []
-    return { key: s.key, label: s.label, count: matched.length }
+    const rule = s.rule ?? {}
+    const evaluate = RULE_EVAL[(rule as any).type as string]
+    const matched = evaluate ? leads.filter((l) => evaluate(l, rule, eventsByLead)) : []
+    const label = typeof s.label === 'string' && s.label ? s.label : s.key
+    return { key: s.key, label, count: matched.length }
   })
 }
 
@@ -174,12 +183,13 @@ function compute(
 
   const overallPct = leads.length ? Math.round((closed.length / leads.length) * 1000) / 10 : 0
   const bottleneckStage = stages[worstIdx + 1]
-  const bottleneck = !leads.length
-    ? { label: 'No data yet', detail: 'Add leads to see where your pipeline is losing them.' }
-    : {
-        label: bottleneckStage.label,
-        detail: `${bottleneckStage.count} / ${stages[worstIdx].count} · ${conversions[worstIdx].pct}% conversion — the weakest step in the pipeline.`,
-      }
+  const bottleneck =
+    !leads.length || stages.length < 2
+      ? { label: 'No data yet', detail: 'Add leads to see where your pipeline is losing them.' }
+      : {
+          label: bottleneckStage.label,
+          detail: `${bottleneckStage.count} / ${stages[worstIdx].count} · ${conversions[worstIdx].pct}% conversion — the weakest step in the pipeline.`,
+        }
 
   // time in stage from status_change events ("a → b"); time-to-close from created → closed
   const enteredAt = (l: Lead, status: string): number | null => {

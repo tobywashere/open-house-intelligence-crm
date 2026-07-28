@@ -273,16 +273,39 @@ def _verticals_dir() -> Path:
 
 
 def _sanitize_stages(stages) -> list:
+    if not isinstance(stages, list):
+        # e.g. {"stages": 5} — `for s in stages or []` would raise
+        # TypeError: 'int' object is not iterable.
+        logging.warning("vertical pack: 'stages' must be a list, got %r — using defaults",
+                        type(stages).__name__)
+        return []
     out = []
-    for s in stages or []:
+    for s in stages:
         if not isinstance(s, dict) or "key" not in s:
             continue
-        rule = s.get("rule") or {}
+        rule = s.get("rule")
+        if not isinstance(rule, dict):
+            # e.g. {"key": "a", "rule": "nonsense"} — `rule.get("type")` on a
+            # str would raise AttributeError.
+            logging.warning("vertical pack: dropping stage %r with non-object rule %r",
+                            s.get("key"), rule)
+            continue
         if rule.get("type") not in KNOWN_RULE_TYPES:
             logging.warning("vertical pack: dropping stage %r with unknown rule %r",
                             s.get("key"), rule.get("type"))
             continue
         out.append(s)
+    if len(out) < 2:
+        # funnel.ts's conversions/bottleneck math does `stages.slice(1)` then
+        # indexes `stages[worstIdx + 1]` — fewer than 2 stages means that
+        # index is out of range and the funnel page throws with no
+        # ErrorBoundary to catch it. A pack that can't supply at least 2
+        # valid stages degrades to DEFAULT_PACK's six, same as zero stages.
+        if stages:
+            logging.warning(
+                "vertical pack: only %d valid stage(s) after sanitizing (need >= 2) — "
+                "keeping DEFAULT_PACK's stages", len(out))
+        return []
     return out
 
 
@@ -393,29 +416,38 @@ def load_pack() -> dict:
         logging.warning("vertical pack at %s is not a JSON object (got %s) — using defaults",
                         path, type(raw).__name__)
         raw = {}
-    for key, value in raw.items():
-        if key == "stages":
-            sanitized = _sanitize_stages(value)
-            if sanitized:
-                pack["stages"] = sanitized
-        elif key == "persona_rules":
-            sanitized = _sanitize_persona_rules(value)
-            if sanitized:
-                pack["persona_rules"] = sanitized
-            else:
-                logging.warning(
-                    "vertical pack: persona_rules had no valid rules after sanitizing — "
-                    "keeping DEFAULT_PACK's persona_rules (an empty list would leave every "
-                    "lead persona-less)")
-        elif key in REPLACE_WHOLESALE_KEYS:
-            # isinstance(..., dict) guards against e.g. `"mock_summary": "nonsense"`
-            # reaching the dashboard verbatim — DailySummaryOverlay.tsx assumes the
-            # documented shape and would throw on `.map()` over a string.
-            if isinstance(value, dict) and value:
+    try:
+        for key, value in raw.items():
+            if key == "stages":
+                sanitized = _sanitize_stages(value)
+                if sanitized:
+                    pack["stages"] = sanitized
+            elif key == "persona_rules":
+                sanitized = _sanitize_persona_rules(value)
+                if sanitized:
+                    pack["persona_rules"] = sanitized
+                else:
+                    logging.warning(
+                        "vertical pack: persona_rules had no valid rules after sanitizing — "
+                        "keeping DEFAULT_PACK's persona_rules (an empty list would leave every "
+                        "lead persona-less)")
+            elif key in REPLACE_WHOLESALE_KEYS:
+                # isinstance(..., dict) guards against e.g. `"mock_summary": "nonsense"`
+                # reaching the dashboard verbatim — DailySummaryOverlay.tsx assumes the
+                # documented shape and would throw on `.map()` over a string.
+                if isinstance(value, dict) and value:
+                    pack[key] = value
+            elif isinstance(value, dict) and isinstance(pack.get(key), dict):
+                pack[key].update(value)
+            elif value:
                 pack[key] = value
-        elif isinstance(value, dict) and isinstance(pack.get(key), dict):
-            pack[key].update(value)
-        elif value:
-            pack[key] = value
+    except Exception as exc:
+        # Belt-and-braces: no known shape reaches this point (both
+        # sanitizers are internally guarded above), but a pack is untrusted
+        # third-party JSON and a future sanitizer bug must degrade to
+        # defaults, not 500 GET /api/vertical — same policy as the read/parse
+        # try/except above, extended to cover the merge itself.
+        logging.warning("vertical pack at %s failed to merge (%s) — using defaults", path, exc)
+        pack = json.loads(json.dumps(DEFAULT_PACK))
     _cache = pack
     return pack
