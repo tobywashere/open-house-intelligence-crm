@@ -66,9 +66,38 @@ def has_conflict(conn, start_ts: str, end_ts: str) -> bool:
     return any(_overlaps(start, end, b["start_ts"], b["end_ts"]) for b in booked)
 
 
+def _ics_escape(text: str) -> str:
+    """RFC 5545 TEXT escaping — backslash first, then structural chars, newlines."""
+    return (str(text).replace("\\", "\\\\").replace(";", "\\;")
+            .replace(",", "\\,").replace("\r\n", "\\n").replace("\n", "\\n"))
+
+
+def _fold(line: str) -> str:
+    """Fold a content line over 75 OCTETS per RFC 5545, continuation lines
+    prefixed with CRLF + a single space. Splits on UTF-8 byte boundaries so a
+    multi-byte character is never cut in half."""
+    encoded = line.encode("utf-8")
+    if len(encoded) <= 75:
+        return line
+    chunks = []
+    start = 0
+    limit = 75
+    while start < len(encoded):
+        end = min(start + limit, len(encoded))
+        # back off if we'd split a multi-byte UTF-8 sequence
+        while end < len(encoded) and (encoded[end] & 0xC0) == 0x80:
+            end -= 1
+        chunks.append(encoded[start:end])
+        start = end
+        limit = 74  # continuation lines lose 1 octet to the leading space
+    return "\r\n ".join(c.decode("utf-8") for c in chunks)
+
+
 def to_ics(appointment: dict, lead_name: str) -> str:
     start = parse_ts(appointment["start_ts"]).strftime("%Y%m%dT%H%M%S")
     end = parse_ts(appointment["end_ts"]).strftime("%Y%m%dT%H%M%S")
+    summary = _fold(f"SUMMARY:Home tour with {_ics_escape(lead_name)}")
+    location = _fold(f"LOCATION:{_ics_escape(appointment.get('location') or 'TBD')}")
     return "\r\n".join([
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -77,8 +106,8 @@ def to_ics(appointment: dict, lead_name: str) -> str:
         f"UID:ohi-appt-{appointment['id']}@openhouse.local",
         f"DTSTART:{start}",
         f"DTEND:{end}",
-        f"SUMMARY:Home tour with {lead_name}",
-        f"LOCATION:{appointment.get('location') or 'TBD'}",
+        summary,
+        location,
         "END:VEVENT",
         "END:VCALENDAR",
     ])

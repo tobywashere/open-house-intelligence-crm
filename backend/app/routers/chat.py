@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from ..agent import get_driver
@@ -38,7 +38,7 @@ async def chat(body: ChatIn):
 
 
 @router.get("/history")
-def history(session_id: str = "dashboard", limit: int = 50):
+def history(session_id: str = "dashboard", limit: int = Query(50, ge=1, le=500)):
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM chat_messages WHERE session_id = ? "

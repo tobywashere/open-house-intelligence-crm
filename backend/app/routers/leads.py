@@ -1,9 +1,10 @@
 import difflib
 import json
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..agent import get_driver
 from ..db import audit, get_conn, row_to_dict
@@ -27,7 +28,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 
 class LeadIn(BaseModel):
     raw_text: str | None = None
-    source: str = "note"
+    source: Literal["form", "text", "note", "referral", "email"] = "note"
     name: str | None = None
     phone: str | None = None
     email: str | None = None
@@ -46,9 +47,9 @@ class LeadPatch(BaseModel):
     area: str | None = None
     timeline: str | None = None
     intent: str | None = None
-    score: int | None = None
+    score: int | None = Field(None, ge=0, le=100)
     score_reason: str | None = None
-    is_neglected: int | None = None
+    is_neglected: int | None = Field(None, ge=0, le=1)
     persona: str | None = None
     relationship_summary: str | None = None
 

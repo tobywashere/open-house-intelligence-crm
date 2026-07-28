@@ -1,7 +1,7 @@
 import os
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
 from ..calendar_adapter import calendar
@@ -16,7 +16,7 @@ NEGLECT_AFTER_DAYS = 2
 
 
 class AdvanceTimeIn(BaseModel):
-    days: int = 3
+    days: int = Field(3, ge=0)
 
 
 class ReminderIn(BaseModel):
@@ -102,7 +102,7 @@ def advance_time(body: AdvanceTimeIn):
 
 
 @router.get("/audit")
-def audit_log(limit: int = 50):
+def audit_log(limit: int = Query(50, ge=1, le=500)):
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT a.*, l.name AS lead_name FROM audit_log a "

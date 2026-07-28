@@ -40,6 +40,21 @@ class ScanIn(BaseModel):
     data: str  # base64-encoded image bytes
 
 
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _looks_like_image(image: bytes) -> bool:
+    """Sniff magic bytes so a renamed non-image can't ride the extension
+    whitelist through — the extension check alone only validates the name."""
+    if image.startswith(b"\xff\xd8"):
+        return True  # JPEG
+    if image.startswith(b"\x89PNG"):
+        return True  # PNG
+    if image[:4] == b"RIFF" and image[8:12] == b"WEBP":
+        return True  # WEBP
+    return False
+
+
 @router.post("/scan-card")
 async def scan_card(body: ScanIn):
     if len(body.data) > 11_000_000:  # ~8 MB decoded
@@ -51,8 +66,13 @@ async def scan_card(body: ScanIn):
     except binascii.Error:
         raise HTTPException(status_code=400, detail="Invalid image payload.")
 
+    ext = Path(body.filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=422, detail="not a recognized image")
+    if not _looks_like_image(image):
+        raise HTTPException(status_code=422, detail="not a recognized image")
+
     UPLOADS.mkdir(parents=True, exist_ok=True)
-    ext = Path(body.filename).suffix.lower() or ".jpg"
     path = UPLOADS / f"card-{int(time.time() * 1000)}{ext}"
     path.write_bytes(image)
 
@@ -112,4 +132,6 @@ async def scan_card(body: ScanIn):
               {"filename": body.filename},
               {"extracted": bool(extracted), "duplicates": len(duplicates)})
 
-    return {"extracted": extracted, "duplicates": duplicates, "image": str(path)}
+    # the absolute server path stays server-side (used above for the agent
+    # chat message) — never echo it back to the client
+    return {"extracted": extracted, "duplicates": duplicates, "filename": path.name}
