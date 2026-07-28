@@ -82,12 +82,17 @@ API once `HOST` is network-reachable).
 If this is the first run, `serve.sh` seeds the database only if it's
 missing — and a fresh seed is **schema-only, no leads**, since that's the
 correct starting point for real use. If you want the 15-lead demo dataset to
-explore the product with (what §4 below assumes), seed it explicitly before
-or after your first `serve.sh` run:
+explore the product with (what §4 below assumes), run `serve.sh` once first
+(it creates the `.venv` this needs), then:
 
 ```bash
 .venv/bin/python backend/seed.py --demo
 ```
+
+⚠ This **resets the database** — it wipes and recreates it (schema-only, or
+schema + demo leads with `--demo`). Fine for a fresh install or a deliberate
+reset; do **not** run it against a CRM you've already started using through
+the agent, or you'll silently lose every real lead in it.
 
 ## 4. Verify the wiring
 
