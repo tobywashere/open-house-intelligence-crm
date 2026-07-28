@@ -362,6 +362,48 @@ with `"booking.booked": "Tour booked"` and `"booking.cta": "Book a tour"` added 
 
 ---
 
+### Task 3b: Mock briefing generator from the pack
+
+**Files:**
+- Modify: `dashboard/src/briefing.ts` (`personaOf` ~:65-70, recommendation templates ~:111-127, schedule titles ~:171), `backend/app/vertical.py` (`DEFAULT_PACK`), `verticals/real-estate/pack.json`
+- Test: `backend/tests/test_vertical.py` (extend)
+
+**Why:** `briefing.ts` contains the client-side mock briefing generator — it produces a plausible briefing when the agent has not posted one, which is exactly what the README Quickstart shows a new evaluator in mock mode. Today it infers real-estate personas ("First-Time Buyer" under $700k, "Seller" when `intent === 'sell'`), writes real-estate recommendations ("Ask about schools first; keep the shortlist to three homes"), and titles schedule blocks "Showing" / "Listing appointment". Under a recruiting pack the demo would still generate real-estate briefings — the exact thing this effort exists to fix. This is restructuring, not string swaps, which is why it is its own task.
+
+**Interfaces:**
+- Consumes: `pack()` from Task 2.
+- Produces: pack keys `persona_rules[]`, `persona_recommendations{}`, `schedule_titles{}` present in `DEFAULT_PACK` and every shipped pack.
+
+- [ ] **Step 1: Read the current generator.** `dashboard/src/briefing.ts:60-175`. Note exactly which lead fields each persona rule reads (`intent`, `budget`, `score`, `area`) and in what order the branches fall through — order matters, first match wins.
+
+- [ ] **Step 2: Design the pack schema for it.** `persona_rules` is an ordered list evaluated first-match-wins; each entry is `{persona, when}` where `when` uses a small declarative vocabulary sufficient for today's rules — at minimum `{field, op, value}` with ops `eq` / `lt` / `gte`, plus a final unconditional default. Reproduce today's real-estate rules exactly in `DEFAULT_PACK`; anything the vocabulary cannot express is a finding to report, not something to approximate silently.
+
+- [ ] **Step 3: Write the failing test**
+
+```python
+def test_persona_rules_reproduce_the_shipped_inference():
+    """The mock generator's persona inference must be pack-driven and must
+    still produce today's real-estate personas for the real-estate pack."""
+    from app.vertical import DEFAULT_PACK
+    rules = DEFAULT_PACK["persona_rules"]
+    assert rules[-1].get("when") is None, "last rule must be the unconditional default"
+    personas = {r["persona"] for r in rules}
+    assert {"Seller", "First-Time Buyer", "Home Buyer"} <= personas
+    for r in DEFAULT_PACK["persona_recommendations"]:
+        assert r in personas, f"recommendation for unknown persona {r}"
+    assert set(DEFAULT_PACK["schedule_titles"]) >= {"default", "sell"}
+```
+
+- [ ] **Step 4: Run it** — FAIL, `KeyError: 'persona_rules'`.
+
+- [ ] **Step 5: Implement.** Add the three blocks to `DEFAULT_PACK` and `verticals/real-estate/pack.json` (the equality test keeps them in sync). In `briefing.ts`, replace the hardcoded branches with an evaluator over `pack().persona_rules`, look recommendations up by resolved persona with a generic fallback, and take schedule titles from `pack().schedule_titles` keyed by intent. Every lookup keeps a fallback so a partial pack still renders.
+
+- [ ] **Step 6: Verify the no-op.** With the real-estate pack active, a seeded mock-mode briefing must be identical to before — same personas, same recommendations, same schedule titles. State in your report how you confirmed it (compare rendered output before/after on the same seed data).
+
+- [ ] **Step 7: Gates + commit** — backend green, `npx tsc -b && npm run build` green. `feat: mock briefing generator is pack-driven`
+
+---
+
 ### Task 4: Funnel stages from the pack
 
 **Files:**
@@ -684,6 +726,6 @@ Topics that give retrieval something to bite on: b2b-saas → procurement/securi
 
 ## Self-Review (done at write time)
 
-- **Spec coverage:** pack definition/loader → T1; serving + dashboard resolution → T2; copy/labels/personas → T3; funnel stages+rules → T4; research scope config, templated prompt, storage/API → T5; knowledge upload/list/delete + panel → T6; research settings UI → T7; three example packs with knowledge → T8; `docs/VERTICALS.md` + cross-links → T9. Non-goals (runtime switching, schema renames, PDF ingestion, marketplace) are excluded throughout. Testing strategy (real-estate no-op, pack-loading degradation, adversarial upload tests, 12 locked queries untouched) is distributed across T1/T3/T6/T8.
+- **Spec coverage:** pack definition/loader → T1; serving + dashboard resolution → T2; copy/labels/personas → T3; mock briefing generator → T3b; funnel stages+rules → T4; research scope config, templated prompt, storage/API → T5; knowledge upload/list/delete + panel → T6; research settings UI → T7; three example packs with knowledge → T8; `docs/VERTICALS.md` + cross-links → T9. Non-goals (runtime switching, schema renames, PDF ingestion, marketplace) are excluded throughout. Testing strategy (real-estate no-op, pack-loading degradation, adversarial upload tests, 12 locked queries untouched) is distributed across T1/T3/T6/T8.
 - **Placeholders:** the `DEFAULT_PACK` body in T1 and `BUILT_IN` in T2 are deliberately marked "transcribe from the live code" rather than invented — the shipped values are the source of truth and a fabricated list here would be wrong. Every other step carries real content.
 - **Type consistency:** `load_pack()`/`clear_cache()`/`DEFAULT_PACK`/`KNOWN_RULE_TYPES` (T1) are consumed by T2/T4/T5/T8 under those exact names; `pack()`/`copy()`/`loadVertical()`/`Pack`/`Stage` (T2) by T3/T4; `render_research_prompt()` (T5) by T7 via the API; the T3 copy-coverage test is extended in T8 to cover all shipped packs.
