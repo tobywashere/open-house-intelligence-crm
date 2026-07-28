@@ -35,9 +35,14 @@ async def api_token_guard(request: Request, call_next):
 # browser would then block outright.
 app.add_middleware(BaseHTTPMiddleware, dispatch=api_token_guard)
 
+_default_cors_origins = ["http://localhost:5173", "http://localhost:8080"]
+_cors_origins_env = os.environ.get("CORS_ORIGINS", "")
+cors_origins = ([o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+                 or _default_cors_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # hackathon mode; tighten if this ever leaves the demo
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

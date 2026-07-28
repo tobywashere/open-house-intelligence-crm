@@ -64,7 +64,7 @@ sentences (LLM narration is an optional later garnish via K's scheduled path —
 | `agent_activity` | Tool calls in the last 24h by type — what the AI actually did | `GET /audit` |
 
 v2 (unlocked by Phase 2 history): trends ("booking rate up 12% vs yesterday"), and
-conversion analytics once #10 outcome tracking lands (see TODO.md).
+conversion analytics once #10 outcome tracking lands (see docs/history/TODO.md).
 
 ## Phases
 

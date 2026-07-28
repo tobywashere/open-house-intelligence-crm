@@ -6,7 +6,7 @@ Real estate agents have data everywhere but intelligence nowhere — leads scatt
 
 And it's **local-first**: inference runs on your own machine (a local model via OpenClaw — originally demoed on a Dell Pro Max GB10 running Qwen 3.6 35B-A3B, but any tool-capable local model works), so client PII — budgets, financial situations, relocation reasons — never leaves the machine. Full story: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
 
-**[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`PLAN.md`](PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
+**[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`docs/history/PLAN.md`](docs/history/PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
 
 ## Quickstart
 
@@ -114,13 +114,13 @@ Team: **Johaan, K, Chris, and Toby**.
 
 - [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf) — the pitch deck: vision, problem, architecture, demo story
 - [`docs/CONTRACT.md`](docs/CONTRACT.md) — frozen schema / API / agent tools (source of truth)
-- [`TODO.md`](TODO.md) — post-MVP work, tracked by owner
+- [`docs/history/TODO.md`](docs/history/TODO.md) — post-MVP work, tracked by owner
 - [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md) — running a real local model (hardware-agnostic)
 - [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) — one example deployment, on the original demo hardware
 - [`docs/INSIGHTS.md`](docs/INSIGHTS.md) — deterministic insights engine
 - [`docs/BRIEFING-UI.md`](docs/BRIEFING-UI.md), [`docs/FUNNEL-UI.md`](docs/FUNNEL-UI.md) — briefing & funnel design docs (nav has since merged into `/`)
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — approved specs (Google Calendar + Gmail integration)
-- [`PLAN.md`](PLAN.md) — original hackathon plan (historical)
+- [`docs/history/PLAN.md`](docs/history/PLAN.md) — original hackathon plan (historical)
 
 ## Demo helpers
 

@@ -25,6 +25,7 @@ import urllib.request
 
 BASE_URL = os.environ.get("CRM_API_URL", "http://localhost:8080/api").rstrip("/")
 TIMEOUT = float(os.environ.get("CRM_API_TIMEOUT_SECONDS", "120"))
+API_TOKEN = os.environ.get("OHI_API_TOKEN", "")
 
 
 class CRMError(Exception):
@@ -44,8 +45,10 @@ def _request(method: str, path: str, *, params: dict | None = None,
         if clean:
             url += "?" + urllib.parse.urlencode(clean)
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                  headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if API_TOKEN:
+        headers["X-API-Token"] = API_TOKEN
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             raw = resp.read()

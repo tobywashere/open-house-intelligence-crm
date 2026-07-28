@@ -20,3 +20,8 @@ dashboard/dist/
 # misc
 .DS_Store
 dashboard/tsconfig.tsbuildinfo
+
+# internal scratch — review transcripts, agent conversations, planning notes;
+# never meant to ship in the public repo
+.superpowers/
+.claude/

@@ -28,3 +28,22 @@ def test_cors_preflight_bypasses_token_guard(monkeypatch, client_factory):
     )
     assert res.status_code in (200, 204)
     assert "access-control-allow-origin" in {k.lower() for k in res.headers.keys()}
+
+
+def test_cors_rejects_foreign_origin(monkeypatch, client_factory):
+    # Wildcard CORS would let ANY web page the operator has open read/write
+    # this API from the browser — localhost binding does not stop that.
+    # Only an explicit allowlist does.
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    client = client_factory()
+    res = client.get("/api/leads", headers={"Origin": "https://evil.example"})
+    assert res.status_code == 200  # request itself succeeds (no server-side origin check)
+    assert "access-control-allow-origin" not in {k.lower() for k in res.headers.keys()}
+
+
+def test_cors_allows_default_origin(monkeypatch, client_factory):
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    client = client_factory()
+    res = client.get("/api/leads", headers={"Origin": "http://localhost:5173"})
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:5173"

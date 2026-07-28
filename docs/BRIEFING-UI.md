@@ -114,4 +114,4 @@ here's yesterday's" / mock).
 - **Toby**: `briefing` table + GET/POST endpoints, `persona` + `relationship_summary` columns.
 - **K**: 7am cron on the GB10 — Qwen 3.6 35B-A3B composes the briefing JSON from leads,
   events, and appointments, POSTs it to `/api/briefing`. (This is the "scheduled workflows"
-  bullet from PLAN.md — same shape as the neglected-lead cron.)
+  bullet from docs/history/PLAN.md — same shape as the neglected-lead cron.)

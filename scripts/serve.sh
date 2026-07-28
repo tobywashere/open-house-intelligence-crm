@@ -30,10 +30,14 @@ fi
 # a broken (or partial/stale) build must not take the API down with it —
 # build to a scratch dir and swap atomically, and only fall back to a
 # previous dist when it's actually complete (index.html + assets/)
-rm -rf dashboard/dist.new
+rm -rf dashboard/dist.new dashboard/dist.old
 if (cd dashboard && npm run build -- --outDir dist.new); then
-  rm -rf dashboard/dist
+  # atomic-ish swap: never leave a window with no dist at all. If we get
+  # interrupted between the two mv's, dist is still the (stale-but-complete)
+  # old build; worst case a stray dist.old needs a manual `rm -rf` next run.
+  [ -d dashboard/dist ] && mv dashboard/dist dashboard/dist.old
   mv dashboard/dist.new dashboard/dist
+  rm -rf dashboard/dist.old
 else
   rm -rf dashboard/dist.new
   if [ -f dashboard/dist/index.html ] && [ -d dashboard/dist/assets ]; then

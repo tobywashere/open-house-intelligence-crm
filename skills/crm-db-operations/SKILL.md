@@ -38,6 +38,12 @@ running and reachable — for the demo it runs on the same GB10 box.
 python3 -c "import sys; sys.path.insert(0,'.'); import tools; print(tools.list_leads()[:1])"
 ```
 
+If the backend is bound beyond localhost (`HOST` set to a Tailscale/LAN IP)
+and `OHI_API_TOKEN` is set on it, set the same value as `OHI_API_TOKEN` in
+this skill's environment too — `tools.py` reads it and sends it as the
+`X-API-Token` header on every call. Without it, every call 401s once the
+backend's guard is on.
+
 ```python
 import os, sys
 sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations"))

@@ -53,3 +53,45 @@ def test_read_timeout_is_crmerror():
     with patch.object(urllib.request, "urlopen", side_effect=TimeoutError("read timed out")):
         with pytest.raises(crm.CRMError):
             crm.list_leads()
+
+
+class _FakeResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return b"{}"
+
+
+def test_x_api_token_header_sent_when_configured():
+    """.env.example and docs/LOCAL-AI.md tell operators to set OHI_API_TOKEN once
+    the backend binds beyond localhost — every skill call must actually send it,
+    or the guarded backend just 401s the whole product."""
+    import urllib.request
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.header_items())
+        return _FakeResponse()
+
+    with patch.object(crm, "API_TOKEN", "s3cret"):
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            crm.list_leads()
+    assert captured["headers"].get("X-api-token") == "s3cret"
+
+
+def test_x_api_token_header_absent_when_unset():
+    import urllib.request
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.header_items())
+        return _FakeResponse()
+
+    with patch.object(crm, "API_TOKEN", ""):
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            crm.list_leads()
+    assert "X-api-token" not in captured["headers"]
