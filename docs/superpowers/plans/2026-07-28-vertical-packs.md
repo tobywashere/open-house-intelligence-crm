@@ -368,6 +368,8 @@ with `"booking.booked": "Tour booked"` and `"booking.cta": "Book a tour"` added 
 - Modify: `dashboard/src/briefing.ts` (`personaOf` ~:65-70, recommendation templates ~:111-127, schedule titles ~:171), `backend/app/vertical.py` (`DEFAULT_PACK`), `verticals/real-estate/pack.json`
 - Test: `backend/tests/test_vertical.py` (extend)
 
+**Scope note (added 2026-07-28 after Task 3):** this task also owns two things Task 3 deliberately left, because both need restructuring rather than string swaps — (a) the **app wordmark** in `App.tsx:111`, currently a hardcoded two-tone "Open House Intelligence" split across a plain span and a `.brand-gradient` span, with a stale unused `copy.app_name` key ("Open Intelligence CRM") that must be reconciled; make the wordmark pack-driven (e.g. `brand.name` + `brand.name_accent`) while preserving the gradient treatment; and (b) the generated narrative prose in `dashboard/src/summary.ts` and `dashboard/src/insights.ts`, which is the same class of per-lead generated real-estate copy as the briefing generator.
+
 **Why:** `briefing.ts` contains the client-side mock briefing generator — it produces a plausible briefing when the agent has not posted one, which is exactly what the README Quickstart shows a new evaluator in mock mode. Today it infers real-estate personas ("First-Time Buyer" under $700k, "Seller" when `intent === 'sell'`), writes real-estate recommendations ("Ask about schools first; keep the shortlist to three homes"), and titles schedule blocks "Showing" / "Listing appointment". Under a recruiting pack the demo would still generate real-estate briefings — the exact thing this effort exists to fix. This is restructuring, not string swaps, which is why it is its own task.
 
 **Interfaces:**
