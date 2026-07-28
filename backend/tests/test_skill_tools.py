@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+from .live_server import live_server  # noqa: F401  (end-to-end search_knowledge test)
+
 SKILLS = Path(__file__).resolve().parents[2] / "skills"
 
 
@@ -35,6 +37,7 @@ SAMPLE_ARGS = {
     "schedule_followup": ((1, "2026-08-04T09:00:00", "note"), {}), "find_neglected_leads": ((), {}),
     "generate_dashboard_insights": ((), {}), "merge_leads": ((1, 2), {}), "delete_lead": ((1,), {}),
     "post_briefing": (({"date": "2026-08-01", "greeting": "test"},), {}),
+    "search_knowledge": (("Amazon RSU vesting",), {}),
 }
 
 
@@ -95,3 +98,17 @@ def test_x_api_token_header_absent_when_unset():
         with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
             crm.list_leads()
     assert "X-api-token" not in captured["headers"]
+
+
+def test_search_knowledge_end_to_end(live_server):
+    """search_knowledge is the agent-invoked path onto the real BM25 index
+    over the shipped report (docs/knowledge/) — a domain question should hit,
+    ordinary CRM chatter should not, exercised over real HTTP against a real
+    running backend (not mocked), same as the model actually calls it."""
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        hits = crm.search_knowledge("Amazon RSU vesting schedule")
+        assert hits, "expected the shipped report to be searchable via the tool"
+        assert any("Vesting" in h["heading"] or "Equity" in h["heading"] for h in hits), hits
+
+        no_hits = crm.search_knowledge("remind me to call my mom")
+        assert no_hits == []

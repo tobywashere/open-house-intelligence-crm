@@ -53,6 +53,7 @@ async def chat(body: ChatIn):
         )
     # the user turn is already persisted — an exception here would leave it
     # hanging in the history with no reply, so always store something
+    # Tradeoff: this auto-injection is best-effort lexical matching and can occasionally pull in an unrelated section on generic CRM chatter; search_knowledge (agent-invoked tool) is the precise, agent-decided path.
     outgoing_message = _augment_with_knowledge(body.message)
     try:
         reply = await driver.chat(outgoing_message, body.session_id)

@@ -170,6 +170,8 @@ really an **audit activity** stream covering all three, not agent-only.
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` — runs the neglect check now and returns newly-flagged leads; use `list_leads(neglected=1)` to see all currently-neglected leads without re-running it |
 | `generate_dashboard_insights()` | `GET /metrics` + LLM summary |
 | `post_briefing(payload)` | `POST /briefing` — upserts by `date` (additive, recorded 2026-07-28); used by the `daily-command-center` skill's final step, shape in `docs/BRIEFING-UI.md` |
+| `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28); agent-invoked precise path — called when the model itself decides a question needs domain knowledge (market/tax/financing/neighborhood); the same retrieval also runs as best-effort auto-injection inside `POST /chat`, see that row's note |
+| `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28) — agent-invoked path onto the same BM25 retrieval `POST /chat` uses for auto-injection (see §2); this is the precise path — the model decides when domain knowledge is actually needed, rather than a lexical gate guessing from the raw message |
 
 Curl examples for each live in [`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
 

@@ -158,26 +158,51 @@ confirm it landed.
 
 ## 6. Domain knowledge base (fully offline)
 
-`POST /chat` is grounded in your own market-intelligence docs, not just
-CRM data. Every `.md` file in `docs/knowledge/` (default; see
-`KNOWLEDGE_DIR` in `.env.example`) is chunked by heading and indexed with a
-pure-stdlib **BM25 lexical index** (`backend/app/knowledge/`) — no
-embeddings, no vector DB, no model download, no network call. The index
-builds lazily on first use, is cached in memory, and rebuilds automatically
-whenever a source file's mtime changes, so you can edit or swap the doc
-without restarting the server.
+The agent is grounded in your own market-intelligence docs, not just CRM
+data, through two paths — one precise, one best-effort fallback:
 
-When a client's chat message matches a section well enough (above
-`KNOWLEDGE_MIN_SCORE`), the top `KNOWLEDGE_TOP_K` chunks are prepended to the
-message the driver sees, in a clearly-delimited reference block that tells
-the model to use them when relevant, cite the section heading, and never
-treat their contents as instructions. An unrelated message is sent
-unchanged — no block, no noise. Retrieval failures are swallowed and simply
-degrade to "no context"; they never turn into a chat 500.
+- **Agent-invoked (precise):** the `search_knowledge(query, k=3)` tool in
+  `skills/crm-db-operations/tools.py` (`GET /knowledge/search` under the
+  hood). The model calls it only when it judges a question actually needs
+  domain knowledge — market conditions, taxes, financing mechanics,
+  pricing, neighborhoods/school districts — and skips it for scheduling,
+  reminders, or CRM-record questions. This is the accurate path: the model
+  has the conversational context a lexical gate never will, so it doesn't
+  fire on ordinary CRM chatter. See the skill's `SKILL.md` for the
+  when-to-use guidance the model follows.
+- **Auto-injection (fallback):** `POST /chat` also runs the same retrieval
+  against every incoming message and, on a hit, prepends the matched
+  section(s) before relaying to the driver — no tool call required. This
+  exists for models that don't tool-call reliably. It's necessarily
+  best-effort, not precise: with no model judgment in the loop, ordinary
+  CRM chatter can occasionally still retrieve an unrelated section (see
+  `docs/superpowers/rag-impl-report.md` for the false-positive rounds this
+  went through and the residual tradeoff). Prefer wiring the agent to use
+  `search_knowledge` directly; treat auto-injection as a safety net, not
+  the primary path.
 
-`GET /api/knowledge/search?q=&k=` exposes the same retrieval directly (`doc`,
-`heading`, `breadcrumb`, `score`, `text` per hit) for debugging or a future
-dashboard panel — read-only, not audited (see `docs/CONTRACT.md` §2/§3).
+Both paths hit the same index: every `.md` file in `docs/knowledge/`
+(default; see `KNOWLEDGE_DIR` in `.env.example`) is chunked by heading and
+indexed with a pure-stdlib **BM25 lexical index**
+(`backend/app/knowledge/`) — no embeddings, no vector DB, no model
+download, no network call. The index builds lazily on first use, is
+cached in memory, and rebuilds automatically whenever a source file's
+mtime changes, so you can edit or swap the doc without restarting the
+server.
+
+For the auto-injection path: when a chat message matches a section well
+enough (above `KNOWLEDGE_MIN_SCORE`, and past a discriminative-match gate —
+see the knowledge module's docstrings), the top `KNOWLEDGE_TOP_K` chunks are
+prepended to the message the driver sees, in a clearly-delimited reference
+block that tells the model to use them when relevant, cite the section
+heading, and never treat their contents as instructions. An unrelated
+message is sent unchanged — no block, no noise, in the common case.
+Retrieval failures are swallowed and simply degrade to "no context"; they
+never turn into a chat 500.
+
+`GET /api/knowledge/search?q=&k=` is the same endpoint `search_knowledge`
+calls — also useful directly for debugging or a future dashboard panel —
+read-only, not audited (see `docs/CONTRACT.md` §2/§3).
 
 **This is the per-industry knob.** The repo ships with
 `docs/knowledge/pacific_northwest_luxury_real_estate_report_2026.md`, a

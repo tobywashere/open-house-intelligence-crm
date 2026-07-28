@@ -1,5 +1,33 @@
 # Local BM25 knowledge retrieval — implementation report
 
+## Round 3: stop tuning the lexical gate, give the agent a tool instead
+
+Rounds 1 and 2 kept closing individual false positives in `POST /chat`'s
+auto-injection gate by adding statistical thresholds and stopword
+categories — and kept finding new ones ("whats on my calendar" →
+Capital Gains Tax, "follow up next week" → Redmond Commute Calculus). That
+loop doesn't converge: lexical overlap is a proxy for intent, not intent
+itself, and every stopword added to close one leak also risks silently
+dropping a genuine domain match. This round does not add another stopword
+or touch the gate/threshold logic — it changes the architecture instead.
+
+**Fix:** added `search_knowledge(query, k=3)` as an agent-invoked tool
+(`skills/crm-db-operations/tools.py`, wrapping `GET /knowledge/search`) and
+instructed the model, in `SKILL.md`, to call it when a question needs
+market/tax/financing/neighborhood knowledge and skip it for scheduling,
+reminders, or CRM-record questions. This moves the trigger decision from a
+lexical heuristic to the model's own judgment of intent — the thing the
+gate was always a weak proxy for.
+
+**Residual, stated plainly:** `POST /chat`'s auto-injection stays on as a
+fallback for models that tool-call poorly, and it is unchanged — it is
+still a lexical heuristic and can still, on generic CRM chatter, retrieve
+an unrelated section. `search_knowledge` does not eliminate that residual;
+it gives a precise alternative path alongside it. Do not read "added an
+agent tool" as "auto-injection false positives are fixed" — they aren't;
+they're now avoidable by using the tool instead of relying on the
+heuristic.
+
 ## Fix round 2 (team-lead review): generic word-pair corroboration
 
 Round 1's discriminative-match gate (>=2 distinct query terms matched, OR
