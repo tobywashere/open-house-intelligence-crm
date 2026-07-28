@@ -41,18 +41,22 @@ class ScanIn(BaseModel):
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+KIND_TO_EXT = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}
 
 
-def _looks_like_image(image: bytes) -> bool:
+def _sniff_image_kind(image: bytes) -> str | None:
     """Sniff magic bytes so a renamed non-image can't ride the extension
-    whitelist through — the extension check alone only validates the name."""
+    whitelist through — the extension check alone only validates the name.
+    Returns the real kind (or None), which also becomes the stored file's
+    extension — a client-supplied "card.png" holding JPEG bytes is stored as
+    ".jpg", never trusting the client's claimed extension over the content."""
     if image.startswith(b"\xff\xd8"):
-        return True  # JPEG
+        return "jpeg"
     if image.startswith(b"\x89PNG"):
-        return True  # PNG
+        return "png"
     if image[:4] == b"RIFF" and image[8:12] == b"WEBP":
-        return True  # WEBP
-    return False
+        return "webp"
+    return None
 
 
 @router.post("/scan-card")
@@ -66,11 +70,13 @@ async def scan_card(body: ScanIn):
     except binascii.Error:
         raise HTTPException(status_code=400, detail="Invalid image payload.")
 
-    ext = Path(body.filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    claimed_ext = Path(body.filename).suffix.lower()
+    if claimed_ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=422, detail="not a recognized image")
-    if not _looks_like_image(image):
+    kind = _sniff_image_kind(image)
+    if kind is None:
         raise HTTPException(status_code=422, detail="not a recognized image")
+    ext = KIND_TO_EXT[kind]  # derived from sniffed content, not the client-claimed extension
 
     UPLOADS.mkdir(parents=True, exist_ok=True)
     path = UPLOADS / f"card-{int(time.time() * 1000)}{ext}"

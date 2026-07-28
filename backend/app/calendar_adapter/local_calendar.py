@@ -67,9 +67,17 @@ def has_conflict(conn, start_ts: str, end_ts: str) -> bool:
 
 
 def _ics_escape(text: str) -> str:
-    """RFC 5545 TEXT escaping — backslash first, then structural chars, newlines."""
+    """RFC 5545 TEXT escaping — backslash first, then structural chars, newlines.
+
+    Order matters: `\\r\\n` must be collapsed to a single escaped newline
+    before the lone `\\n`/`\\r` passes run, otherwise a CRLF pair would
+    become two escaped newlines instead of one. A bare `\\r` (no paired
+    `\\n`) is escaped too — RFC 5545 forbids a raw CR in a TEXT value, and a
+    parser that treats CR alone as a line terminator would otherwise see it
+    as a real line break and split out a second component."""
     return (str(text).replace("\\", "\\\\").replace(";", "\\;")
-            .replace(",", "\\,").replace("\r\n", "\\n").replace("\n", "\\n"))
+            .replace(",", "\\,").replace("\r\n", "\\n")
+            .replace("\n", "\\n").replace("\r", "\\n"))
 
 
 def _fold(line: str) -> str:

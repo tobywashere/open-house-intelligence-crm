@@ -138,7 +138,7 @@ export const api = {
   createLeadFields: (fields: Partial<Lead> & { name: string }) =>
     req<Lead>('/leads', { method: 'POST', body: JSON.stringify(fields) }),
   scanCard: (filename: string, data: string) =>
-    req<{ extracted: Record<string, string>; duplicates: { lead: Lead; match_on: string }[]; image: string }>(
+    req<{ extracted: Record<string, string>; duplicates: { lead: Lead; match_on: string }[]; filename: string }>(
       '/scan-card',
       { method: 'POST', body: JSON.stringify({ filename, data }) },
     ),

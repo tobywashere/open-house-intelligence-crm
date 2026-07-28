@@ -54,7 +54,7 @@ never let a raw stack trace reach the chat.
 
 | Tool | Signature | Returns | Use it when... |
 |---|---|---|---|
-| `create_lead` | `(raw_text=None, source="note", *, name=, phone=, email=, budget=, area=, timeline=, intent=)` | created lead | A new person appears — a form fill, text, note, or referral. Pass `raw_text` for anything unstructured; the backend extracts fields. |
+| `create_lead` | `(raw_text=None, source="note", *, name=, phone=, email=, budget=, area=, timeline=, intent=)` | created lead | A new person appears — a form fill, text, note, or referral. Pass `raw_text` for anything unstructured; the backend extracts fields. `source` must be one of `form`\|`text`\|`note`\|`referral`\|`email` — any other value gets a hard 422. |
 | `update_lead` | `(lead_id, **fields)` | updated lead | Any known field changes — status, phone, budget, etc. Resolve `lead_id` first. |
 | `find_duplicate_leads` | `(lead_id)` | `[{lead, match_on}]` | Before merging, or when you suspect this person already has a profile (same phone/email, or a very similar name). |
 | `merge_leads` | `(primary_id, duplicate_id)` | merged lead | User confirms two profiles are the same person. Primary's blanks get filled from the duplicate; primary wins conflicts; duplicate is deleted. |
