@@ -54,6 +54,11 @@ verticals/real-estate/
 - **Copy strings** — the ~41 real-estate phrases in the dashboard ("Book a tour",
   "Tour booked", chat placeholder examples, empty states) become keyed lookups
   with the real-estate values as defaults.
+- **Daily research scope** — the market-news prompt
+  (`prompts/seattle-real-estate-news-reporter.md`) currently hardcodes Seattle-area
+  geography (13 named cities and counties) and real-estate topics in prose. The
+  pack supplies `research: {role, regions[], topics[], exclusions[], lookback_days}`,
+  and the prompt becomes a template rendered from those values.
 
 Resolution order: pack value → built-in default. A missing or partial pack must
 degrade to today's real-estate behavior, never to a crash or blank UI.
@@ -92,12 +97,38 @@ to the server's filesystem, so path traversal must be impossible, content type
 must be verified rather than trusted, and the endpoints sit behind the existing
 `OHI_API_TOKEN` guard like every other `/api/*` route.
 
+## Daily research settings UI
+
+Raised by Chris on 2026-07-28: the daily information search needs UX so the
+operator can adjust the keywords themselves, rather than editing a prompt file.
+
+A settings panel exposes the pack's `research` block as editable fields — role
+description, regions/markets, topics to prioritize, topics to exclude, and
+lookback window — persisted so the operator's edits survive a pack update.
+Storage follows the existing date-keyed-payload pattern (`briefing`, `insights`,
+`daily_summary` are `date` + JSON payload rows), so this is one additive
+`settings` row plus `GET`/`PUT /api/research-settings`, not a schema redesign.
+
+The daily summary overlay gets an entry point into it, since that is where the
+operator sees the research output and notices it is off-target. The rendered
+prompt is shown read-only alongside the fields, so the operator can see exactly
+what the agent will be asked — no hidden prompt construction.
+
+The market-news cron reads these settings when composing its prompt. This is the
+one part of the vertical that operators will tune repeatedly, so it gets a real
+UI rather than living only in `pack.json`; the pack ships sensible defaults.
+
+Note this path requires internet by definition (it searches the web) and stays
+clearly labeled as the optional, internet-dependent half of the product — the
+briefing itself remains fully offline from the CRM's own data.
+
 ## Documentation
 
 `docs/VERTICALS.md` — how to adapt the product to a new industry: what a pack
 contains, how to write `pack.json`, how to write a knowledge doc that retrieves
 well (heading structure matters — the index chunks on headings), how to upload it,
-and what remains genuinely real-estate-shaped if you go deeper. Written for an
+how to tune the daily research keywords from the settings panel, and what remains
+genuinely real-estate-shaped if you go deeper. Written for an
 outsider who cloned the repo, consistent with the Task 13 docs standard.
 
 ## Non-goals
