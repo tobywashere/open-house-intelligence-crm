@@ -58,6 +58,14 @@ DEFAULT_PACK: dict = {
     # keys only — enumerating all strings is Task 3's job, not this loader's.
     "copy": {
         "app_name": "Open Intelligence CRM",
+        "booking.booked": "Tour booked",
+        "booking.cta": "Book a tour",
+        "chat.example_1": "Add Minh Nguyen, 425-555-0198, buyer interested in Kirkland and Redmond",
+        "chat.example_2": "Which active buyers need a follow-up?",
+        "chat.example_3": "Show me everything we know about Sarah",
+        "lead.subject_with_area": "Your home search in {area}",
+        "lead.subject_generic": "Following up on your home search",
+        "inbox.add_placeholder": 'New lead from a note, e.g. "Met Alex at the open house, looking in Redmond around $950k…"',
     },
     # Filled in by Task 5 from prompts/seattle-real-estate-news-reporter.md.
     # Present now so the schema shape is stable for downstream consumers.

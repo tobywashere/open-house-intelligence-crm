@@ -87,3 +87,17 @@ def test_vertical_endpoint_writes_no_audit_row(client):
     before = len(client.get("/api/audit?limit=500").json())
     client.get("/api/vertical")
     assert len(client.get("/api/audit?limit=500").json()) == before
+
+
+def test_every_copy_key_used_by_the_dashboard_exists_in_the_pack():
+    """Guards against a `copy('x', ...)` call whose key nobody added to the pack —
+    the fallback would silently mask it."""
+    import re
+    from pathlib import Path
+    from app.vertical import DEFAULT_PACK
+    src = Path(__file__).resolve().parents[2] / "dashboard" / "src"
+    used = set()
+    for f in src.rglob("*.ts*"):
+        used |= set(re.findall(r"copy\(\s*'([a-z0-9_.]+)'", f.read_text()))
+    missing = used - set(DEFAULT_PACK["copy"])
+    assert not missing, f"copy keys used in the dashboard but absent from the pack: {sorted(missing)}"

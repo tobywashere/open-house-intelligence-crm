@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, Appointment, fmtSlotDay, fmtSlotTime } from '../api'
-import { Briefing as BriefingData, fetchBriefing, PERSONA_STYLE, ScheduleBlock } from '../briefing'
+import { Briefing as BriefingData, fetchBriefing, personaStyle, ScheduleBlock } from '../briefing'
 import { Markdown } from './Markdown'
 import { Skeleton } from './Skeleton'
 import { toast } from './Toast'
@@ -117,9 +117,7 @@ export function BriefingSection() {
                       <span className="font-semibold">{brief.name}</span>
                       {brief.area && <span className="text-sub/80 text-sm">· {brief.area}</span>}
                       <span
-                        className={`rounded-full border px-2 py-0.5 text-xs ${
-                          PERSONA_STYLE[brief.persona] ?? PERSONA_STYLE['Home Buyer']
-                        }`}
+                        className={`rounded-full border px-2 py-0.5 text-xs ${personaStyle(brief.persona)}`}
                       >
                         {brief.persona}
                       </span>

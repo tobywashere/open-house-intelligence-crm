@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from '../components/Toast'
 import { api, fmtDate, fmtMoney, Lead } from '../api'
-import { PERSONA_STYLE, personaOf } from '../briefing'
+import { personaOf, personaStyle } from '../briefing'
+import { copy } from '../vertical'
 import { daysIdle } from '../insights'
 import { Skeleton } from '../components/Skeleton'
 import { CameraIcon } from '../components/icons'
@@ -86,7 +87,10 @@ export function Inbox() {
           value={note}
           onChange={(e) => setNote(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && addLead()}
-          placeholder='New lead from a note, e.g. "Met Alex at the open house, looking in Redmond around $950k…"'
+          placeholder={copy(
+            'inbox.add_placeholder',
+            'New lead from a note, e.g. "Met Alex at the open house, looking in Redmond around $950k…"',
+          )}
           className="flex-1 rounded-lg bg-surface border border-tile px-3 py-2 text-sm
                      placeholder:text-sub/50 focus:outline-none focus:border-accent"
         />
@@ -149,9 +153,9 @@ export function Inbox() {
                   {l.name}
                 </Link>
                 <span
-                  className={`ml-2 hidden md:inline-block rounded-full border px-1.5 py-px text-[10px] align-middle ${
-                    PERSONA_STYLE[personaOf(l)] ?? PERSONA_STYLE['Home Buyer']
-                  }`}
+                  className={`ml-2 hidden md:inline-block rounded-full border px-1.5 py-px text-[10px] align-middle ${personaStyle(
+                    personaOf(l),
+                  )}`}
                 >
                   {personaOf(l)}
                 </span>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError, Appointment, downloadIcs, fmtSlotDay, fmtSlotTime, IntegrationsStatus, localDateKey } from '../api'
+import { copy } from '../vertical'
 
 interface Slot {
   start_ts: string
@@ -57,7 +58,7 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
   if (booked) {
     return (
       <div className="rounded-lg border border-accent/30 bg-accent/5 p-4 text-sm space-y-1">
-        <div className="text-accent font-medium">✓ Tour booked</div>
+        <div className="text-accent font-medium">✓ {copy('booking.booked', 'Tour booked')}</div>
         <div>
           {fmtSlotDay(booked.start_ts)} · {fmtSlotTime(booked.start_ts)}–{fmtSlotTime(booked.end_ts)}
           {booked.location ? ` · ${booked.location}` : ''}
@@ -79,7 +80,7 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
   return (
     <div className="rounded-lg border border-tile bg-surface p-4 space-y-3">
       <div className="flex items-center gap-3">
-        <h2 className="text-sm font-semibold">Book a tour</h2>
+        <h2 className="text-sm font-semibold">{copy('booking.cta', 'Book a tour')}</h2>
         <input
           type="date"
           value={date}

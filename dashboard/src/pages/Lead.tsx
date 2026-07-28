@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, downloadIcs, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, Lead, LeadProfile, toNaiveLocal } from '../api'
-import { PERSONA_STYLE, personaOf } from '../briefing'
+import { personaOf, personaStyle } from '../briefing'
+import { copy, pack } from '../vertical'
 import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
 import { BookingCard } from '../components/BookingCard'
@@ -38,7 +39,11 @@ export function LeadPage() {
     try {
       const res = await api.processLead(leadId)
       setDraft(res.followup_draft)
-      setSubject(lead?.area ? `Your home search in ${lead.area}` : 'Following up on your home search')
+      setSubject(
+        lead?.area
+          ? copy('lead.subject_with_area', 'Your home search in {area}').replace('{area}', lead.area)
+          : copy('lead.subject_generic', 'Following up on your home search'),
+      )
       load()
     } catch {
       toast('Something went wrong — the backend may be down')
@@ -133,7 +138,7 @@ export function LeadPage() {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-semibold">{lead.name}</h1>
-            <span className={`rounded-full border px-2 py-0.5 text-xs ${PERSONA_STYLE[persona] ?? PERSONA_STYLE['Home Buyer']}`}>
+            <span className={`rounded-full border px-2 py-0.5 text-xs ${personaStyle(persona)}`}>
               {persona}
             </span>
             {lead.events.some((e) => e.type === 'email' && e.content.startsWith('Reply received:')) && (
@@ -199,10 +204,10 @@ export function LeadPage() {
       )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-        <Fact label="Budget" value={fmtMoney(lead.budget)} />
-        <Fact label="Area" value={lead.area ?? '—'} />
-        <Fact label="Timeline" value={lead.timeline ?? '—'} />
-        <Fact label="Intent" value={lead.intent} />
+        <Fact label={pack().labels.budget} value={fmtMoney(lead.budget)} />
+        <Fact label={pack().labels.area} value={lead.area ?? '—'} />
+        <Fact label={pack().labels.timeline} value={lead.timeline ?? '—'} />
+        <Fact label={pack().labels.intent} value={lead.intent} />
       </div>
 
       {lead.score_reason && (

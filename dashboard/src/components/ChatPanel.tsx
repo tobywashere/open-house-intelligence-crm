@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { api, ChatSession, fmtDate } from '../api'
+import { copy as vcopy } from '../vertical'
 import { Markdown } from './Markdown'
 import { toast } from './Toast'
 
@@ -178,9 +179,9 @@ export function ChatPanel() {
           <div className="space-y-2">
             <div className="text-xs text-sub/60">Try:</div>
             {[
-              'Add Minh Nguyen, 425-555-0198, buyer interested in Kirkland and Redmond',
-              'Which active buyers need a follow-up?',
-              'Show me everything we know about Sarah',
+              vcopy('chat.example_1', 'Add Minh Nguyen, 425-555-0198, buyer interested in Kirkland and Redmond'),
+              vcopy('chat.example_2', 'Which active buyers need a follow-up?'),
+              vcopy('chat.example_3', 'Show me everything we know about Sarah'),
             ].map((p) => (
               <button
                 key={p}

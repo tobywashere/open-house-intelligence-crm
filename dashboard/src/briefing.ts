@@ -3,6 +3,7 @@
 // so the page is fully demoable today and flips to real content with zero UI changes.
 import { api, Appointment, fmtMoney, Lead, localDateKey } from './api'
 import { computeInsights } from './insights'
+import { pack } from './vertical'
 
 export interface ScheduleBlock {
   start: string // "HH:MM"
@@ -69,14 +70,38 @@ export function personaOf(lead: Lead): string {
   return 'Home Buyer'
 }
 
-// deck palette: accent washes (sky/indigo family), alert red only for sellers
-export const PERSONA_STYLE: Record<string, string> = {
-  'Luxury Executive': 'bg-accent2/15 text-[#a5b4fc] border-accent2/30',
-  'Growing Family': 'bg-accent/10 text-accent border-accent/30',
-  'Relocating Professional': 'bg-cyan-400/10 text-cyan-300 border-cyan-400/30',
-  'First-Time Buyer': 'bg-sky-300/10 text-sky-200 border-sky-300/30',
-  Seller: 'bg-alert/10 text-alert border-alert/30',
-  'Home Buyer': 'bg-tile text-sub border-line',
+// deck palette: accent washes (sky/indigo family), alert red only for the last
+// slot — colors are styling and stay in code; the persona NAMES they get
+// assigned to come from the active pack (pack().personas), so a non-real-estate
+// pack (e.g. recruiting) gets the same look with its own persona labels.
+const PERSONA_PALETTE = [
+  'bg-accent2/15 text-[#a5b4fc] border-accent2/30',
+  'bg-accent/10 text-accent border-accent/30',
+  'bg-cyan-400/10 text-cyan-300 border-cyan-400/30',
+  'bg-sky-300/10 text-sky-200 border-sky-300/30',
+  'bg-alert/10 text-alert border-alert/30',
+  'bg-tile text-sub border-line',
+]
+
+function defaultPersonaKey(): string {
+  const personas = pack().personas
+  return personas.find((p) => p.default)?.key ?? personas[0]?.key ?? 'Home Buyer'
+}
+
+function personaStyleMap(): Record<string, string> {
+  const map: Record<string, string> = {}
+  pack().personas.forEach((p, i) => {
+    map[p.key] = PERSONA_PALETTE[i % PERSONA_PALETTE.length]
+  })
+  return map
+}
+
+/** Resolves a persona name to its chip classes, falling back to the pack's
+ *  default persona's style (rather than a hardcoded 'Home Buyer') so an
+ *  unrecognized/legacy persona name still renders styled, not bare. */
+export function personaStyle(name: string): string {
+  const map = personaStyleMap()
+  return map[name] ?? map[defaultPersonaKey()] ?? PERSONA_PALETTE[PERSONA_PALETTE.length - 1]
 }
 
 function briefOf(lead: Lead): MeetingBrief {
