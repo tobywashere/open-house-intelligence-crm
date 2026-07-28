@@ -71,3 +71,19 @@ def test_qualified_rule_names_both_thresholds_explicitly():
     assert rule["status"] == "meeting_booked"
     assert rule["score_status"] == "contacted"
     assert rule["min_score"] == 70
+
+
+def test_vertical_endpoint_returns_resolved_pack(client):
+    r = client.get("/api/vertical")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "real-estate"
+    assert len(body["stages"]) == 6
+    assert body["labels"]["budget"] == "Budget"
+
+
+def test_vertical_endpoint_writes_no_audit_row(client):
+    """It is a READ. CONTRACT §3 says exactly two reads audit; this isn't one."""
+    before = len(client.get("/api/audit?limit=500").json())
+    client.get("/api/vertical")
+    assert len(client.get("/api/audit?limit=500").json()) == before

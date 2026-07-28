@@ -8,6 +8,7 @@ import { LocalBadge } from './components/LocalBadge'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { fetchFunnel, Kpi } from './funnel'
+import { loadVertical, Pack } from './vertical'
 import { DashboardPage } from './pages/Dashboard'
 import { ScanCardPage } from './pages/ScanCard'
 import { Inbox } from './pages/Inbox'
@@ -19,6 +20,10 @@ const clampChatW = (w: number) =>
 
 export default function App() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
+  // fetched once at startup; pack-dependent UI (Tasks 3/4/6/7) reads this via
+  // vertical.ts's pack()/copy() — vertical.loadVertical() never throws, so
+  // `vert` only matters for triggering the re-render once it resolves
+  const [, setVert] = useState<Pack | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
   // resizable chat rail — drag the divider between main content and chat
   const [chatW, setChatW] = useState(() => clampChatW(Number(localStorage.getItem(CHAT_W_KEY)) || 384))
@@ -70,6 +75,19 @@ export default function App() {
     load()
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
+  }, [])
+
+  // fetch the active vertical pack once — loadVertical() never throws, it
+  // falls back to the built-in real-estate pack on any failure (offline,
+  // 401, 404), so the UI always renders
+  useEffect(() => {
+    let live = true
+    loadVertical().then((p) => {
+      if (live) setVert(p)
+    })
+    return () => {
+      live = false
+    }
   }, [])
 
   // KPI strip: six funnel KPIs, ▲/▼ deltas only when a real yesterday snapshot exists

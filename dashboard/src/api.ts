@@ -192,6 +192,7 @@ export const api = {
       body: JSON.stringify({ lead_id, subject, body }),
     }),
   integrationsStatus: () => req<IntegrationsStatus>('/integrations/status'),
+  vertical: <T>() => req<T>('/vertical'),
 }
 
 // Calendar download must go through an authenticated fetch — a plain <a href>

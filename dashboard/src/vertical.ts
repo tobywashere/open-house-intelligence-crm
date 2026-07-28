@@ -1,0 +1,70 @@
+/** The active vertical pack. Fetched once at startup; every consumer resolves
+ *  pack value -> built-in default, so the UI renders correctly even if the
+ *  request fails. */
+import { api } from './api'
+
+export interface Stage { key: string; label: string; rule: Record<string, unknown> }
+export interface Persona { key: string; default: boolean }
+export interface Pack {
+  name: string; display_name: string
+  stages: Stage[]
+  labels: Record<string, string>
+  intent_values: { value: string; label: string }[]
+  // DEFAULT_PACK (backend/app/vertical.py) ships personas as {key, default}
+  // objects, not bare strings — the brief's sketch interface simplified this;
+  // transcribing the real shape here since downstream tasks need `default`
+  // to pick the persona a new lead starts with.
+  personas: Persona[]
+  copy: Record<string, string>
+}
+
+// Mirrors DEFAULT_PACK in backend/app/vertical.py — duplicated by design so
+// the dashboard renders correctly before/without a successful fetch. Keep
+// these in sync by hand; a future task could generate one from the other.
+const BUILT_IN: Pack = {
+  name: 'real-estate',
+  display_name: 'Real estate',
+  stages: [
+    { key: 'new', label: 'New leads', rule: { type: 'all' } },
+    { key: 'contacted', label: 'Contacted',
+      rule: { type: 'status_at_least', status: 'contacted' } },
+    { key: 'qualified', label: 'Qualified',
+      rule: { type: 'status_at_least_or_score', status: 'meeting_booked',
+              score_status: 'contacted', min_score: 70 } },
+    { key: 'tours', label: 'Tours booked',
+      rule: { type: 'status_at_least', status: 'meeting_booked' } },
+    { key: 'offers', label: 'Offers submitted',
+      rule: { type: 'event_type_or_status', event_type: 'offer', status: 'closed' } },
+    { key: 'closed', label: 'Closed', rule: { type: 'status_is', status: 'closed' } },
+  ],
+  labels: { budget: 'Budget', area: 'Area', timeline: 'Timeline', intent: 'Intent' },
+  intent_values: [
+    { value: 'buy', label: 'Buy' },
+    { value: 'sell', label: 'Sell' },
+    { value: 'browse', label: 'Browse' },
+    { value: 'unknown', label: 'Unknown' },
+  ],
+  personas: [
+    { key: 'Luxury Executive', default: false },
+    { key: 'Growing Family', default: false },
+    { key: 'Relocating Professional', default: false },
+    { key: 'First-Time Buyer', default: false },
+    { key: 'Seller', default: false },
+    { key: 'Home Buyer', default: true },
+  ],
+  copy: { app_name: 'Open Intelligence CRM' },
+}
+
+let active: Pack = BUILT_IN
+
+export const pack = (): Pack => active
+export const copy = (key: string, fallback: string): string => active.copy?.[key] ?? fallback
+
+export async function loadVertical(): Promise<Pack> {
+  try {
+    active = { ...BUILT_IN, ...(await api.vertical<Pack>()) }
+  } catch {
+    active = BUILT_IN // offline/401/404 — the UI still works, in real-estate copy
+  }
+  return active
+}
