@@ -1,5 +1,10 @@
 PRAGMA foreign_keys = ON;
 
+-- Timestamp convention (all *_ts / *_at columns): ISO-8601, naive local
+-- wall-clock (YYYY-MM-DDTHH:MM:SS, no `Z`, no offset) — not UTC. Every API
+-- boundary normalizes to this via parse_ts() (backend) / toNaiveLocal()
+-- (dashboard); aware input is converted to local, never stripped.
+
 CREATE TABLE IF NOT EXISTS leads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -19,8 +24,8 @@ CREATE TABLE IF NOT EXISTS leads (
   is_neglected INTEGER NOT NULL DEFAULT 0,
   persona TEXT,                          -- e.g. "Luxury Executive"; agent-set, nullable
   relationship_summary TEXT,             -- AI-written paragraph for the profile hero
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  last_activity_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+  last_activity_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 -- activity timeline; type: note | form | text | call | merge | status_change | agent_action
@@ -29,7 +34,7 @@ CREATE TABLE IF NOT EXISTS events (
   lead_id INTEGER NOT NULL REFERENCES leads(id),
   type TEXT NOT NULL,
   content TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS appointments (
@@ -38,7 +43,7 @@ CREATE TABLE IF NOT EXISTS appointments (
   start_ts TEXT NOT NULL,
   end_ts TEXT NOT NULL,
   location TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 -- weekday: 0=Monday .. 6=Sunday; times as 'HH:MM'
@@ -56,13 +61,13 @@ CREATE TABLE IF NOT EXISTS reminders (
   due_ts TEXT NOT NULL,
   note TEXT,
   done INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 -- every agent/tool action lands here; powers the dashboard activity stream
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
   actor TEXT NOT NULL,                  -- agent | user | cron
   tool TEXT NOT NULL,
   input TEXT NOT NULL DEFAULT '{}',
@@ -75,7 +80,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   session_id TEXT NOT NULL,
   role TEXT NOT NULL,                   -- user | agent
   content TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 -- Executive Briefing — one row per date; K's 7am cron posts, dashboard reads.
@@ -83,7 +88,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE TABLE IF NOT EXISTS briefing (
   date TEXT PRIMARY KEY,                 -- YYYY-MM-DD
   payload TEXT NOT NULL,
-  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 -- Deterministic dashboard insights — one row per date; dashboard write-through
@@ -92,7 +97,7 @@ CREATE TABLE IF NOT EXISTS briefing (
 CREATE TABLE IF NOT EXISTS insights (
   date TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
-  computed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  computed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
 -- Daily summary overlay (market watch + AI insights) — one row per date; agent
@@ -100,5 +105,5 @@ CREATE TABLE IF NOT EXISTS insights (
 CREATE TABLE IF NOT EXISTS daily_summary (
   date TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
-  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );

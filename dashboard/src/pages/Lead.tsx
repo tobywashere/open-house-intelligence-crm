@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, downloadIcs, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, Lead, LeadProfile } from '../api'
+import { api, downloadIcs, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, Lead, LeadProfile, toNaiveLocal } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
 import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
@@ -71,7 +71,7 @@ export function LeadPage() {
       await api.addEvent(leadId, 'text', `Follow-up sent: ${draft}`)
       if (lead.status === 'new') await api.patchLead(leadId, { status: 'contacted' })
       const due = new Date(Date.now() + 3 * 86_400_000)
-      await api.scheduleReminder(leadId, due.toISOString().slice(0, 19), `Check for a reply from ${lead.name}`)
+      await api.scheduleReminder(leadId, toNaiveLocal(due), `Check for a reply from ${lead.name}`)
       toast('✓ Sent logged — status updated, reply check scheduled in 3 days')
       setDraft(null)
     } catch {

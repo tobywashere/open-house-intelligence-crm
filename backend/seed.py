@@ -74,7 +74,8 @@ def main():
                 "INSERT INTO leads (id, name, phone, email, source, status, budget, area, "
                 "timeline, intent, preferences, score, score_reason, created_at, last_activity_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,"
-                "strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now', ?)), strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now', ?)))",
+                "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)), "
+                "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)))",
                 (i, name, phone, email, source, status, budget, area, timeline, intent,
                  json.dumps(prefs), score,
                  f"Seeded score {score} from budget/timeline/intent signals.",
@@ -82,7 +83,7 @@ def main():
             )
             conn.execute(
                 "INSERT INTO events (lead_id, type, content, created_at) VALUES (?,?,?,"
-                "strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now', ?)))",
+                "strftime('%Y-%m-%dT%H:%M:%S', datetime('now','localtime', ?)))",
                 (i, source if source in ("form", "text", "note") else "note",
                  f"Initial contact via {source}.", f"-{days_ago + 1} days"),
             )

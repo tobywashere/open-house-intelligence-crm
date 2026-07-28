@@ -98,7 +98,7 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
             "UPDATE reminders SET done = 1 WHERE lead_id = ? AND done = 0 "
             "AND note LIKE 'Check for a reply%'", (lead["id"],))
         conn.execute(
-            "UPDATE leads SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+            "UPDATE leads SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime') "
             "WHERE id = ?", (lead["id"],))
         audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
               {"message_id": msg_id}, lead["id"])

@@ -229,6 +229,17 @@ export const fmtLocal = (iso: string, opts: Intl.DateTimeFormatOptions) =>
 export const localDateKey = (d: Date = new Date()) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
+// Serialize a Date as naive local wall-clock — the API's one timestamp
+// convention (schema.sql, parse_ts). NOT toISOString().slice(0,19) — that is
+// UTC, which is the bug that made dashboard-created reminders land in
+// Google Calendar 7-8 hours off. Use for every dashboard timestamp write
+// (reminders, appointments, etc.), not just date-only keys (see localDateKey
+// above for the date-only case).
+export const toNaiveLocal = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 export const fmtSlotTime = (iso: string) => fmtLocal(iso, { hour: 'numeric', minute: '2-digit' })
 
 export const fmtSlotDay = (iso: string) =>

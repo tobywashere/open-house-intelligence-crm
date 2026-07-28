@@ -12,7 +12,7 @@ from ..scoring import score_lead
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
-NOW = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+NOW = "strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
 STATUSES = ["new", "contacted", "meeting_booked", "closed"]
 
 # forward-only lifecycle; any state may close. Backward moves need a human

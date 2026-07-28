@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../api'
+import { api, toNaiveLocal } from '../api'
 
 // Demo story step 3: "Annie records a note and schedules a follow-up."
 // "in 1 min" exists for the live demo — the reminder visibly fires in the
@@ -28,7 +28,7 @@ export function NoteBox({ leadId, onSaved }: { leadId: number; onSaved: () => vo
       if (followupMins !== null) {
         const due = new Date(Date.now() + followupMins * 60_000)
         if (followupMins >= 1440) due.setHours(9, 0, 0, 0)
-        await api.scheduleReminder(leadId, due.toISOString().slice(0, 19), note.trim())
+        await api.scheduleReminder(leadId, toNaiveLocal(due), note.trim())
         const opt = OPTIONS.find((o) => o.mins === followupMins)
         msg = `Note saved · follow-up ${opt?.label ?? 'scheduled'}.`
       }

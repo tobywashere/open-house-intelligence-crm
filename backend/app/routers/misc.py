@@ -1,9 +1,10 @@
 import os
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from ..agent import get_driver
+from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
 from ..integrations import hooks
 from .leads import fetch_lead
@@ -22,6 +23,15 @@ class ReminderIn(BaseModel):
     lead_id: int
     due_ts: str
     note: str | None = None
+
+    @field_validator("due_ts")
+    @classmethod
+    def _normalize_due_ts(cls, v: str) -> str:
+        try:
+            dt = calendar.parse_ts(v)
+        except ValueError:
+            raise ValueError("must be an ISO-8601 timestamp, e.g. 2026-08-01T17:00:00")
+        return dt.isoformat(timespec="seconds")
 
 
 @router.post("/reminders")
@@ -47,7 +57,7 @@ def list_reminders(due: int | None = None):
     q = ("SELECT r.*, l.name AS lead_name FROM reminders r JOIN leads l ON l.id = r.lead_id "
          "WHERE r.done = 0")
     if due:
-        q += " AND r.due_ts <= strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+        q += " AND r.due_ts <= strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(q + " ORDER BY r.due_ts")]
 
@@ -67,7 +77,7 @@ def run_neglect_check(conn) -> list[dict]:
     and by the scheduled job (agent/cron)."""
     rows = conn.execute(
         "SELECT * FROM leads WHERE status IN ('new','contacted') AND is_neglected = 0 "
-        f"AND last_activity_at < strftime('%Y-%m-%dT%H:%M:%SZ','now','-{NEGLECT_AFTER_DAYS} days')"
+        f"AND last_activity_at < strftime('%Y-%m-%dT%H:%M:%S','now','localtime','-{NEGLECT_AFTER_DAYS} days')"
     ).fetchall()
     neglected = [row_to_dict(r) for r in rows]
     for lead in neglected:
@@ -85,7 +95,7 @@ def advance_time(body: AdvanceTimeIn):
         if body.days:
             conn.execute(
                 "UPDATE leads SET last_activity_at = "
-                "strftime('%Y-%m-%dT%H:%M:%SZ', datetime(last_activity_at, ?)) ",
+                "strftime('%Y-%m-%dT%H:%M:%S', datetime(last_activity_at, ?)) ",
                 (f"-{body.days} days",))
         neglected = run_neglect_check(conn)
     return {"neglected": neglected}

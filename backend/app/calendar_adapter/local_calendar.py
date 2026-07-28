@@ -9,12 +9,22 @@ SLOT_MINUTES = 45
 
 
 def parse_ts(ts: str) -> datetime:
-    """Parse a stored/incoming timestamp as NAIVE local time. A single
-    Z-suffixed row would otherwise make every later comparison raise
+    """Parse a stored/incoming timestamp into NAIVE LOCAL wall-clock time —
+    the one timestamp convention used at every API boundary in this system.
+
+    Naive input is assumed to already be local and is returned as-is. Aware
+    input (e.g. a `Z`-suffixed UTC timestamp from a browser or an external
+    calendar) is CONVERTED to local time, then made naive — never simply
+    stripped. Stripping would otherwise silently misinterpret the instant
+    (e.g. treat 17:00 UTC as 17:00 local), which is exactly the bug that
+    made dashboard-created reminders land in Google Calendar 7-8 hours off.
+    A single mixed-convention row would also make later comparisons raise
     "can't compare offset-naive and offset-aware datetimes" and 500 all
     booking + availability calls."""
     dt = datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
-    return dt.replace(tzinfo=None)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
 
 
 def free_slots(conn, date_str: str) -> list[dict]:

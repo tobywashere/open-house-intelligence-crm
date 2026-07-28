@@ -30,7 +30,7 @@ def _upsert(table: str, ts_col: str, payload: dict) -> dict:
         conn.execute(
             f"INSERT INTO {table} (date, payload) VALUES (?, ?) "
             f"ON CONFLICT(date) DO UPDATE SET payload = excluded.payload, "
-            f"{ts_col} = (strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+            f"{ts_col} = (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))",
             (date, json.dumps(payload)),
         )
         audit(conn, "agent", f"post_{table}", {"date": date}, {})
