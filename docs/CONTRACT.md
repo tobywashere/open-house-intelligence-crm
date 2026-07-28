@@ -166,6 +166,7 @@ really an **audit activity** stream covering all three, not agent-only.
 | `schedule_followup(lead_id, due_ts, note)` | `POST /reminders` |
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` — runs the neglect check now and returns newly-flagged leads; use `list_leads(neglected=1)` to see all currently-neglected leads without re-running it |
 | `generate_dashboard_insights()` | `GET /metrics` + LLM summary |
+| `post_briefing(payload)` | `POST /briefing` — upserts by `date` (additive, recorded 2026-07-28); used by the `daily-command-center` skill's final step, shape in `docs/BRIEFING-UI.md` |
 
 Curl examples for each live in [`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
 

@@ -110,7 +110,53 @@ answers but invents data → the skill isn't loaded (check the OpenClaw skills
 path). If `agent_connected:false` → check `AGENT_GATEWAY_URL` (default
 `http://localhost:18789`) and that the gateway process is actually up.
 
-## 5. Optional, needs internet
+## 5. Morning briefing (fully offline)
+
+The headline "offline-first" feature: every morning the `daily-command-center`
+skill (`skills/daily-command-center/SKILL.md`) pulls the day's schedule and
+priorities straight out of your own CRM data — `list_leads()` and
+`get_lead_context(id)` from `crm-db-operations` — composes the briefing JSON
+(shape frozen in `docs/BRIEFING-UI.md`, echoed in the skill's own **Output
+contract** section), and posts it with the skill's new `post_briefing(payload)`
+tool (`POST /briefing`). The dashboard's daily-summary overlay reads it back
+via `GET /briefing?date=` with zero UI changes once it lands.
+
+**No internet required** — this whole path is CRM data in, CRM data out,
+run entirely by your local model through OpenClaw. Nothing about the morning
+briefing itself depends on a network connection; only the separate
+market-watch news portion of the daily summary (§6 below) does.
+
+To run it on a schedule, set up an OpenClaw cron that fires the skill once a
+day, e.g. 7:00 local, and let the agent do the rest:
+
+```jsonc
+// Illustrative shape only — verify against your installed OpenClaw version's
+// own cron/schedule docs (`openclaw --help` or its config reference); this
+// repo doesn't pin an exact schema and none of the exact field names below
+// have been confirmed against a running OpenClaw instance.
+{
+  "crons": [
+    {
+      "session": "daily-brief",
+      "schedule": "0 7 * * *",           // 7:00 local, every day — verify cron-string support in your OpenClaw version
+      "prompt": "Run the daily-command-center skill for today. Pull today's data from the live CRM per its Step 0, compose the briefing JSON per its Output contract, and post it with post_briefing."
+    }
+  ]
+}
+```
+
+If your OpenClaw version doesn't support a `crons` block like this (or uses a
+different mechanism — a separate scheduler process, a shell cron calling an
+`openclaw run`-style CLI, etc.), fall back to whatever OpenClaw's own docs
+describe for "run this session on a schedule" and point the prompt at the
+same skill.
+
+You can also trigger a one-off run by hand to test it before wiring up the
+schedule — ask the agent in chat ("run the daily-command-center skill and
+post today's briefing") and then `curl "$BASE/briefing?date=$(date +%F)"` to
+confirm it landed.
+
+## 6. Optional, needs internet
 
 Everything above is fully offline. Two pieces of the product reach the
 internet, and both are off unless you explicitly turn them on:

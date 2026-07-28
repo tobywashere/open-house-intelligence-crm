@@ -32,21 +32,29 @@ export interface DailySummary {
   mock?: boolean
 }
 
-export async function fetchDailySummary(): Promise<DailySummary> {
+// Returns null on a 404/network failure instead of silently substituting
+// sample data — callers decide what to show (labeled mock fallback vs an
+// honest offline/empty state) based on whether the agent is actually in mock
+// mode. See DailySummaryOverlay.tsx.
+export async function fetchDailySummary(): Promise<DailySummary | null> {
   const date = localDateKey()
   try {
     return await api.summary<DailySummary>(date)
   } catch {
-    return { ...MOCK_SUMMARY, date, generated_at: new Date().toISOString(), mock: true }
+    return null
   }
 }
 
-// Placeholder content so the overlay is fully designable/demoable today.
-// K's 7am cron replaces this wholesale via POST /api/summary.
+// Placeholder content so the overlay is fully designable/demoable in mock
+// mode. K's 7am cron replaces real data wholesale via POST /api/summary.
 // Items below are lifted from a real daily-brief run (K's skill, 2026-07-26
 // report) so the mock matches what the news-reporter prompt actually produces:
 // real sources, real URLs, numbers quoted exactly as printed.
-const MOCK_SUMMARY: Omit<DailySummary, 'date' | 'generated_at'> = {
+//
+// MUST NEVER render unlabeled, and must never render at all outside mock
+// mode (AGENT_MODE=mock) — see DailySummaryOverlay.tsx, which gates this
+// behind metrics.agent_mode and always tags it "Sample data (mock mode)".
+export const MOCK_SUMMARY_SAMPLE: Omit<DailySummary, 'date' | 'generated_at'> = {
   greeting: 'Good morning, Annie — here is your day at a glance.',
   market_watch: [
     {

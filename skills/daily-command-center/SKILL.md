@@ -21,24 +21,34 @@ The entire briefing should take less than three minutes to review.
 
 ---
 
-## Test Data
+## Step 0 — Pull today's data from the live CRM
 
-For local testing, read:
+This skill runs against the real CRM through the `crm-db-operations` tools
+(`tools.py` in that skill directory) — never invent leads, appointments, or
+scores, and never read `sample-crm.json` unless you are explicitly in the
+"testing without a CRM" case in the appendix below.
 
-`~/.openclaw/skills/daily-command-center/sample-crm.json`
+1. `list_leads(sort="priority")` — the full prioritized lead list (neglected
+   first, then score desc). This is your source for "Today's Priorities" and
+   "Outstanding Responses".
+2. For each lead you'll actually write about — anyone with an appointment
+   today, plus the top-priority leads not already on the calendar — call
+   `get_lead_context(lead_id)`. This returns the lead's fields, its full
+   activity timeline (`events`), and its `appointments`, most recent first.
+   There is no separate "list every appointment" tool; assemble today's
+   schedule by pulling each relevant lead's `appointments` out of its context
+   and filtering to today's date. Use only what these calls return — never
+   invent a detail that isn't in the returned fields or timeline.
 
-When the user asks for a sample, demo, or test briefing:
-
-1. Read that file.
-2. Use its appointments, priority contacts, and outstanding responses.
-3. Generate the full Daily Command Center output.
-4. Do not invent any facts beyond the file.
+Do not call any function not documented in
+[`../crm-db-operations/SKILL.md`](../crm-db-operations/SKILL.md)'s tool
+catalog, and never write SQL directly.
 
 ---
 
 ## Available Context
 
-You may receive:
+You may receive (all sourced from the tool calls in Step 0, never invented):
 
 - Lead profiles
 - Appointments
@@ -202,3 +212,83 @@ After reading this briefing the realtor should know:
 - How to prepare
 - Who to contact
 - What to say
+
+---
+
+## Output contract
+
+The prose sections above are for the realtor if this skill is run
+interactively in chat. When this skill is run as the morning cron (see
+`docs/LOCAL-AI.md` → "Morning briefing"), the final output MUST also be
+assembled into the exact JSON shape below — copied verbatim from
+`docs/BRIEFING-UI.md` — and posted to the backend (Step below). Do not
+invent or rename fields; this shape is frozen in `docs/CONTRACT.md`.
+
+```json
+{
+  "date": "2026-07-26",
+  "greeting": "Good morning, Annie 👋 — 2 showings, 1 listing appointment, 3 follow-ups due.",
+  "generated_at": "2026-07-26T07:00:12Z",
+  "schedule": [
+    {"start": "10:00", "end": "10:45", "kind": "meeting", "title": "Showing — Michael Rodriguez", "lead_id": 4},
+    {"start": "10:45", "end": "11:05", "kind": "travel",  "title": "Travel to Bellevue"},
+    {"start": "11:05", "end": "11:45", "kind": "buffer",  "title": "Buffer / follow-ups"}
+  ],
+  "meeting_briefs": [
+    {
+      "lead_id": 4, "name": "Michael Rodriguez", "area": "Medina",
+      "persona": "Luxury Executive", "score": 98,
+      "summary": "Cash buyer referred by Tom Wilson. Waterfront luxury. Analytical — wants data.",
+      "prepare": ["Luxury comps", "Waterfront inventory", "Privacy info"],
+      "recommendation": "Lead with evidence, not opinions."
+    }
+  ],
+  "suggested_actions": [
+    {"lead_id": 9, "name": "Ryan Miller", "channel": "text",
+     "action": "Text Ryan Miller",
+     "reason": "No contact for 6 days; mortgage-rate concerns; responds better to text."}
+  ]
+}
+```
+
+Field notes:
+
+- `date` — `YYYY-MM-DD`, local. This is the upsert key on the backend.
+- `generated_at` — ISO-8601 timestamp of when you composed this briefing.
+- `schedule[].kind` — one of `meeting` \| `travel` \| `buffer` \| `personal`.
+  `lead_id` is only present on `meeting` blocks.
+- `meeting_briefs` — one entry per calendar appointment today, built from
+  "Meeting Briefs" above (`persona`/`score` come straight off the lead;
+  `prepare` and `recommendation` are your synthesis).
+- `suggested_actions` — the "Today's Priorities" list above, one action per
+  entry, `channel` is `text` \| `call` \| `email`.
+
+## Post the briefing
+
+The final step of the cron run: call `post_briefing(payload)` (from the
+`crm-db-operations` skill's `tools.py`) with the JSON above as `payload`.
+This upserts today's row via `POST /briefing` — the dashboard reads it back
+with `GET /briefing?date=`. If `post_briefing` raises `CRMError`, do not
+silently drop the briefing — report the failure (e.g. in the cron's own
+output/log) so it's visible that today's briefing didn't land.
+
+---
+
+## Appendix: testing without a CRM
+
+This is a fallback for exercising the skill's prose output when no CRM
+backend is reachable — it does **not** run in production and must never be
+used to satisfy Step 0 above when a real backend is available.
+
+`~/.openclaw/skills/daily-command-center/sample-crm.json` is a fixture with
+fabricated appointments, priority contacts, and outstanding responses.
+
+When the user explicitly asks for a sample, demo, or test briefing (and only
+then):
+
+1. Read that file.
+2. Use its appointments, priority contacts, and outstanding responses.
+3. Generate the full Daily Command Center prose output (Step 0's live-CRM
+   calls do not apply here — there is no real `lead_id` to post against, so
+   skip the "Post the briefing" step for sample runs).
+4. Do not invent any facts beyond the file.

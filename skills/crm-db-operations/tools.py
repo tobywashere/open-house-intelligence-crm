@@ -206,6 +206,16 @@ def generate_dashboard_insights() -> dict:
     return _request("GET", "/metrics")
 
 
+def post_briefing(payload: dict) -> dict:
+    """Upsert the day's morning-briefing JSON (POST /briefing, upsert by
+    date). payload must match the shape in docs/BRIEFING-UI.md and include a
+    "date" key (YYYY-MM-DD) — that's the upsert key. Used by the
+    daily-command-center skill's final step; the dashboard reads it back via
+    GET /briefing?date=.
+    """
+    return _request("POST", "/briefing", body=payload)
+
+
 def delete_lead(lead_id: int, reason: str = "") -> dict:
     """Permanently delete a lead. Destructive — the skill doc requires explicit
     user confirmation before calling this. Removes the lead and its

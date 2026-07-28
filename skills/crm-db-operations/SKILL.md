@@ -68,6 +68,7 @@ never let a raw stack trace reach the chat.
 | `find_neglected_leads` | `()` | `[lead]` newly flagged | Scheduled/cron check, or "who haven't I talked to" questions. Evaluates every open lead against the 2-day-idle rule right now. |
 | `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. `avg_response_minutes` can be `null` (no lead has a first-response event yet) — say "not enough data yet" rather than reporting it as `0` or omitting the field silently. |
 | `delete_lead` | `(lead_id, reason="")` | `{deleted, lead_id, name}` | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm the deleted lead's name back to the user afterwards. |
+| `post_briefing` | `(payload: dict)` | the same payload, echoed back | Upsert the day's morning-briefing JSON (must include `date`). Called by the `daily-command-center` skill's final step — see its **Output contract** section for the exact shape (mirrors `docs/BRIEFING-UI.md`). |
 
 Full request/response shapes and the underlying REST endpoints are frozen in
 [`docs/CONTRACT.md`](../../docs/CONTRACT.md) — this file is the model-facing
@@ -90,6 +91,8 @@ curl -s -X POST "$BASE/appointments" -H 'content-type: application/json' \
   -d '{"lead_id":1,"start_ts":"2026-07-28T18:00:00","end_ts":"2026-07-28T18:45:00"}'
 curl -s -X POST "$BASE/demo/advance-time" -d '{"days":0}' -H 'content-type: application/json'  # find_neglected_leads
 curl -s "$BASE/metrics"                                   # generate_dashboard_insights
+curl -s -X POST "$BASE/briefing" -H 'content-type: application/json' \
+  -d '{"date":"2026-07-28","greeting":"Good morning"}'    # post_briefing (shape in docs/BRIEFING-UI.md)
 ```
 
 ## Maintaining the database

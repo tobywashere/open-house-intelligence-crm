@@ -33,6 +33,7 @@ SAMPLE_ARGS = {
     "book_appointment": ((1, "2026-08-03T18:00:00", "2026-08-03T18:45:00", "loc"), {}),
     "schedule_followup": ((1, "2026-08-04T09:00:00", "note"), {}), "find_neglected_leads": ((), {}),
     "generate_dashboard_insights": ((), {}), "merge_leads": ((1, 2), {}), "delete_lead": ((1,), {}),
+    "post_briefing": (({"date": "2026-08-01", "greeting": "test"},), {}),
 }
 
 

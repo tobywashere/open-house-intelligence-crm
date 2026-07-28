@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, localDateKey } from '../api'
-import { DailySummary, fetchDailySummary } from '../summary'
+import { api, localDateKey, Metrics } from '../api'
+import { DailySummary, fetchDailySummary, MOCK_SUMMARY_SAMPLE } from '../summary'
 import { BriefingSection } from './BriefingSection'
 import { Markdown } from './Markdown'
 import { Skeleton } from './Skeleton'
@@ -8,21 +8,43 @@ import { toast } from './Toast'
 
 // Full-screen daily summary: morning briefing (schedule, meeting briefs,
 // suggested actions) + market watch (web scrape) + AI-written insights.
-// UI/UX only — content arrives from K's 7am cron via GET /api/summary (mock until then).
-export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
+// UI/UX only — content arrives from K's 7am cron via GET /api/summary.
+// Mock-mode fallback data is clearly labeled; outside mock mode a 404 renders
+// an honest offline/empty state instead of ever silently showing sample data.
+export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void; metrics: Metrics | null }) {
   const [summary, setSummary] = useState<DailySummary | null>(null)
+  const [offline, setOffline] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const alive = useRef(true)
 
-  // Fetch once per mount — keep this effect off the onClose dep, which App
+  // agent_mode isn't known until the first /api/metrics poll lands (Task 13
+  // pattern — see LocalBadge). modeKnown/isMock are stable primitives so this
+  // effect doesn't rerun on every 5s metrics poll (only when mode flips).
+  const modeKnown = metrics !== null
+  const isMock = metrics?.agent_mode === 'mock'
+
+  // Fetch once mode is known — keep this effect off the onClose dep, which App
   // recreates every metrics poll (with it, the overlay refetched every 5s).
   useEffect(() => {
+    if (!modeKnown) return
     alive.current = true
-    fetchDailySummary().then(setSummary).catch(() => {})
+    fetchDailySummary().then((fetched) => {
+      if (!alive.current) return
+      if (fetched) {
+        setSummary(fetched)
+      } else if (isMock) {
+        // Mock mode only: labeled sample data so the overlay is demoable
+        // with no backend content yet. See MOCK_SUMMARY_SAMPLE's own comment.
+        setSummary({ ...MOCK_SUMMARY_SAMPLE, date: localDateKey(), generated_at: new Date().toISOString(), mock: true })
+      } else {
+        // Real agent, nothing posted yet — honest empty state, never sample data.
+        setOffline(true)
+      }
+    })
     return () => {
       alive.current = false
     }
-  }, [])
+  }, [modeKnown, isMock])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -53,6 +75,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
         if (fresh.generated_at !== before) {
           if (alive.current) {
             setSummary(fresh)
+            setOffline(false)
             toast('✓ Fresh intra-day briefing ready')
             setRefreshing(false)
           }
@@ -97,18 +120,31 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
         <header className="rise">
           <div className="text-sm text-sub/80">{dateLabel} · Daily summary</div>
           <h1 className="text-3xl font-semibold tracking-tight mt-2">
-            {summary?.greeting ?? 'Preparing your day…'}
+            {summary?.greeting ?? (offline ? 'No daily summary yet' : 'Preparing your day…')}
           </h1>
           {summary?.mock && (
-            <div className="mt-3 inline-block rounded-full border border-line px-2.5 py-0.5 text-xs text-sub/80">
-              preview · live at 7:00
+            <div className="mt-3 inline-block rounded-full border border-amber-400/40 bg-amber-400/10 px-2.5 py-0.5 text-xs text-amber-300">
+              ⚠ Sample data (mock mode) · not from your CRM
             </div>
           )}
         </header>
 
         <BriefingSection />
 
-        {!summary ? (
+        {!summary && offline ? (
+          <div className="rise mt-10 rounded-xl border border-dashed border-tile bg-surface/40 p-8 text-center">
+            <div className="text-2xl mb-2">☀️</div>
+            <p className="text-body max-w-md mx-auto">
+              No daily summary yet — your morning briefing above works fully offline from your
+              CRM. Market watch (news) needs the separate news cron, which requires internet and
+              is optional.
+            </p>
+            <p className="text-xs text-sub/60 mt-3">
+              See "Morning briefing" in <code className="text-sub/80">docs/LOCAL-AI.md</code> to
+              wire up the cron that posts this.
+            </p>
+          </div>
+        ) : !summary ? (
           <div className="grid lg:grid-cols-2 gap-8 mt-10">
             <Skeleton className="h-80" />
             <Skeleton className="h-80" />
