@@ -8,6 +8,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ importable
 from conftest import TEST_DB
 
 
+def _fresh_legacy_db(tmp_path, monkeypatch, name="legacy.db"):
+    """Point app.db at a throwaway DB file with the current schema applied,
+    but nothing else — callers hand-write legacy-shaped rows directly
+    (bypassing the app's own naive-local write path) before calling
+    db.init_db() to exercise the backfill."""
+    import app.db as db
+
+    db_path = tmp_path / name
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(db.SCHEMA_PATH.read_text())
+    conn.commit()
+    return db, conn
+
+
+def _sqlite_local(z_ts: str) -> str:
+    # Compute the expected converted instant the same way SQLite does, so
+    # assertions don't depend on the test host's TZ either.
+    return sqlite3.connect(":memory:").execute(
+        "select strftime('%Y-%m-%dT%H:%M:%S', datetime(?, 'localtime'))", (z_ts,),
+    ).fetchone()[0]
+
+
 def test_gcal_columns_migrated(client):
     conn = sqlite3.connect(TEST_DB)
     appt_cols = {r[1] for r in conn.execute("PRAGMA table_info(appointments)")}
@@ -24,16 +47,8 @@ def test_legacy_timestamps_backfilled_to_naive_local(tmp_path, monkeypatch):
     to naive-local T-form, converting (not stripping) the Z rows so the
     instant they represent is preserved, and re-running init_db() a second
     time must be a no-op (idempotent)."""
-    import app.db as db
-
-    db_path = tmp_path / "legacy.db"
-    monkeypatch.setattr(db, "DB_PATH", db_path)
-
-    # Build the DB with the current schema, then hand-write legacy-shaped
-    # values directly (bypassing the app's own naive-local write path) to
-    # simulate rows written before this task.
-    conn = sqlite3.connect(db_path)
-    conn.executescript(db.SCHEMA_PATH.read_text())
+    db, conn = _fresh_legacy_db(tmp_path, monkeypatch)
+    db_path = db.DB_PATH
     conn.execute(
         "INSERT INTO leads (id, name, created_at, last_activity_at) VALUES "
         "(1, 'Legacy Z', '2026-07-27T00:04:27Z', '2026-07-27T00:04:27Z')"
@@ -53,19 +68,12 @@ def test_legacy_timestamps_backfilled_to_naive_local(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    def sqlite_local(z_ts: str) -> str:
-        # Compute the expected converted instant the same way SQLite does,
-        # so assertions don't depend on the test host's TZ either.
-        return sqlite3.connect(":memory:").execute(
-            "select strftime('%Y-%m-%dT%H:%M:%S', datetime(?, 'localtime'))", (z_ts,),
-        ).fetchone()[0]
-
-    expected_z_converted = sqlite_local("2026-07-27T00:04:27Z")
+    expected_z_converted = _sqlite_local("2026-07-27T00:04:27Z")
     assert not expected_z_converted.endswith("Z")
     # The conversion must actually move the clock (proves it's astimezone,
     # not a strip) — same digits would mean this assertion is a no-op.
     assert expected_z_converted != "2026-07-27T00:04:27"
-    expected_reminder_due = sqlite_local("2026-07-25T09:00:00Z")
+    expected_reminder_due = _sqlite_local("2026-07-25T09:00:00Z")
 
     db.init_db()
 
@@ -95,3 +103,96 @@ def test_legacy_timestamps_backfilled_to_naive_local(tmp_path, monkeypatch):
     conn.close()
     assert rows_again[1]["created_at"] == expected_z_converted
     assert rows_again[2]["created_at"] == "2026-07-06T18:16:11"
+
+
+def test_migration_skips_unparseable_row_instead_of_crashing(tmp_path, monkeypatch):
+    """A garbage value ending in a (lowercase) z is a candidate for the
+    Z-suffix branch since SQLite LIKE is ASCII-case-insensitive, but
+    datetime() can't parse it. Without a NOT NULL guard, the UPDATE would
+    set the column to NULL and immediately violate its NOT NULL constraint
+    — raising IntegrityError on every future init_db() call, i.e. bricking
+    startup permanently. Reachable in practice: pre-Task-7 `ReminderIn` had
+    no validator, so arbitrary client strings could land in due_ts."""
+    db, conn = _fresh_legacy_db(tmp_path, monkeypatch)
+    lead = conn.execute(
+        "INSERT INTO leads (name, created_at, last_activity_at) VALUES "
+        "('Garbage', 'not-a-real-timestampz', 'not-a-real-timestampz')"
+    )
+    lead_id = lead.lastrowid
+    conn.execute(
+        "INSERT INTO reminders (lead_id, due_ts) VALUES (?, 'also garbage Z')",
+        (lead_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()  # must not raise
+
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    reminder = conn.execute("SELECT * FROM reminders WHERE lead_id = ?", (lead_id,)).fetchone()
+    conn.close()
+
+    # Left untouched, not nulled, not crashed.
+    assert row["created_at"] == "not-a-real-timestampz"
+    assert row["last_activity_at"] == "not-a-real-timestampz"
+    assert reminder["due_ts"] == "also garbage Z"
+
+
+def test_migration_converts_offset_suffixed_legacy_rows(tmp_path, monkeypatch):
+    """A row stored with an explicit numeric UTC offset (e.g. from an
+    unvalidated pre-Task-7 client write) isn't `Z`-suffixed, so the
+    Z-only predicate leaves it untouched — it still breaks string
+    comparisons the same way Z rows did. Must be converted the same way."""
+    db, conn = _fresh_legacy_db(tmp_path, monkeypatch)
+    lead = conn.execute(
+        "INSERT INTO leads (name, created_at, last_activity_at) VALUES "
+        "('Offset', '2026-07-27T00:04:27+00:00', '2026-07-27T00:04:27+00:00')"
+    )
+    lead_id = lead.lastrowid
+    conn.commit()
+    conn.close()
+
+    expected = _sqlite_local("2026-07-27T00:04:27+00:00")
+    assert not expected.endswith("+00:00")
+
+    db.init_db()
+    db.init_db()  # idempotent: a second run must not change it further
+
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+    assert row["created_at"] == expected
+    assert row["last_activity_at"] == expected
+
+
+def test_migration_space_branch_does_not_mangle_trailing_text(tmp_path, monkeypatch):
+    """The space->T reformat must replace only the single date/time
+    delimiter (position 11), not every space in the string — a value like
+    '2026-07-06 18:16:11 PDT' must not become '...T18:16:11TPDT'. Since
+    that shape isn't cleanly parseable as naive local either (the trailing
+    zone abbreviation isn't valid to datetime()), the guard also means it's
+    left untouched rather than partially transformed."""
+    db, conn = _fresh_legacy_db(tmp_path, monkeypatch)
+    lead = conn.execute(
+        "INSERT INTO leads (name, created_at, last_activity_at) VALUES "
+        "('Trailing zone', '2026-07-06 18:16:11 PDT', '2026-07-06 18:16:11')"
+    )
+    lead_id = lead.lastrowid
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+
+    # Untouched: not mangled into '...T18:16:11TPDT', and not silently
+    # truncated either.
+    assert row["created_at"] == "2026-07-06 18:16:11 PDT"
+    # The clean sibling column (no trailing garbage) still converts normally.
+    assert row["last_activity_at"] == "2026-07-06T18:16:11"

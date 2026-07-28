@@ -86,8 +86,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 # Every timestamp column in schema.sql (Task 7's one convention: naive local
-# wall-clock). Keep in sync with schema.sql — availability has no timestamp
-# columns (start_time/end_time are HH:MM only) so it's absent on purpose.
+# wall-clock) — 13 columns total across 9 tables. Keep in sync with
+# schema.sql — availability has no timestamp columns (start_time/end_time
+# are HH:MM only) so it's absent on purpose.
 TIMESTAMP_COLUMNS = {
     "leads": ["created_at", "last_activity_at"],
     "events": ["created_at"],
@@ -105,35 +106,64 @@ def _migrate_timestamps(conn: sqlite3.Connection) -> None:
     """One-shot, idempotent backfill: normalizes every row written before
     Task 7 (naive-local-everywhere) to the new convention. Changing a
     column's DEFAULT only affects rows inserted after the change — an
-    existing GB10/demo DB is left with old `Z`-suffixed UTC rows sitting
-    next to new naive-local rows. That mix is silently wrong: for the same
-    wall-clock instant, the `Z` string sorts AFTER the naive-local string
+    existing GB10/demo DB is left with old aware-UTC rows sitting next to
+    new naive-local rows. That mix is silently wrong: for the same
+    wall-clock instant, the aware string sorts AFTER the naive-local string
     (e.g. '2026-07-27T00:04:27Z' > '2026-07-06T18:16:11'), so old rows read
     as hours "newer" than they are — due reminders fire late, the neglect
     check misfires by a timezone, free_slots' range filter mis-includes rows.
 
-    Two legacy shapes get fixed, per column:
-      1. `...Z` (aware UTC) -> converted (not stripped) to naive local,
-         via SQLite's own datetime(): the actual instant is preserved.
-      2. `YYYY-MM-DD HH:MM:SS` (space-separated, already-naive-local from an
-         older code path) -> reformatted to the `T`-separated form only; no
-         zone shift, since it was already local wall-clock.
-    Both UPDATEs are no-ops on a second run: after conversion no row matches
-    either WHERE clause anymore.
+    Runs on every boot (init_db() does), full-scanning all 13 configured
+    columns — fine at demo/GB10 scale; a real-scale deployment would want a
+    schema-version marker to skip this once converged.
+
+    Three legacy shapes get fixed, per column:
+      1. `...Z` (aware UTC) -> converted (not stripped) to naive local, via
+         SQLite's own datetime(): the actual instant is preserved.
+      2. `...+HH:MM` / `...-HH:MM` (aware with an explicit numeric offset,
+         e.g. from an unvalidated pre-Task-7 client write) -> same
+         conversion; datetime() parses numeric offsets natively.
+      3. `YYYY-MM-DD HH:MM:SS` (space-separated, already-naive-local from an
+         older code path) -> reformatted to the `T`-separated form only, by
+         replacing just the date/time delimiter (position 11) rather than
+         every space in the string — a value like
+         '2026-07-06 18:16:11 PDT' must become
+         '2026-07-06T18:16:11 PDT', not '...T18:16:11TPDT'. No zone shift,
+         since it was already local wall-clock.
+
+    Every UPDATE's WHERE clause also requires
+    `datetime(col,'localtime') IS NOT NULL` before touching a row: SQLite's
+    LIKE is ASCII-case-insensitive ('junkz' LIKE '%Z' is true), and
+    `datetime()` on anything it can't parse returns NULL — without this
+    guard, an unparseable garbage value (reachable pre-Task-7, when
+    ReminderIn had no validator and stored whatever a client sent) would get
+    UPDATEd to NULL and immediately violate the column's NOT NULL
+    constraint, raising IntegrityError. Because init_db() runs on every
+    startup, that's not a one-time failure — it's a permanent boot-failure
+    loop until someone hand-edits the row. The guard makes unparseable rows
+    a no-op (left as-is) instead of a crash.
+
+    All UPDATEs are no-ops on a second run: after conversion no row matches
+    any of the WHERE clauses anymore.
     """
     for table, cols in TIMESTAMP_COLUMNS.items():
         tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         for col in cols:
             if col not in tcols:
                 continue  # column itself predates this DB; _migrate() above adds it first
+            # Aware: Z-suffixed or explicit numeric offset -> converted to naive local.
             conn.execute(
                 f"UPDATE {table} SET {col} = "
                 f"strftime('%Y-%m-%dT%H:%M:%S', datetime({col}, 'localtime')) "
-                f"WHERE {col} LIKE '%Z'"
+                f"WHERE ({col} LIKE '%Z' OR {col} GLOB '*[+-][0-9][0-9]:[0-9][0-9]') "
+                f"AND datetime({col}, 'localtime') IS NOT NULL"
             )
+            # Legacy space-separated naive -> T-separated, delimiter only (not every space).
             conn.execute(
-                f"UPDATE {table} SET {col} = replace({col}, ' ', 'T') "
-                f"WHERE {col} LIKE '____-__-__ __:__:__%' AND {col} NOT LIKE '%Z'"
+                f"UPDATE {table} SET {col} = substr({col}, 1, 10) || 'T' || substr({col}, 12) "
+                f"WHERE {col} LIKE '____-__-__ __:__:__%' "
+                f"AND {col} NOT LIKE '%Z' AND {col} NOT GLOB '*[+-][0-9][0-9]:[0-9][0-9]' "
+                f"AND datetime({col}, 'localtime') IS NOT NULL"
             )
 
 
