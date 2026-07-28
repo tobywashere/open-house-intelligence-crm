@@ -164,6 +164,15 @@ def check_availability(date: str) -> list:
     return _request("GET", "/availability", params={"date": date})
 
 
+def list_appointments() -> list:
+    """Every booked appointment, across all leads, ordered by start_ts, each
+    row including lead_name. Use this to find who has an appointment today —
+    filter the returned list client-side on start_ts's date — before deciding
+    which leads need get_lead_context for a schedule/briefing.
+    """
+    return _request("GET", "/appointments")
+
+
 def book_appointment(lead_id: int, start_ts: str, end_ts: str,
                       location: str | None = None) -> dict:
     """Book a meeting. Raises CRMError(status=409) if the slot conflicts with

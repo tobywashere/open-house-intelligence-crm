@@ -162,6 +162,7 @@ really an **audit activity** stream covering all three, not agent-only.
 | `score_lead(id)` | `POST /leads/{id}/process` (score part) |
 | `draft_followup(id)` | `POST /leads/{id}/process` (draft part) |
 | `check_availability(date)` | `GET /availability?date=` |
+| `list_appointments()` | `GET /appointments` — all appointments across all leads, ordered by `start_ts`, each row joined with `lead_name` (additive, recorded 2026-07-28); used by `daily-command-center` Step 0.2 to find today's schedule before pulling per-lead context |
 | `book_appointment(lead_id, start_ts, end_ts, location)` | `POST /appointments` |
 | `schedule_followup(lead_id, due_ts, note)` | `POST /reminders` |
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` — runs the neglect check now and returns newly-flagged leads; use `list_leads(neglected=1)` to see all currently-neglected leads without re-running it |

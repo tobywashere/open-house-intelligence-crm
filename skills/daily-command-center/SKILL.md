@@ -31,14 +31,22 @@ scores, and never read `sample-crm.json` unless you are explicitly in the
 1. `list_leads(sort="priority")` — the full prioritized lead list (neglected
    first, then score desc). This is your source for "Today's Priorities" and
    "Outstanding Responses".
-2. For each lead you'll actually write about — anyone with an appointment
-   today, plus the top-priority leads not already on the calendar — call
-   `get_lead_context(lead_id)`. This returns the lead's fields, its full
-   activity timeline (`events`), and its `appointments`, most recent first.
-   There is no separate "list every appointment" tool; assemble today's
-   schedule by pulling each relevant lead's `appointments` out of its context
-   and filtering to today's date. Use only what these calls return — never
-   invent a detail that isn't in the returned fields or timeline.
+2. `list_appointments()` — every booked appointment across all leads, ordered
+   by `start_ts`, each row including `lead_id` and `lead_name`. Filter this
+   list to just today's date yourself (compare each row's `start_ts` date to
+   today) — this is how you find out who has an appointment today. Do this
+   before step 3; step 3 depends on its result.
+3. Build the set of `lead_id`s to fetch full context for:
+   - every `lead_id` from today's appointments (step 2), PLUS
+   - the top-priority leads from step 1's list that are NOT already in that
+     appointment set.
+   For each `lead_id` in that combined set, call `get_lead_context(lead_id)`.
+   This returns the lead's fields, its full activity timeline (`events`), and
+   its `appointments`, most recent first — use the appointment rows already
+   pulled in step 2 to build "Today's Schedule"; use `get_lead_context`'s
+   output for everything else (persona, score, events, talking points). Use
+   only what these calls return — never invent a detail that isn't in the
+   returned fields or timeline.
 
 Do not call any function not documented in
 [`../crm-db-operations/SKILL.md`](../crm-db-operations/SKILL.md)'s tool

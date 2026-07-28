@@ -30,6 +30,7 @@ SAMPLE_ARGS = {
     "update_lead": ((1,), {"status": "contacted"}),
     "find_duplicate_leads": ((1,), {}), "get_lead_context": ((1,), {}), "list_leads": ((), {}),
     "score_lead": ((1,), {}), "draft_followup": ((1,), {}), "check_availability": (("2026-08-03",), {}),
+    "list_appointments": ((), {}),
     "book_appointment": ((1, "2026-08-03T18:00:00", "2026-08-03T18:45:00", "loc"), {}),
     "schedule_followup": ((1, "2026-08-04T09:00:00", "note"), {}), "find_neglected_leads": ((), {}),
     "generate_dashboard_insights": ((), {}), "merge_leads": ((1, 2), {}), "delete_lead": ((1,), {}),

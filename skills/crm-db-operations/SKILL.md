@@ -63,6 +63,7 @@ never let a raw stack trace reach the chat.
 | `score_lead` | `(lead_id)` | `{lead_id, score, score_reason}` | After enough new info lands on a lead to re-score it (new note, new field). Deterministic formula server-side; only the reason is written by you upstream (already filled in by the backend's driver). |
 | `draft_followup` | `(lead_id)` | draft message text | User asks you to reach out to someone, or after scoring a hot lead. |
 | `check_availability` | `(date: "YYYY-MM-DD")` | `[{start_ts, end_ts}]` free slots | Before booking anything — always check first. |
+| `list_appointments` | `()` | `[{id, lead_id, start_ts, end_ts, location, created_at, lead_name}]`, all appointments, ordered by `start_ts` | Finding who has an appointment today (or any date) — filter the returned list client-side on `start_ts`. Used by `daily-command-center` Step 0.2 before deciding whose `get_lead_context` to pull. |
 | `book_appointment` | `(lead_id, start_ts, end_ts, location=None)` | appointment | User agrees to a specific time. Raises 409 on conflict — re-check availability and offer alternatives. Lead status auto-flips to `meeting_booked`. |
 | `schedule_followup` | `(lead_id, due_ts, note=None)` | reminder | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
 | `find_neglected_leads` | `()` | `[lead]` newly flagged | Scheduled/cron check, or "who haven't I talked to" questions. Evaluates every open lead against the 2-day-idle rule right now. |
@@ -87,6 +88,7 @@ curl -s "$BASE/leads/1/duplicates"                       # find_duplicate_leads
 curl -s -X PATCH "$BASE/leads/1" -d '{"status":"contacted"}' -H 'content-type: application/json'
 curl -s -X POST "$BASE/leads/1/process"                   # score_lead + draft_followup
 curl -s "$BASE/availability?date=2026-07-28"              # check_availability
+curl -s "$BASE/appointments"                              # list_appointments
 curl -s -X POST "$BASE/appointments" -H 'content-type: application/json' \
   -d '{"lead_id":1,"start_ts":"2026-07-28T18:00:00","end_ts":"2026-07-28T18:45:00"}'
 curl -s -X POST "$BASE/demo/advance-time" -d '{"days":0}' -H 'content-type: application/json'  # find_neglected_leads
