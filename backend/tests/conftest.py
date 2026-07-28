@@ -41,6 +41,28 @@ def client():
         yield c
 
 
+@pytest.fixture()
+def client_factory():
+    """Returns a callable that builds a fresh TestClient(app) on demand, so
+    tests can monkeypatch env vars (e.g. OHI_API_TOKEN) before the client —
+    and the middleware that reads them per-request — comes into play."""
+    made = []
+
+    def _make():
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(TEST_DB) + suffix)
+            if p.exists():
+                p.unlink()
+        c = TestClient(app)
+        c.__enter__()  # run startup event (init_db())
+        made.append(c)
+        return c
+
+    yield _make
+    for c in made:
+        c.__exit__(None, None, None)
+
+
 def make_lead(client, **overrides) -> dict:
     body = {"name": "Test Lead", "email": "lead@example.com",
             "phone": "+14255550100", "area": "Bellevue", "budget": 900000,

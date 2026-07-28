@@ -120,7 +120,10 @@ export class ApiError extends Error {
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(import.meta.env.VITE_API_TOKEN ? { 'X-API-Token': import.meta.env.VITE_API_TOKEN } : {}),
+    },
     ...init,
   })
   if (!res.ok) throw new ApiError(res.status, await res.text())

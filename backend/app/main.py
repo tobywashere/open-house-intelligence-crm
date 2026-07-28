@@ -1,7 +1,8 @@
 import os
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,9 +29,24 @@ app.include_router(scan.router, prefix="/api")
 app.include_router(integrations.router, prefix="/api")
 
 
+@app.middleware("http")
+async def api_token_guard(request: Request, call_next):
+    token = os.environ.get("OHI_API_TOKEN", "")
+    if (token and request.url.path.startswith("/api")
+            and request.url.path != "/api/health"
+            and not secrets.compare_digest(request.headers.get("X-API-Token", ""), token)):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "missing or invalid X-API-Token"}, status_code=401)
+    return await call_next(request)
+
+
 @app.on_event("startup")
 def startup():
     init_db()
+    host = os.environ.get("HOST", "127.0.0.1")
+    if host not in ("127.0.0.1", "localhost") and not os.environ.get("OHI_API_TOKEN"):
+        print("WARNING: serving on a non-localhost interface with no OHI_API_TOKEN — "
+              "anyone on the network can read/write the CRM and use the agent.")
     from .integrations import composio_client as cc
     if cc.mode() == "live" and not cc.is_live():
         print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "

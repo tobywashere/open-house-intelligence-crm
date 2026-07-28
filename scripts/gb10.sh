@@ -3,10 +3,14 @@
 # serves everything on one port with the real OpenClaw agent.
 # The whole product is then at http://<gb10-tailscale-name>:$PORT (default 8080;
 # 8000 on the GB10 belongs to the vLLM server that backs the agent).
+# Binds to 127.0.0.1 by default — nothing outside this machine can reach it.
+# For GB10/Tailscale deployments, set HOST=<tailscale-ip> to opt in to
+# binding a network-reachable interface (pair with OHI_API_TOKEN).
 set -e
 cd "$(dirname "$0")/.."
 
 PORT="${PORT:-8080}"
+HOST="${HOST:-127.0.0.1}"
 # AGENT_MODE=mock bash scripts/gb10.sh → full hosted product with the mock agent
 # (useful for testing the GB10 deployment before OpenClaw is configured)
 export AGENT_MODE="${AGENT_MODE:-openclaw}"
@@ -35,7 +39,7 @@ if ! (cd dashboard && npm run build); then
 fi
 
 echo "──────────────────────────────────────────────"
-echo " Open House Intelligence → http://0.0.0.0:$PORT"
+echo " Open House Intelligence → http://$HOST:$PORT"
 echo " agent: openclaw @ $AGENT_GATEWAY_URL"
 echo "──────────────────────────────────────────────"
-cd backend && exec ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+cd backend && exec ../.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT"
