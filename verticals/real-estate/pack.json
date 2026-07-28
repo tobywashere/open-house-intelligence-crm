@@ -1,0 +1,109 @@
+{
+  "name": "real-estate",
+  "display_name": "Real estate",
+  "stages": [
+    {
+      "key": "new",
+      "label": "New leads",
+      "rule": {
+        "type": "all"
+      }
+    },
+    {
+      "key": "contacted",
+      "label": "Contacted",
+      "rule": {
+        "type": "status_at_least",
+        "status": "contacted"
+      }
+    },
+    {
+      "key": "qualified",
+      "label": "Qualified",
+      "rule": {
+        "type": "status_at_least_or_score",
+        "status": "meeting_booked",
+        "min_score": 70
+      }
+    },
+    {
+      "key": "tours",
+      "label": "Tours booked",
+      "rule": {
+        "type": "status_at_least",
+        "status": "meeting_booked"
+      }
+    },
+    {
+      "key": "offers",
+      "label": "Offers submitted",
+      "rule": {
+        "type": "event_type_or_status",
+        "event_type": "offer",
+        "status": "closed"
+      }
+    },
+    {
+      "key": "closed",
+      "label": "Closed",
+      "rule": {
+        "type": "status_is",
+        "status": "closed"
+      }
+    }
+  ],
+  "labels": {
+    "budget": "Budget",
+    "area": "Area",
+    "timeline": "Timeline",
+    "intent": "Intent"
+  },
+  "intent_values": [
+    {
+      "value": "buy",
+      "label": "Buy"
+    },
+    {
+      "value": "sell",
+      "label": "Sell"
+    },
+    {
+      "value": "browse",
+      "label": "Browse"
+    },
+    {
+      "value": "unknown",
+      "label": "Unknown"
+    }
+  ],
+  "personas": [
+    {
+      "key": "Luxury Executive",
+      "default": false
+    },
+    {
+      "key": "Growing Family",
+      "default": false
+    },
+    {
+      "key": "Relocating Professional",
+      "default": false
+    },
+    {
+      "key": "First-Time Buyer",
+      "default": false
+    },
+    {
+      "key": "Seller",
+      "default": false
+    },
+    {
+      "key": "Home Buyer",
+      "default": true
+    }
+  ],
+  "copy": {
+    "app_name": "Open Intelligence CRM"
+  },
+  "research": {}
+}
