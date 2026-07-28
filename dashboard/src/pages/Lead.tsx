@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, icsUrl, Lead, LeadProfile } from '../api'
+import { api, downloadIcs, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, Lead, LeadProfile } from '../api'
 import { PERSONA_STYLE, personaOf } from '../briefing'
 import { Markdown } from '../components/Markdown'
 import { Skeleton } from '../components/Skeleton'
@@ -256,9 +256,13 @@ export function LeadPage() {
             <div key={a.id} className="text-sm text-body flex items-center gap-2">
               📅 {fmtSlotDay(a.start_ts)} · {fmtSlotTime(a.start_ts)}–{fmtSlotTime(a.end_ts)} —{' '}
               {a.location ?? 'location TBD'}
-              <a href={icsUrl(a.id)} className="text-accent hover:underline text-xs">
+              <button
+                type="button"
+                onClick={() => downloadIcs(a.id).catch(() => toast('Could not download .ics'))}
+                className="text-accent hover:underline text-xs"
+              >
                 .ics ↓
-              </a>
+              </button>
             </div>
           ))}
         </section>

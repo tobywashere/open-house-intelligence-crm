@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, Appointment, fmtSlotDay, fmtSlotTime, icsUrl, IntegrationsStatus, localDateKey } from '../api'
+import { api, Appointment, downloadIcs, fmtSlotDay, fmtSlotTime, IntegrationsStatus, localDateKey } from '../api'
 
 interface Slot {
   start_ts: string
@@ -62,9 +62,13 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
           {fmtSlotDay(booked.start_ts)} · {fmtSlotTime(booked.start_ts)}–{fmtSlotTime(booked.end_ts)}
           {booked.location ? ` · ${booked.location}` : ''}
         </div>
-        <a href={icsUrl(booked.id)} className="inline-block text-accent hover:underline">
+        <button
+          type="button"
+          onClick={() => downloadIcs(booked.id).catch(() => setError('Could not download .ics'))}
+          className="inline-block text-accent hover:underline"
+        >
           Download .ics ↓
-        </a>
+        </button>
         {intg?.mode === 'live' && intg.gmail && (
           <div className="text-xs text-accent">✓ Added to Google Calendar</div>
         )}

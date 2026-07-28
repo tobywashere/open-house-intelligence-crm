@@ -194,7 +194,28 @@ export const api = {
   integrationsStatus: () => req<IntegrationsStatus>('/integrations/status'),
 }
 
-export const icsUrl = (appointmentId: number) => `${BASE}/appointments/${appointmentId}/ics`
+// Calendar download must go through an authenticated fetch — a plain <a href>
+// navigation cannot attach X-API-Token, so it would 401 once a token is set.
+export const downloadIcs = async (appointmentId: number): Promise<void> => {
+  const res = await fetch(`${BASE}/appointments/${appointmentId}/ics`, {
+    headers: {
+      ...(import.meta.env.VITE_API_TOKEN ? { 'X-API-Token': import.meta.env.VITE_API_TOKEN } : {}),
+    },
+  })
+  if (!res.ok) throw new ApiError(res.status, await res.text())
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `appointment-${appointmentId}.ics`
+  document.body.appendChild(a)
+  a.click()
+  // Firefox-safe: revoke/remove on next tick, after the click has been processed.
+  setTimeout(() => {
+    URL.revokeObjectURL(url)
+    a.remove()
+  }, 0)
+}
 
 export const fmtMoney = (n: number | null) =>
   n == null ? '—' : n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}k`

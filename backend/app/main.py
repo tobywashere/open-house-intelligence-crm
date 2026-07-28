@@ -6,12 +6,34 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .db import init_db
 from .integrations import router as integrations
 from .routers import calendar, chat, leads, misc, reports, scan
 
 app = FastAPI(title="Open House Intelligence")
+
+
+async def api_token_guard(request: Request, call_next):
+    token = os.environ.get("OHI_API_TOKEN", "")
+    if (token and request.method != "OPTIONS"  # preflight carries no auth by design
+            and request.url.path.startswith("/api")
+            and request.url.path != "/api/health"
+            and not secrets.compare_digest(request.headers.get("X-API-Token", ""), token)):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "missing or invalid X-API-Token"}, status_code=401)
+    return await call_next(request)
+
+
+# Starlette's add_middleware inserts at position 0 (innermost-registered-last
+# wraps outermost), so registering the auth guard BEFORE CORSMiddleware here
+# puts CORS outermost. That matters: with a token set, a cross-origin
+# preflight (browsers never attach custom headers to OPTIONS) must be
+# answered by CORSMiddleware itself — with CORS headers — before it would
+# otherwise be rejected 401 by the guard with no CORS headers, which the
+# browser would then block outright.
+app.add_middleware(BaseHTTPMiddleware, dispatch=api_token_guard)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,17 +49,6 @@ app.include_router(misc.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(scan.router, prefix="/api")
 app.include_router(integrations.router, prefix="/api")
-
-
-@app.middleware("http")
-async def api_token_guard(request: Request, call_next):
-    token = os.environ.get("OHI_API_TOKEN", "")
-    if (token and request.url.path.startswith("/api")
-            and request.url.path != "/api/health"
-            and not secrets.compare_digest(request.headers.get("X-API-Token", ""), token)):
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"detail": "missing or invalid X-API-Token"}, status_code=401)
-    return await call_next(request)
 
 
 @app.on_event("startup")
