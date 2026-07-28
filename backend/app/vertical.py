@@ -307,10 +307,23 @@ def _sanitize_persona_cond(cond, rule_persona: str):
                     "vertical pack: dropping persona rule %r — %r must be a list, got %r",
                     rule_persona, combinator, items)
                 return None
-            sanitized[combinator] = [
+            cleaned = [
                 c for c in (_sanitize_persona_cond(item, rule_persona) for item in items)
                 if c is not None
             ]
+            if items and not cleaned:
+                # Every child was invalid, so this combinator collapsed to
+                # {"all": []} (vacuously TRUE — matches unconditionally,
+                # shadowing every rule after it) or {"any": []} (vacuously
+                # FALSE). Either way this is not what the pack author wrote;
+                # drop the whole rule rather than silently changing its
+                # meaning — same reasoning as the top-level `when` drop
+                # above.
+                logging.warning(
+                    "vertical pack: dropping persona rule %r — every child of %r was invalid",
+                    rule_persona, combinator)
+                return None
+            sanitized[combinator] = cleaned
         return sanitized
     if cond.get("op") not in KNOWN_PERSONA_OPS:
         logging.warning("vertical pack: dropping persona rule %r — unknown op %r",
@@ -362,8 +375,23 @@ def load_pack() -> dict:
         raw = json.loads(path.read_text())
     except FileNotFoundError:
         raw = {}
-    except (json.JSONDecodeError, OSError) as exc:
+    except Exception as exc:
+        # Deliberately broad, not (json.JSONDecodeError, OSError): a
+        # pathologically deep pack.json (e.g. thousands of nested {"any":
+        # [{"any": [...]}]}) raises RecursionError from json.loads, which the
+        # narrower tuple did not catch — an unhandled RecursionError here
+        # took down GET /api/vertical entirely. A vertical pack is
+        # third-party-authored, untrusted JSON; ANY failure to load it must
+        # degrade to DEFAULT_PACK, never crash the endpoint.
         logging.warning("vertical pack at %s unreadable (%s) — using defaults", path, exc)
+        raw = {}
+    if not isinstance(raw, dict):
+        # Valid JSON but not an object (e.g. a bare list/number/string) —
+        # `.items()` below would raise AttributeError and, same as any other
+        # load failure, must degrade to defaults instead of crashing
+        # GET /api/vertical.
+        logging.warning("vertical pack at %s is not a JSON object (got %s) — using defaults",
+                        path, type(raw).__name__)
         raw = {}
     for key, value in raw.items():
         if key == "stages":

@@ -4,7 +4,7 @@
 //   Offers Submitted = has an event with type "offer" (amount parsed from content)
 import { api, Appointment, Lead, LeadProfile, localDateKey } from './api'
 import { Insights } from './insights'
-import { copy, pack } from './vertical'
+import { copy, pack, Stage } from './vertical'
 
 export interface FunnelStage {
   key: string
@@ -71,6 +71,38 @@ export interface FunnelData {
 const RANK: Record<Lead['status'], number> = { new: 0, contacted: 1, meeting_booked: 2, closed: 3 }
 const DAY = 86_400_000
 
+// Pack-driven stage rule vocabulary (Task 4) — mirrors KNOWN_RULE_TYPES in
+// backend/app/vertical.py exactly. status_at_least_or_score names BOTH
+// thresholds explicitly (no implicit rank offset between them): with the
+// shipped rule {status: "meeting_booked", score_status: "contacted",
+// min_score: 70} this evaluates to RANK>=2 || (RANK>=1 && score>=70) — the
+// same formula the funnel used before this was pack-driven. A rule whose
+// `type` isn't in this map (e.g. an older backend, or a future rule type
+// this client doesn't know yet) is handled by the caller: it renders as
+// count 0 rather than crashing.
+const RULE_EVAL: Record<string, (l: Lead, r: any, ev: Map<number, LeadProfile['events']>) => boolean> = {
+  all: () => true,
+  status_is: (l, r) => l.status === r.status,
+  status_at_least: (l, r) => RANK[l.status] >= RANK[r.status as Lead['status']],
+  status_at_least_or_score: (l, r) =>
+    RANK[l.status] >= RANK[r.status as Lead['status']] ||
+    (RANK[l.status] >= RANK[r.score_status as Lead['status']] && (l.score ?? 0) >= r.min_score),
+  event_type_or_status: (l, r, ev) =>
+    (ev.get(l.id) ?? []).some((e) => e.type === r.event_type) || l.status === r.status,
+}
+
+export function stagesFromPack(
+  leads: Lead[],
+  eventsByLead: Map<number, LeadProfile['events']>,
+  stages: Stage[],
+): FunnelStage[] {
+  return stages.map((s) => {
+    const evaluate = RULE_EVAL[s.rule.type as string]
+    const matched = evaluate ? leads.filter((l) => evaluate(l, s.rule, eventsByLead)) : []
+    return { key: s.key, label: s.label, count: matched.length }
+  })
+}
+
 // Storage is naive local (Task 7): a bare `new Date(t)` on a `Z`-suffixed
 // legacy row parses as aware UTC (native Date behavior), and on a naive
 // `T`-separated row parses as local per ES2015+ — no forced `+ 'Z'` needed
@@ -132,14 +164,7 @@ function compute(
   const offered = leads.filter((l) => offerOf(l) !== null || l.status === 'closed')
   const closed = leads.filter((l) => l.status === 'closed')
 
-  const stages: FunnelStage[] = [
-    { key: 'new', label: 'New leads', count: leads.length },
-    { key: 'contacted', label: 'Contacted', count: reachedContact.length },
-    { key: 'qualified', label: 'Qualified', count: qualified.length },
-    { key: 'tours', label: 'Tours booked', count: toured.length },
-    { key: 'offers', label: 'Offers submitted', count: offered.length },
-    { key: 'closed', label: 'Closed', count: closed.length },
-  ]
+  const stages: FunnelStage[] = stagesFromPack(leads, eventsByLead, pack().stages)
 
   const conversions: Conversion[] = stages.slice(1).map((s, i) => {
     const den = Math.max(stages[i].count, 1)
