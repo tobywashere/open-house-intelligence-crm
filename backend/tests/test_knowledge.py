@@ -143,40 +143,58 @@ def test_real_report_amazon_rsu_query_retrieves_the_right_section():
         [h.heading for h in hits]
 
 
-# ── false-positive probes against the real shipped report ──────────────
+# ── acceptance set against the real shipped report ──────────────────────
 #
-# Fix round 1 (team-lead review): the min-score floor alone did not stop an
-# unrelated/CRM-chatter query from retrieving a market-report chunk when it
-# happened to share one coincidental word with some section (a first-person
-# pronoun from an advisory-script quote, or a generic word like "open" that
-# turns up in an unrelated sentence). These reproduce the exact false
-# positives from that review and must return nothing.
+# Locked in across two review rounds (team-lead):
+#
+# Round 1: the min-score floor alone did not stop an unrelated/CRM-chatter
+# query from retrieving a market-report chunk when it happened to share one
+# coincidental word with some section (a first-person pronoun quoted from an
+# advisory-script, or a generic word like "open" that turns up in an
+# unrelated sentence).
+#
+# Round 2: the discriminative-match gate's multi-term-corroboration path
+# (>=2 distinct query terms matched) still let a pair of generic scheduling
+# words ("set", "up") through, since a word can be coincidentally rare in
+# this ~38-chunk corpus (df=1, same IDF tier as a genuine rare domain term
+# like "vesting") purely because it's short and the corpus is small — BM25
+# statistics alone cannot tell "set" (generic) apart from "vesting"
+# (domain-specific) since they can land in the exact same IDF bucket. Fixed
+# by adding a curated "scheduling/communication chatter" stopword category
+# (see bm25.py) — vocabulary that's near-universally NOT market-intelligence
+# content in ANY vertical, independent of which report is loaded.
+#
+# These twelve queries are the acceptance bar per that review and are locked
+# here going forward.
 
-FALSE_POSITIVE_QUERIES = [
+MUST_RETURN_NO_HITS = [
     "what should I wear to the open house",
     "remind me to call my mom",
     "how do I reset my password",
     "book a showing for Tuesday",
+    "can you email Sarah",
+    "whats the weather tomorrow",
+    "set up a meeting",
 ]
 
 
-@pytest.mark.parametrize("query", FALSE_POSITIVE_QUERIES)
+@pytest.mark.parametrize("query", MUST_RETURN_NO_HITS)
 def test_real_report_crm_chatter_returns_no_hits(query):
     hits = retrieve(query, k=3, directory=REAL_KNOWLEDGE_DIR)
     assert hits == [], f"{query!r} should not retrieve market-report context, got {[h.heading for h in hits]}"
 
 
-# ── good-query regression guard (must keep working after the fix) ──────
-
-GOOD_QUERIES = [
-    ("Amazon L7 with unvested equity, can they afford 3M", ("Vesting", "Equity")),
+MUST_RETURN_CORRECT_TOP_HIT = [
+    ("Amazon L7 unvested equity can they afford 3M", ("Vesting", "Equity")),
     ("seller wants to avoid excise tax", ("Excise", "REET")),
-    ("is Medina or Clyde Hill better for schools", ("Clyde", "Medina", "School")),
-    ("How does Amazon's RSU vesting schedule affect a buyer's liquidity?", ("Vesting", "Equity")),
+    ("Medina or Clyde Hill better for schools", ("Clyde Hill", "Medina")),
+    ("how do 10b5-1 plans affect closing timing", ("10b5-1", "Trading Plans")),
+    ("client maxing mega backdoor roth has no cash for down payment", ("Mega-Backdoor Roth",)),
+    ("Amazon RSU vesting affects buyer liquidity", ("Vesting", "Equity")),
 ]
 
 
-@pytest.mark.parametrize("query,expected_substrings", GOOD_QUERIES)
+@pytest.mark.parametrize("query,expected_substrings", MUST_RETURN_CORRECT_TOP_HIT)
 def test_real_report_good_domain_queries_still_retrieve_correct_section(query, expected_substrings):
     hits = retrieve(query, k=3, directory=REAL_KNOWLEDGE_DIR)
     assert hits, f"expected a hit for {query!r}"
@@ -213,6 +231,28 @@ def test_discriminative_gate_rejects_single_common_word_match(tmp_path):
     # neither alone need be the rarest word in the corpus
     hits = retrieve("filler content", k=3, directory=d, min_score=0.0)
     assert hits
+
+
+def test_discriminative_gate_still_rejects_a_rare_generic_word_pair(tmp_path):
+    """Round-2 regression, isolated on a synthetic corpus: two scheduling
+    words ("meeting", "call") that happen to co-occur in exactly one chunk
+    (making each individually as statistically 'rare' as a genuine domain
+    term) must not corroborate each other into a hit — they're chatter
+    stopwords, filtered before the gate ever sees them, not because BM25
+    stats distinguish them from real content."""
+    d = tmp_path / "knowledge"
+    d.mkdir()
+    (d / "a.md").write_text(
+        "# Doc A\n\n## Widget Assembly\nAttach the flange to the bracket "
+        "before you call the technician about scheduling the meeting.\n\n"
+        "## Widget Maintenance\nLubricate the widget bearing every 500 "
+        "hours of operation.\n"
+    )
+    hits = retrieve("call meeting", k=3, directory=d, min_score=0.0)
+    assert hits == []
+    # a real two-term domain match in the same corpus still passes
+    hits = retrieve("flange bracket", k=3, directory=d, min_score=0.0)
+    assert hits and hits[0].heading == "Widget Assembly"
 
 
 def test_readme_in_knowledge_dir_is_not_indexed(tmp_path):

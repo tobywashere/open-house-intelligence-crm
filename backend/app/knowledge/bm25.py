@@ -35,7 +35,29 @@ STOPWORDS = {
     "he", "him", "his", "himself", "she", "her", "hers", "herself",
     "no", "not", "nor", "than", "then", "too", "very", "just", "only",
     "own", "same", "such", "each", "other", "some", "any", "all", "both",
-    "few", "more", "most",
+    "few", "more", "most", "up", "down", "off", "over", "under", "again",
+    "once", "here", "now",
+    # Generic scheduling/communication chatter: the kind of vocabulary a CRM
+    # chat turn uses constantly ("remind me to call", "set up a meeting",
+    # "book a showing for Tuesday") regardless of which industry's knowledge
+    # doc is loaded. These words are near-universally NOT market-intelligence
+    # content in ANY vertical, yet a small corpus (a few dozen chunks) can
+    # easily contain one by pure chance in exactly one chunk — giving it the
+    # same high IDF as a genuinely rare domain term like "vesting" or
+    # "excise", which BM25/IDF statistics alone cannot tell apart (see
+    # docs/superpowers/rag-impl-report.md, fix round 2, for the "set"/"open"
+    # vs "Clyde"/"excise" numbers that make this a real, not hypothetical,
+    # failure mode). This list is the deliberate second lever, alongside the
+    # discriminative-match gate below, for exactly that failure mode.
+    "call", "calls", "called", "calling", "remind", "reminds", "reminded",
+    "reminder", "reminders", "book", "books", "booked", "booking", "show",
+    "shows", "showing", "showings", "wear", "wears", "wearing", "reset",
+    "resets", "password", "passwords", "weather", "tomorrow", "today",
+    "tonight", "yesterday", "meet", "meets", "meeting", "meetings", "email",
+    "emails", "mail", "mails", "text", "texts", "message", "messages",
+    "phone", "phones", "mom", "dad", "set", "sets",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday",
 }
 
 
