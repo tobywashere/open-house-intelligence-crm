@@ -27,8 +27,11 @@ COMMUNITY_URL = (
     "https://frontporch.seattle.gov/2026/07/07/"
     "city-of-seattle-opens-second-round-of-neighborhood-funding-for-community-led-projects/"
 )
+SOURCE_URLS = (JOB_URL, FED_URL, COMMUNITY_URL)
 USER_AGENT = "OpenHouseIntelligence/1.0 daily-brief"
 REQUIRED_KEYS = {"date", "generated_at", "greeting", "market_watch", "ai_insights"}
+MARKET_ITEM_KEYS = {"title", "source", "takeaway", "url", "date", "summary", "geo"}
+INSIGHT_KEYS = {"title", "body"}
 CRM_TOOLS_PATH = (
     Path(__file__).resolve().parents[2] / "crm-db-operations" / "tools.py"
 )
@@ -213,6 +216,55 @@ def _community_item(raw_html: str) -> dict:
     }
 
 
+def validate_payload(payload: object, *, require_all_sources: bool = False) -> dict:
+    if not isinstance(payload, dict) or set(payload) != REQUIRED_KEYS:
+        raise ValueError(
+            "daily summary must contain exactly: " + ", ".join(sorted(REQUIRED_KEYS))
+        )
+    try:
+        dt.date.fromisoformat(payload["date"])
+        dt.datetime.fromisoformat(payload["generated_at"].replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("date or generated_at is not valid ISO-8601") from exc
+    if not isinstance(payload["greeting"], str) or not payload["greeting"].strip():
+        raise ValueError("greeting must be a non-empty string")
+
+    market_watch = payload["market_watch"]
+    if not isinstance(market_watch, list) or not market_watch:
+        raise ValueError("market_watch must contain at least one configured source")
+    if len(market_watch) > len(SOURCE_URLS):
+        raise ValueError("market_watch contains more items than configured sources")
+    if require_all_sources and len(market_watch) != len(SOURCE_URLS):
+        raise ValueError("market_watch must contain exactly one item per configured URL")
+    seen_urls: set[str] = set()
+    for index, item in enumerate(market_watch):
+        if not isinstance(item, dict) or not MARKET_ITEM_KEYS.issubset(item):
+            raise ValueError(f"market_watch[{index}] lacks required fields")
+        if any(not isinstance(item[key], str) or not item[key].strip() for key in MARKET_ITEM_KEYS):
+            raise ValueError(f"market_watch[{index}] fields must be non-empty strings")
+        try:
+            dt.date.fromisoformat(item["date"])
+        except ValueError as exc:
+            raise ValueError(f"market_watch[{index}].date is not ISO-8601") from exc
+        if item["url"] not in SOURCE_URLS:
+            raise ValueError(f"market_watch[{index}].url is not a configured source")
+        if item["url"] in seen_urls:
+            raise ValueError(f"market_watch[{index}].url is duplicated")
+        seen_urls.add(item["url"])
+    if require_all_sources and seen_urls != set(SOURCE_URLS):
+        raise ValueError("market_watch must cover every configured URL exactly once")
+
+    insights = payload["ai_insights"]
+    if not isinstance(insights, list) or not insights:
+        raise ValueError("ai_insights must contain at least one item")
+    for index, item in enumerate(insights):
+        if not isinstance(item, dict) or not INSIGHT_KEYS.issubset(item):
+            raise ValueError(f"ai_insights[{index}] lacks title or body")
+        if any(not isinstance(item[key], str) or not item[key].strip() for key in INSIGHT_KEYS):
+            raise ValueError(f"ai_insights[{index}] fields must be non-empty strings")
+    return payload
+
+
 def build_payload() -> dict:
     now = dt.datetime.now().astimezone()
     items: list[dict] = []
@@ -262,9 +314,15 @@ def build_payload() -> dict:
         "market_watch": items,
         "ai_insights": insights,
     }
-    if set(payload) != REQUIRED_KEYS or not items:
-        raise ValueError("daily summary payload validation failed")
-    return payload
+    return validate_payload(payload)
+
+
+def load_payload(path: str) -> dict:
+    payload_path = Path(path)
+    if payload_path.stat().st_size > 256 * 1024:
+        raise ValueError("daily summary payload exceeds 256 KiB")
+    with payload_path.open(encoding="utf-8") as handle:
+        return validate_payload(json.load(handle), require_all_sources=True)
 
 
 def _api_candidates(explicit: str | None) -> list[str]:
@@ -310,10 +368,16 @@ def publish(payload: dict, api_base: str | None = None) -> tuple[str, dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument(
+        "--publish-payload",
+        metavar="JSON_FILE",
+        help="publish an AI/WebFetch-generated payload instead of fetching sources",
+    )
     parser.add_argument("--api-base")
     args = parser.parse_args()
-    payload = build_payload()
+    payload = load_payload(args.publish_payload) if args.publish_payload else build_payload()
     if args.dry_run:
         print(json.dumps({"ok": True, "published": False, "payload": payload}))
         return 0
