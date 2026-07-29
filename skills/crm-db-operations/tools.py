@@ -95,6 +95,22 @@ def update_lead(lead_id: int, **fields) -> dict:
     return _request("PATCH", f"/leads/{lead_id}", body=fields)
 
 
+def close_lead(
+    lead_id: int, outcome: str, reason: str | None = None
+) -> dict:
+    """Close an opportunity with an explicit won/lost business outcome.
+
+    Never infer the outcome from vague language. Ask the user whether it was
+    won or lost before calling this tool when their intent is ambiguous.
+    """
+    if outcome not in {"won", "lost"}:
+        raise ValueError("outcome must be 'won' or 'lost'")
+    body = {"outcome": outcome}
+    if reason is not None:
+        body["reason"] = reason
+    return _request("POST", f"/leads/{lead_id}/close", body=body)
+
+
 def find_duplicate_leads(lead_id: int) -> list:
     """Return other leads that look like the same person: exact phone/email
     match, or fuzzy name match. Use before merging or before creating a new

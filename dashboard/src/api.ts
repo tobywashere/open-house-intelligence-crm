@@ -11,6 +11,8 @@ export interface Lead {
   email: string | null
   source: string
   status: 'new' | 'contacted' | 'meeting_booked' | 'closed'
+  outcome: 'won' | 'lost' | null
+  close_reason: string | null
   score: number | null
   score_reason: string | null
   budget: number | null
@@ -220,6 +222,11 @@ export const api = {
     }),
   patchLead: (id: number, fields: Partial<Lead>) =>
     req<Lead>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
+  closeLead: (id: number, outcome: 'won' | 'lost', reason?: string) =>
+    req<Lead>(`/leads/${id}/close`, {
+      method: 'POST',
+      body: JSON.stringify({ outcome, reason }),
+    }),
   processLead: (id: number) =>
     req<{ lead: Lead; followup_draft: string }>(`/leads/${id}/process`, { method: 'POST' }),
   duplicates: (id: number) =>

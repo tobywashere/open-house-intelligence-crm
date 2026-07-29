@@ -72,6 +72,11 @@ function funnel(leads: Lead[]): Insight {
     meeting_booked: count('meeting_booked'),
     closed: count('closed'),
   }
+  const won = leads.filter((l) => l.outcome === 'won').length
+  const lost = leads.filter((l) => l.outcome === 'lost').length
+  const outcomeUnknown = leads.filter(
+    (l) => l.status === 'closed' && l.outcome == null,
+  ).length
   const reachedContact = stages.contacted + stages.meeting_booked + stages.closed
   const reachedBooking = stages.meeting_booked + stages.closed
   const contactRate = pct(reachedContact, leads.length)
@@ -90,7 +95,9 @@ function funnel(leads: Lead[]): Insight {
       { label: 'New', value: stages.new },
       { label: 'Contacted', value: stages.contacted },
       { label: 'Meeting booked', value: stages.meeting_booked },
-      { label: 'Closed', value: stages.closed },
+      { label: 'Won', value: won },
+      { label: 'Lost', value: lost },
+      { label: 'Outcome unknown', value: outcomeUnknown },
     ],
   }
 }

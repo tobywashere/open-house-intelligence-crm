@@ -25,6 +25,10 @@ export function LeadPage() {
   const [merging, setMerging] = useState(false)
   const [subject, setSubject] = useState('')
   const [sending, setSending] = useState(false)
+  const [closeOpen, setCloseOpen] = useState(false)
+  const [closeOutcome, setCloseOutcome] = useState<'won' | 'lost' | null>(null)
+  const [closeReason, setCloseReason] = useState('')
+  const [closing, setClosing] = useState(false)
 
   const load = useCallback(() => {
     api.lead(leadId).then(setLead).catch(() => {})
@@ -105,6 +109,23 @@ export function LeadPage() {
     }
   }
 
+  const closeOpportunity = async () => {
+    if (!closeOutcome || closing) return
+    setClosing(true)
+    try {
+      await api.closeLead(leadId, closeOutcome, closeReason.trim() || undefined)
+      toast(`✓ Opportunity closed as ${closeOutcome}`)
+      setCloseOpen(false)
+      setCloseOutcome(null)
+      setCloseReason('')
+      load()
+    } catch {
+      toast('⚠ Couldn’t close the opportunity — no outcome was changed')
+    } finally {
+      setClosing(false)
+    }
+  }
+
   if (!lead)
     return (
       <div className="max-w-3xl space-y-6">
@@ -160,6 +181,14 @@ export function LeadPage() {
           >
             Export ↓
           </button>
+          {lead.status !== 'closed' && (
+            <button
+              onClick={() => setCloseOpen(true)}
+              className="rounded-lg border border-line hover:border-alert/60 px-3 py-1.5 text-sm"
+            >
+              Close opportunity
+            </button>
+          )}
           <button
             onClick={process}
             disabled={busy}
@@ -169,6 +198,90 @@ export function LeadPage() {
           </button>
         </div>
       </div>
+
+      {closeOpen && lead.status !== 'closed' && (
+        <section className="rounded-xl border border-alert/30 bg-alert/5 p-4 space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Close this opportunity</h2>
+            <p className="text-xs text-sub mt-1">
+              Choose the actual result. Closing is final and cannot be undone from the dashboard.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {(['won', 'lost'] as const).map((outcome) => (
+              <button
+                key={outcome}
+                type="button"
+                onClick={() => setCloseOutcome(outcome)}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  closeOutcome === outcome
+                    ? 'border-accent bg-accent/10 text-ink'
+                    : 'border-line bg-surface text-body hover:border-accent/50'
+                }`}
+              >
+                <span className="block text-sm font-medium capitalize">{outcome}</span>
+                <span className="block text-xs text-sub mt-0.5">
+                  {outcome === 'won'
+                    ? 'The client completed the deal with you.'
+                    : 'The opportunity ended without a completed deal.'}
+                </span>
+              </button>
+            ))}
+          </div>
+          <label className="block text-xs text-sub">
+            <span>Reason or note (optional)</span>
+            <textarea
+              value={closeReason}
+              maxLength={2000}
+              onChange={(event) => setCloseReason(event.target.value)}
+              rows={3}
+              className="mt-1 w-full rounded-md bg-bg border border-tile px-3 py-2 text-sm text-body resize-y
+                         focus:outline-none focus:border-accent"
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setCloseOpen(false)
+                setCloseOutcome(null)
+                setCloseReason('')
+              }}
+              disabled={closing}
+              className="rounded-lg border border-line px-4 py-1.5 text-sm disabled:opacity-40"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={closeOpportunity}
+              disabled={!closeOutcome || closing}
+              className="ml-auto rounded-lg bg-alert text-[#0b0f19] px-4 py-1.5 text-sm font-medium disabled:opacity-40"
+            >
+              {closing ? 'Closing…' : closeOutcome ? `Confirm ${closeOutcome}` : 'Choose won or lost'}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {lead.status === 'closed' && (
+        <section className={`rounded-xl border p-4 ${
+          lead.outcome === 'won'
+            ? 'border-accent/30 bg-accent/5'
+            : lead.outcome === 'lost'
+              ? 'border-alert/30 bg-alert/5'
+              : 'border-line bg-surface'
+        }`}>
+          <div className="text-xs text-sub">Final outcome</div>
+          <div className="text-base font-semibold capitalize mt-0.5">
+            {lead.outcome ?? 'Outcome unknown'}
+          </div>
+          {lead.close_reason && <p className="text-sm text-body mt-1">{lead.close_reason}</p>}
+          {!lead.outcome && (
+            <p className="text-xs text-sub mt-1">
+              This record was closed before won/lost tracking was added and is not counted as a win.
+            </p>
+          )}
+        </section>
+      )}
 
       {dupes.length > 0 && !reviewing && (
         <div className="rounded-lg border border-alert/30 bg-alert/10 p-3 text-sm">

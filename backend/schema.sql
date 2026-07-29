@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS leads (
   source TEXT DEFAULT 'note',           -- form | text | note | referral
   status TEXT NOT NULL DEFAULT 'new'
     CHECK (status IN ('new','contacted','meeting_booked','closed')),
+  outcome TEXT CHECK (outcome IN ('won','lost')),
+  close_reason TEXT,
   score INTEGER,                        -- 0-100, deterministic formula
   score_reason TEXT,                    -- LLM-written explanation
   budget INTEGER,                       -- dollars

@@ -68,6 +68,11 @@ class LeadDelete(BaseModel):
     reason: str = ""
 
 
+class CloseLeadIn(BaseModel):
+    outcome: Literal["won", "lost"]
+    reason: str | None = Field(default=None, max_length=2000)
+
+
 def fetch_lead(conn, lead_id: int) -> dict:
     row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
     if not row:
@@ -148,6 +153,11 @@ def patch_lead(lead_id: int, body: LeadPatch):
         raise HTTPException(400, "no fields to update")
     if "status" in fields and fields["status"] not in STATUSES:
         raise HTTPException(400, f"status must be one of {STATUSES}")
+    if fields.get("status") == "closed":
+        raise HTTPException(
+            400,
+            "Use the close endpoint and choose whether the opportunity was won or lost.",
+        )
     with get_conn() as conn:
         old = fetch_lead(conn, lead_id)
         if "status" in fields and fields["status"] != old["status"]:
@@ -165,6 +175,41 @@ def patch_lead(lead_id: int, body: LeadPatch):
                 (lead_id, "status_change", f"{old['status']} → {fields['status']}"),
             )
         audit(conn, "agent", "update_lead", fields, {}, lead_id)
+        return fetch_lead(conn, lead_id)
+
+
+@router.post("/{lead_id}/close")
+def close_lead(lead_id: int, body: CloseLeadIn):
+    reason = body.reason.strip() if body.reason else None
+    reason = reason or None
+    with get_conn() as conn:
+        old = fetch_lead(conn, lead_id)
+        if old["status"] == "closed":
+            raise HTTPException(400, "This opportunity is already closed.")
+        if "closed" not in ALLOWED_TRANSITIONS[old["status"]]:
+            raise HTTPException(
+                400, f"invalid status transition {old['status']} -> closed"
+            )
+        conn.execute(
+            f"UPDATE leads SET status = 'closed', outcome = ?, close_reason = ?, "
+            f"last_activity_at = ({NOW}) WHERE id = ?",
+            (body.outcome, reason, lead_id),
+        )
+        content = f"{old['status']} → closed ({body.outcome})"
+        if reason:
+            content += f": {reason}"
+        conn.execute(
+            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+            (lead_id, "status_change", content),
+        )
+        audit(
+            conn,
+            "agent",
+            "close_lead",
+            {"outcome": body.outcome, "reason": reason},
+            {},
+            lead_id,
+        )
         return fetch_lead(conn, lead_id)
 
 

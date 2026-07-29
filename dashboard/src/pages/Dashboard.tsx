@@ -119,7 +119,7 @@ export function DashboardPage() {
                   ? `${fd.avgDaysToClose} day${fd.avgDaysToClose === 1 ? '' : 's'}`
                   : '—'}
               </div>
-              <div className="text-xs text-sub mt-0.5">avg from new lead to closed</div>
+              <div className="text-xs text-sub mt-0.5">avg from new lead to final outcome</div>
             </div>
           </aside>
         </div>
@@ -351,10 +351,12 @@ function FunnelChart({ data }: { data: FunnelData }) {
           >
             <span className="h-px w-3 bg-line" />
             <div className="rounded-lg border border-tile bg-tile/50 px-2 py-0.5 text-center">
-              <div className="text-sm font-semibold text-ink leading-tight">{c.pct}%</div>
+              <div className="text-sm font-semibold text-ink leading-tight">
+                {c.pct == null ? '—' : `${c.pct}%`}
+              </div>
               <div className="text-[9px] text-sub tabular-nums leading-none pb-0.5">{c.num} / {c.den}</div>
             </div>
-            {i === data.worstIdx && (
+            {i === data.worstIdx && c.pct != null && (
               <span className="rounded-full border border-alert/40 bg-alert/10 text-alert px-1.5 py-0.5 text-[9px] whitespace-nowrap">
                 needs action
               </span>

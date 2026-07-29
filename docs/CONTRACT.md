@@ -18,7 +18,9 @@ Canonical DDL lives in [`backend/schema.sql`](../backend/schema.sql). Summary:
 | phone | TEXT | nullable, E.164-ish |
 | email | TEXT | nullable |
 | source | TEXT | `form` \| `text` \| `note` \| `referral` \| `email` (additive, recorded 2026-07-27; auto-intake from the Gmail poller) |
-| status | TEXT | `new` → `contacted` → `meeting_booked` → `closed` |
+| status | TEXT | `new` → `contacted` → `meeting_booked` → `closed`; new closes use the dedicated close endpoint |
+| outcome | TEXT | nullable `won` \| `lost`; legacy closed rows remain `null` |
+| close_reason | TEXT | nullable operator-provided reason |
 | score | INTEGER | 0–100, set by scoring formula |
 | score_reason | TEXT | LLM-written explanation |
 | budget | INTEGER | dollars |
@@ -72,7 +74,8 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 | `POST /leads` | `{raw_text, source}` or structured fields → lead | raw notes get mock/LLM extraction via process |
 | `GET /leads?sort=priority&status=&neglected=` | → `[lead]` | priority = score desc, neglected first; `neglected=1` filters to `is_neglected=1` only (additive, recorded 2026-07-27) |
 | `GET /leads/{id}` | → `{...lead, events: [...], appointments: [...]}` | full profile |
-| `PATCH /leads/{id}` | partial lead → lead | status transitions validated |
+| `PATCH /leads/{id}` | partial lead → lead | status transitions validated; cannot set `closed` directly |
+| `POST /leads/{id}/close` | `{outcome: "won"|"lost", reason?}` → lead | forward-only close with an explicit business outcome |
 | `DELETE /leads/{id}` | → `{deleted}` | additive, recorded 2026-07-27; clears the lead's `audit_log.lead_id` to NULL rather than deleting those rows |
 | `POST /leads/{id}/events` | `{type, content}` → event | bumps `last_activity_at` |
 | `GET /leads/{id}/duplicates` | → `[{lead, match_on}]` | exact phone/email, fuzzy name |
@@ -162,6 +165,7 @@ really an **audit activity** stream covering all three, not agent-only.
 |---|---|
 | `create_lead(raw_text, source)` | `POST /leads` |
 | `update_lead(id, fields)` | `PATCH /leads/{id}` |
+| `close_lead(id, outcome, reason)` | `POST /leads/{id}/close` |
 | `find_duplicate_leads(id)` | `GET /leads/{id}/duplicates` |
 | `merge_leads(primary_id, duplicate_id)` | `POST /leads/merge` (additive, recorded 2026-07-27) |
 | `get_lead_context(id)` | `GET /leads/{id}` |

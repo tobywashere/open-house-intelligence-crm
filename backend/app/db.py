@@ -86,9 +86,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')))"
     )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
-    for col in ("persona", "relationship_summary"):
+    for col in ("persona", "relationship_summary", "close_reason"):
         if col not in cols:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT")
+    if "outcome" not in cols:
+        conn.execute(
+            "ALTER TABLE leads ADD COLUMN outcome TEXT "
+            "CHECK (outcome IN ('won','lost'))"
+        )
     for table in ("appointments", "reminders"):
         tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if "gcal_event_id" not in tcols:

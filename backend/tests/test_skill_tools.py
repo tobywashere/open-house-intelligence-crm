@@ -36,6 +36,7 @@ SAMPLE_ARGS = {
     "book_appointment": ((1, "2026-08-03T18:00:00", "2026-08-03T18:45:00", "loc"), {}),
     "schedule_followup": ((1, "2026-08-04T09:00:00", "note"), {}), "find_neglected_leads": ((), {}),
     "generate_dashboard_insights": ((), {}), "merge_leads": ((1, 2), {}), "delete_lead": ((1,), {}),
+    "close_lead": ((1, "won", "Contract signed"), {}),
     "post_briefing": (({"date": "2026-08-01", "greeting": "test"},), {}),
     "search_knowledge": (("Amazon RSU vesting",), {}),
 }
@@ -112,3 +113,46 @@ def test_search_knowledge_end_to_end(live_server):
 
         no_hits = crm.search_knowledge("remind me to call my mom")
         assert no_hits == []
+
+
+def test_natural_language_crm_write_and_booking_contract_end_to_end(live_server):
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO availability (weekday, start_time, end_time) VALUES (0, '17:00', '18:00')"
+        )
+
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        lead = crm.create_lead(name="Taylor Brooks", source="note", area="Bellevue")
+        updated = crm.update_lead(lead["id"], budget=900_000)
+        reminder = crm.schedule_followup(
+            lead["id"], "2026-08-03T09:00:00", "Call Taylor"
+        )
+        slots = crm.check_availability("2026-08-03")
+        appointment = crm.book_appointment(
+            lead["id"],
+            slots[0]["start_ts"],
+            slots[0]["end_ts"],
+            "Bellevue",
+        )
+
+        assert updated["budget"] == 900_000
+        assert reminder["lead_id"] == lead["id"]
+        assert appointment["lead_id"] == lead["id"]
+        assert crm.get_lead_context(lead["id"])["status"] == "meeting_booked"
+
+
+def test_close_lead_tool_records_explicit_won_outcome(live_server):
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        lead = crm.create_lead(name="Won Client", source="note")
+        closed = crm.close_lead(lead["id"], "won", "Contract signed")
+
+        assert closed["status"] == "closed"
+        assert closed["outcome"] == "won"
+        assert crm.get_lead_context(lead["id"])["close_reason"] == "Contract signed"
+
+
+def test_close_lead_tool_rejects_ambiguous_outcome_before_request():
+    with pytest.raises(ValueError, match="won.*lost"):
+        crm.close_lead(1, "unknown")

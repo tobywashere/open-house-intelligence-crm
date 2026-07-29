@@ -40,6 +40,36 @@ def test_gcal_columns_migrated(client):
     assert "gcal_event_id" in rem_cols
 
 
+def test_legacy_leads_table_gains_outcome_columns(tmp_path, monkeypatch):
+    import app.db as db
+
+    db_path = tmp_path / "pre-outcomes.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE leads ("
+        "id INTEGER PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,"
+        "created_at TEXT, last_activity_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO leads VALUES "
+        "(1, 'Legacy closed', 'closed', '2026-07-01T10:00:00', '2026-07-02T10:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
+    legacy = conn.execute("SELECT * FROM leads WHERE id = 1").fetchone()
+    conn.close()
+    assert {"outcome", "close_reason"} <= columns
+    assert legacy["outcome"] is None
+    assert legacy["close_reason"] is None
+
+
 def test_legacy_timestamps_backfilled_to_naive_local(tmp_path, monkeypatch):
     """A pre-Task-7 DB has Z-suffixed UTC rows (old DEFAULT) and legacy
     space-separated naive rows sitting next to each other. init_db()'s

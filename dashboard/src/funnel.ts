@@ -13,7 +13,7 @@ export interface FunnelStage {
 }
 
 export interface Conversion {
-  pct: number // 0-100, clamped
+  pct: number | null // null when the preceding stage has no denominator
   num: number
   den: number
 }
@@ -71,6 +71,31 @@ export interface FunnelData {
 const RANK: Record<Lead['status'], number> = { new: 0, contacted: 1, meeting_booked: 2, closed: 3 }
 const DAY = 86_400_000
 
+// Closing can happen from any lifecycle state. A closed row therefore does
+// not prove that the lead was contacted or booked. Recover the furthest real
+// pre-close status from its audited status-change events; legacy rows without
+// that evidence conservatively remain at "new" for progression purposes.
+const lifecycleRank = (
+  lead: Lead,
+  eventsByLead: Map<number, LeadProfile['events']>,
+) => {
+  if (lead.status !== 'closed') return RANK[lead.status]
+  let rank = 0
+  for (const event of eventsByLead.get(lead.id) ?? []) {
+    if (event.type !== 'status_change') continue
+    const match = event.content.match(
+      /\b(new|contacted|meeting_booked)\s*→\s*(contacted|meeting_booked|closed)\b/,
+    )
+    if (!match) continue
+    rank = Math.max(
+      rank,
+      RANK[match[1] as Lead['status']],
+      match[2] === 'closed' ? 0 : RANK[match[2] as Lead['status']],
+    )
+  }
+  return rank
+}
+
 // Pack-driven stage rule vocabulary (Task 4) — mirrors KNOWN_RULE_TYPES in
 // backend/app/vertical.py exactly. status_at_least_or_score names BOTH
 // thresholds explicitly (no implicit rank offset between them): with the
@@ -83,10 +108,15 @@ const DAY = 86_400_000
 const RULE_EVAL: Record<string, (l: Lead, r: any, ev: Map<number, LeadProfile['events']>) => boolean> = {
   all: () => true,
   status_is: (l, r) => l.status === r.status,
-  status_at_least: (l, r) => RANK[l.status] >= RANK[r.status as Lead['status']],
-  status_at_least_or_score: (l, r) =>
-    RANK[l.status] >= RANK[r.status as Lead['status']] ||
-    (RANK[l.status] >= RANK[r.score_status as Lead['status']] && (l.score ?? 0) >= r.min_score),
+  status_at_least: (l, r, ev) =>
+    lifecycleRank(l, ev) >= RANK[r.status as Lead['status']],
+  status_at_least_or_score: (l, r, ev) => {
+    const rank = lifecycleRank(l, ev)
+    return (
+      rank >= RANK[r.status as Lead['status']] ||
+      (rank >= RANK[r.score_status as Lead['status']] && (l.score ?? 0) >= r.min_score)
+    )
+  },
   event_type_or_status: (l, r, ev) =>
     (ev.get(l.id) ?? []).some((e) => e.type === r.event_type) || l.status === r.status,
 }
@@ -193,12 +223,23 @@ function compute(
   // degrade to today's exact hardcoded formula rather than reading an empty
   // array and showing zero.
   const byStage = matchedByStage(leads, eventsByLead, pack().stages)
-  const reachedContact = byStage.get('contacted') ?? leads.filter((l) => RANK[l.status] >= 1)
+  const reachedContact =
+    byStage.get('contacted') ?? leads.filter((l) => lifecycleRank(l, eventsByLead) >= 1)
   const qualified =
-    byStage.get('qualified') ?? leads.filter((l) => RANK[l.status] >= 2 || (RANK[l.status] >= 1 && (l.score ?? 0) >= 70))
-  const toured = byStage.get('tours') ?? leads.filter((l) => RANK[l.status] >= 2)
-  const offered = byStage.get('offers') ?? leads.filter((l) => offerOf(l) !== null || l.status === 'closed')
-  const closed = byStage.get('closed') ?? leads.filter((l) => l.status === 'closed')
+    byStage.get('qualified') ?? leads.filter((l) => {
+      const rank = lifecycleRank(l, eventsByLead)
+      return rank >= 2 || (rank >= 1 && (l.score ?? 0) >= 70)
+    })
+  const toured =
+    byStage.get('tours') ?? leads.filter((l) => lifecycleRank(l, eventsByLead) >= 2)
+  const offeredCandidates =
+    byStage.get('offers') ?? leads.filter((l) => offerOf(l) !== null || l.outcome === 'won')
+  // A loss can happen before an offer. The legacy pack rule treats every
+  // closed row as offered, so keep only evidence-backed offers or actual wins.
+  const offered = offeredCandidates.filter((l) => offerOf(l) !== null || l.outcome === 'won')
+  const allClosed = leads.filter((l) => l.status === 'closed')
+  const won = allClosed.filter((l) => l.outcome === 'won')
+  const lost = allClosed.filter((l) => l.outcome === 'lost')
   // Membership check for "has this lead reached the pack's tours stage" —
   // used below by warmUntoured and sources.won so both read the same
   // `toured` set instead of re-deriving it via a second hardcoded RANK>=2
@@ -206,17 +247,35 @@ function compute(
   const touredSet = new Set(toured)
 
   const stages: FunnelStage[] = stagesFromPack(leads, eventsByLead, pack().stages)
+    .map((stage) => (
+      stage.key === 'offers'
+        ? { ...stage, count: offered.length }
+        : stage.key === 'closed'
+        ? { ...stage, label: 'Won', count: won.length }
+        : stage
+    ))
 
   const conversions: Conversion[] = stages.slice(1).map((s, i) => {
-    const den = Math.max(stages[i].count, 1)
-    return { pct: Math.min(Math.round((s.count / den) * 100), 100), num: s.count, den: stages[i].count }
+    const den = stages[i].count
+    return {
+      pct: den ? Math.min(Math.round((s.count / den) * 100), 100) : null,
+      num: s.count,
+      den,
+    }
   })
-  const worstIdx = conversions.reduce((w, c, i) => (c.pct < conversions[w].pct ? i : w), 0)
+  const comparable = conversions
+    .map((conversion, index) => ({ conversion, index }))
+    .filter(({ conversion }) => conversion.pct != null)
+  const worstIdx = comparable.length
+    ? comparable.reduce((worst, current) => (
+        current.conversion.pct! < worst.conversion.pct! ? current : worst
+      )).index
+    : 0
 
-  const overallPct = leads.length ? Math.round((closed.length / leads.length) * 1000) / 10 : 0
+  const overallPct = leads.length ? Math.round((won.length / leads.length) * 1000) / 10 : 0
   const bottleneckStage = stages[worstIdx + 1]
   const bottleneck =
-    !leads.length || stages.length < 2
+    !leads.length || stages.length < 2 || !comparable.length
       ? { label: 'No data yet', detail: 'Add leads to see where your pipeline is losing them.' }
       : {
           label: bottleneckStage.label,
@@ -265,7 +324,7 @@ function compute(
     slow: median != null && v.days != null && v.days > median * 1.5,
   }))
 
-  const closeDurations = closed
+  const closeDurations = allClosed
     .map((l) => {
       const end = enteredAt(l, 'closed') ?? parseUtc(l.last_activity_at)
       return (end - parseUtc(l.created_at)) / DAY
@@ -273,15 +332,19 @@ function compute(
     .filter((d) => d >= 0)
   const avgDaysToClose = avg(closeDurations)
 
-  // source → booked-or-closed rate. "won" here means "reached the pack's
-  // tours stage" (Task 4b: was a hardcoded RANK>=2 filter — now reads the
-  // same `touredSet` the tours KPI/stage count itself is built from).
+  // Source conversion means an actual recorded win, not merely reaching a
+  // tour or being marked closed.
   const srcNames = [...new Set(leads.map((l) => l.source ?? 'unknown'))]
   const sources = srcNames
     .map((s) => {
       const of = leads.filter((l) => (l.source ?? 'unknown') === s)
-      const won = of.filter((l) => touredSet.has(l)).length
-      return { label: s, won, total: of.length, rate: of.length ? Math.round((won / of.length) * 1000) / 10 : 0 }
+      const wonCount = of.filter((l) => l.outcome === 'won').length
+      return {
+        label: s,
+        won: wonCount,
+        total: of.length,
+        rate: of.length ? Math.round((wonCount / of.length) * 1000) / 10 : 0,
+      }
     })
     .sort((a, b) => b.rate - a.rate)
 
@@ -353,7 +416,7 @@ function compute(
   const yCount = (label: string) => yFunnel?.find((d) => d.label === label)?.value
   const yActive =
     yFunnel != null ? (yCount('New') ?? 0) + (yCount('Contacted') ?? 0) + (yCount('Meeting booked') ?? 0) : null
-  const yClosed = yCount('Closed') ?? null
+  const yWon = yCount('Won') ?? null
   const active = leads.filter((l) => l.status !== 'closed').length
   const delta = (now: number, then: number | null): { delta?: string; up?: boolean } => {
     if (then == null || then === 0) return {}
@@ -373,10 +436,12 @@ function compute(
       // delta the RATE, not the closed count — 2→3 closed while total grows
       // faster is a falling rate, not "▲ 50%"
       ...(() => {
-        if (yClosed == null || !yFunnel) return {}
-        const yTotal = (yActive ?? 0) + yClosed
+        if (yWon == null || !yFunnel) return {}
+        const yLost = yCount('Lost') ?? 0
+        const yUnknown = yCount('Outcome unknown') ?? 0
+        const yTotal = (yActive ?? 0) + yWon + yLost + yUnknown
         if (!yTotal) return {}
-        return delta(overallPct, Math.round((yClosed / yTotal) * 100))
+        return delta(overallPct, Math.round((yWon / yTotal) * 100))
       })(),
     },
   ]
@@ -384,7 +449,7 @@ function compute(
   return {
     stages, conversions, worstIdx,
     overallPct,
-    overallLabel: `${closed.length} closed / ${leads.length} new leads`,
+    overallLabel: `${won.length} won · ${lost.length} lost · ${leads.length} total leads`,
     bottleneck, avgDaysToClose, velocity, sources, opportunities, actions, kpis,
     leads, appts,
   }
