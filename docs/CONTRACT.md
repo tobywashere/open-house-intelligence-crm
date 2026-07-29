@@ -184,6 +184,10 @@ really an **audit activity** stream covering all three, not agent-only.
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` — runs the neglect check now and returns newly-flagged leads; use `list_leads(neglected=1)` to see all currently-neglected leads without re-running it |
 | `generate_dashboard_insights()` | `GET /metrics` + LLM summary |
 | `post_briefing(payload)` | `POST /briefing` — publishes bounded advice for real appointments; backend supplies all visible CRM facts |
+| `get_research_settings()` | `GET /research-settings` — returns the configured market-research URLs and keywords |
+| `get_insights(date)` | `GET /insights?date=` — returns the stored CRM insight inputs for the requested day |
+| `get_summary(date)` | `GET /summary?date=` — returns the persisted daily market summary |
+| `post_summary(payload)` | `POST /summary` — validates and persists a source-backed daily market summary |
 | `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28); agent-invoked precise path — called when the model itself decides a question needs domain knowledge (market/tax/financing/neighborhood); the same retrieval also runs as best-effort auto-injection inside `POST /chat`, see that row's note |
 | `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28) — agent-invoked path onto the same BM25 retrieval `POST /chat` uses for auto-injection (see §2); this is the precise path — the model decides when domain knowledge is actually needed, rather than a lexical gate guessing from the raw message |
 

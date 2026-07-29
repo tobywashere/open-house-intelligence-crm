@@ -245,6 +245,37 @@ def post_briefing(payload: dict) -> dict:
     return _request("POST", "/briefing", body=payload)
 
 
+def get_research_settings() -> dict:
+    """Return the active daily-research scope and its fully rendered prompt.
+    A saved operator setting wins over the active vertical pack's defaults.
+    Used by the daily-brief skill before any internet research.
+    """
+    return _request("GET", "/research-settings")
+
+
+def get_insights(date: str) -> dict:
+    """Return deterministic dashboard insights for `date` (YYYY-MM-DD).
+    Raises CRMError(status=404) when the dashboard has not published them yet;
+    callers may continue without pipeline narration but must not invent values.
+    """
+    return _request("GET", "/insights", params={"date": date})
+
+
+def get_summary(date: str) -> dict:
+    """Return the persisted daily summary for `date` (YYYY-MM-DD).
+    Used by daily-brief to verify that a newly posted summary landed.
+    """
+    return _request("GET", "/summary", params={"date": date})
+
+
+def post_summary(payload: dict) -> dict:
+    """Upsert the dashboard daily-summary payload via POST /summary.
+    The payload must include date, generated_at, greeting, market_watch, and
+    ai_insights. Used by daily-brief for cron and intra-day refresh runs.
+    """
+    return _request("POST", "/summary", body=payload)
+
+
 def delete_lead(lead_id: int, reason: str = "") -> dict:
     """Permanently delete a lead. Destructive — the skill doc requires explicit
     user confirmation before calling this. Removes the lead and its

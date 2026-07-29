@@ -89,6 +89,10 @@ never let a raw stack trace reach the chat.
 | `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. `avg_response_minutes` can be `null` (no lead has a first-response event yet) — say "not enough data yet" rather than reporting it as `0` or omitting the field silently. |
 | `delete_lead` | `(lead_id, reason="")` | `{deleted, lead_id, name}` | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm the deleted lead's name back to the user afterwards. |
 | `post_briefing` | `(payload: dict)` | validated advice payload | Publish preparation advice for real appointments. The backend rebuilds all displayed facts from CRM rows and ignores replacement schedule/name/time/score fields. |
+| `get_research_settings` | `()` | configured URLs and keywords | Before generating a daily market summary, so the report follows the operator's current source configuration. |
+| `get_insights` | `(date: "YYYY-MM-DD")` | stored CRM insight inputs | When the daily brief needs CRM-grounded context for the requested day. |
+| `get_summary` | `(date: "YYYY-MM-DD")` | persisted daily summary | Verify that a publish landed, or read the report currently displayed by the dashboard. |
+| `post_summary` | `(payload: dict)` | persisted, validated summary | Publish a source-backed daily report. Always read it back with `get_summary` and verify `generated_at`. |
 | `search_knowledge` | `(query: str, k=3)` | `[{doc, heading, breadcrumb, score, text}]`, ranked, may be `[]` | Market conditions, taxes, financing mechanics, pricing, or neighborhood/school-district questions — anything the CRM's own records don't cover. Cite `heading` when you use a hit. Not for scheduling/reminders/CRM-record questions. |
 
 Full request/response shapes and the underlying REST endpoints are frozen in
@@ -117,6 +121,11 @@ curl -s -X POST "$BASE/demo/advance-time" -d '{"days":0}' -H 'content-type: appl
 curl -s "$BASE/metrics"                                   # generate_dashboard_insights
 curl -s -X POST "$BASE/briefing" -H 'content-type: application/json' \
   -d '{"date":"2026-07-28","greeting":"Good morning"}'    # post_briefing (shape in docs/BRIEFING-UI.md)
+curl -s "$BASE/research-settings"                         # get_research_settings
+curl -s "$BASE/insights?date=2026-07-28"                 # get_insights
+curl -s "$BASE/summary?date=2026-07-28"                  # get_summary
+curl -s -X POST "$BASE/summary" -H 'content-type: application/json' \
+  -d @daily-summary.json                                  # post_summary
 curl -s "$BASE/knowledge/search?q=Amazon+RSU+vesting&k=3"  # search_knowledge
 ```
 
