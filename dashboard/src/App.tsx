@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
-import { api, IntegrationsStatus, localDateKey, Metrics } from './api'
+import { api, HealthStatus, IntegrationsStatus, localDateKey, Metrics } from './api'
 import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
 import { DailySummaryOverlay } from './components/DailySummaryOverlay'
@@ -21,6 +21,7 @@ const clampChatW = (w: number) =>
 
 export default function App() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
+  const [health, setHealth] = useState<HealthStatus | null>(null)
   // fetched once at startup; pack-dependent UI (Tasks 3/4/6/7) reads this via
   // vertical.ts's pack()/copy() — vertical.loadVertical() never throws, so
   // `vert` only matters for triggering the re-render once it resolves
@@ -72,7 +73,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    const load = () => api.metrics().then(setMetrics).catch(() => {})
+    const load = () => {
+      api.metrics().then(setMetrics).catch(() => {})
+      api.health().then(setHealth).catch(() => {})
+    }
     load()
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
@@ -132,7 +136,7 @@ export default function App() {
             ☀️ Daily summary
           </button>
           <IntegrationsChip />
-          <LocalBadge metrics={metrics} />
+          <LocalBadge health={health} />
           {/* dev-only: raw agent/tool audit stream, deliberately not a nav item */}
           <NavLink
             to="/activity"
@@ -250,15 +254,34 @@ function IntegrationsChip() {
     api.integrationsStatus().then(setSt).catch(() => {})
   }, [])
   if (!st) return null
-  const live = st.mode === 'live' && st.gmail
+  const verified = st.configured && st.last_operation === 'succeeded'
+  const failed = st.configured && st.last_operation === 'failed'
+  const label = !st.configured
+    ? '○ Google off'
+    : failed
+      ? '▲ Google error'
+      : verified
+        ? '● Google verified'
+        : '○ Google configured'
+  const title = !st.configured
+    ? 'Google integrations are disabled'
+    : failed
+      ? 'The last Google integration operation failed'
+      : verified
+        ? 'The last Google integration operation succeeded'
+        : 'Google integration credentials are configured but not yet verified'
   return (
     <span
-      title={live ? 'Gmail + Google Calendar connected (Composio)' : 'Google integrations off — demo-safe mode'}
+      title={title}
       className={`rounded-full border px-2.5 py-1 text-[10px] ${
-        live ? 'border-accent/40 text-accent' : 'border-line text-sub/70'
+        failed
+          ? 'border-alert/40 text-alert'
+          : verified
+            ? 'border-accent/40 text-accent'
+            : 'border-line text-sub/70'
       }`}
     >
-      {live ? '● Google live' : '○ Google off'}
+      {label}
     </span>
   )
 }

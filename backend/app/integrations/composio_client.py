@@ -33,10 +33,31 @@ class IntegrationError(Exception):
 # guarded by a lock rather than a bare `+= 1` (non-atomic read-modify-write).
 _REQUEST_COUNT = 0
 _REQUEST_COUNT_LOCK = threading.Lock()
+_STATUS_LOCK = threading.Lock()
+_LAST_OPERATION: str | None = None
+_LAST_DETAIL: str | None = None
 
 
 def request_count() -> int:
     return _REQUEST_COUNT
+
+
+def _record_operation(result: str, detail: str | None = None) -> None:
+    global _LAST_OPERATION, _LAST_DETAIL
+    with _STATUS_LOCK:
+        _LAST_OPERATION = result
+        _LAST_DETAIL = detail
+
+
+def status() -> dict:
+    with _STATUS_LOCK:
+        configured = is_live()
+        return {
+            "mode": mode(),
+            "configured": configured,
+            "last_operation": _LAST_OPERATION if configured else None,
+            "detail": _LAST_DETAIL if configured else None,
+        }
 
 
 # Every slug this backend actually calls (hooks.py, router.py, poller.py) —
@@ -111,7 +132,13 @@ def execute(slug: str, arguments: dict) -> dict:
     with _REQUEST_COUNT_LOCK:
         _REQUEST_COUNT += 1
     if transport() == "cli":
-        return _execute_cli(slug, arguments)
+        try:
+            result = _execute_cli(slug, arguments)
+        except IntegrationError:
+            _record_operation("failed", "provider_error")
+            raise
+        _record_operation("succeeded")
+        return result
     key = os.environ.get("COMPOSIO_API_KEY")
     if not key:
         raise IntegrationError("COMPOSIO_API_KEY not set")
@@ -119,14 +146,25 @@ def execute(slug: str, arguments: dict) -> dict:
     body = {"user_id": os.environ.get("COMPOSIO_USER_ID", "default"),
             "arguments": arguments}
     last_err = None
+    last_detail = "provider_error"
     for _ in range(max_attempts(slug)):
         try:
             r = httpx.post(f"{base}/api/v3/tools/execute/{slug}",
                            headers={"x-api-key": key}, json=body, timeout=15)
             payload = r.json() if r.status_code < 500 else {}
             if r.status_code == 200 and payload.get("successful"):
+                _record_operation("succeeded")
                 return payload.get("data") or {}
             last_err = payload.get("error") or f"HTTP {r.status_code}"
-        except (httpx.HTTPError, ValueError) as e:
+            last_detail = "provider_error"
+        except httpx.TimeoutException as e:
             last_err = str(e)
+            last_detail = "timeout"
+        except httpx.HTTPError as e:
+            last_err = str(e)
+            last_detail = "network_error"
+        except ValueError as e:
+            last_err = str(e)
+            last_detail = "invalid_response"
+    _record_operation("failed", last_detail)
     raise IntegrationError(f"{slug}: {last_err}")

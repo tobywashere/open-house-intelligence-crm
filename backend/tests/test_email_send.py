@@ -4,7 +4,12 @@ from app.integrations import composio_client as cc
 
 def test_status_off_by_default(client):
     res = client.get("/api/integrations/status").json()
-    assert res == {"mode": "off", "gmail": False, "gcal": False}
+    assert res == {
+        "mode": "off",
+        "configured": False,
+        "last_operation": None,
+        "detail": None,
+    }
 
 
 def test_send_simulated_runs_closed_loop(client):

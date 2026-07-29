@@ -86,8 +86,24 @@ export interface ChatSession {
 
 export interface IntegrationsStatus {
   mode: 'off' | 'live'
-  gmail: boolean
-  gcal: boolean
+  configured: boolean
+  last_operation: 'succeeded' | 'failed' | null
+  detail: string | null
+}
+
+export interface AgentStatus {
+  status: 'mock' | 'unreachable' | 'unauthorized' | 'endpoint_disabled' | 'endpoint_enabled' | 'verified' | 'failed'
+  gateway_reachable: boolean
+  endpoint_enabled: boolean
+  last_chat_ok: boolean | null
+  detail: string | null
+}
+
+export interface HealthStatus {
+  ok: boolean
+  agent_mode: string
+  agent_connected: boolean
+  agent_status: AgentStatus
 }
 
 export interface Metrics {
@@ -198,6 +214,8 @@ export const api = {
     req<{ deleted: number }>(`/chat/history?session_id=${encodeURIComponent(session_id)}`, { method: 'DELETE' }),
   audit: (limit = 30) => req<AuditRow[]>(`/audit?limit=${limit}`),
   metrics: () => req<Metrics>('/metrics'),
+  health: () => req<HealthStatus>('/health'),
+  checkAgent: () => req<AgentStatus>('/health/agent-check', { method: 'POST' }),
   addEvent: (lead_id: number, type: string, content: string) =>
     req<LeadEvent>(`/leads/${lead_id}/events`, {
       method: 'POST',

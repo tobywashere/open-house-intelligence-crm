@@ -70,8 +70,10 @@ export function BookingCard({ leadId, onBooked }: { leadId: number; onBooked: ()
         >
           Download .ics ↓
         </button>
-        {intg?.mode === 'live' && intg.gmail && (
-          <div className="text-xs text-accent">✓ Added to Google Calendar</div>
+        {intg?.configured && (
+          <div className="text-xs text-sub">
+            Google Calendar sync is enabled — check Calendar to confirm the event.
+          </div>
         )}
       </div>
     )

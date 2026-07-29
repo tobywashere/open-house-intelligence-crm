@@ -18,8 +18,7 @@ class EmailIn(BaseModel):
 
 @router.get("/integrations/status")
 def status():
-    live = cc.is_live()
-    return {"mode": cc.mode(), "gmail": live, "gcal": live}
+    return cc.status()
 
 
 def _recipient_is_known_lead(email: str) -> bool:
