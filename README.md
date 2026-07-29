@@ -106,6 +106,8 @@ The contract (`docs/CONTRACT.md`) is frozen — breaking changes go through an i
 
 Everyone develops locally in mock mode. For integration tests against a real local model, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at that machine over Tailscale (or your own network).
 
+**Before your first real chat message:** confirm the OpenClaw gateway actually serves `AGENT_CHAT_PATH` — some builds ship it disabled by default, and `agent_connected:true` on `/api/health` does *not* prove otherwise (it only checks the gateway process is reachable). See the wiring-verification steps in [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md#4-verify-the-wiring).
+
 ## Origins
 
 OpenHouse Intelligence was built at the **Dell × NVIDIA BuilderBase hackathon in Seattle**, where it placed among the **top-8 finalist teams**. It's grown past the hackathon build since — see [`docs/CONTRACT.md`](docs/CONTRACT.md) for the current source of truth — but that's where the local-first premise and the core product loop started. Full pitch deck: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
