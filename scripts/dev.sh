@@ -2,6 +2,8 @@
 # One-command startup: seed + backend (:8000) + dashboard (:5173). Ctrl-C stops both.
 set -e
 cd "$(dirname "$0")/.."
+source scripts/load-env.sh
+load_repo_env .env
 
 [ -d .venv ] || python3 -m venv .venv
 # always sync deps — a new requirements.txt line must not ImportError-crash

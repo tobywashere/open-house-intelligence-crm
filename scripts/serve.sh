@@ -8,6 +8,8 @@
 # binding a network-reachable interface (pair with OHI_API_TOKEN).
 set -e
 cd "$(dirname "$0")/.."
+source scripts/load-env.sh
+load_repo_env .env
 
 PORT="${PORT:-8080}"
 HOST="${HOST:-127.0.0.1}"
