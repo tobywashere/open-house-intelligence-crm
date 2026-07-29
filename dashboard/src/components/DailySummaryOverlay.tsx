@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { api, localDateKey, Metrics } from '../api'
-import { DailySummary, fetchDailySummary, mockSummarySample } from '../summary'
+import { api, ApiError, localDateKey } from '../api'
+import { DailySummary, fetchDailySummary } from '../summary'
 import { BriefingSection } from './BriefingSection'
 import { Markdown } from './Markdown'
 import { ResearchSettings } from './ResearchSettings'
@@ -11,42 +11,36 @@ import { toast } from './Toast'
 // Full-screen daily summary: morning briefing (schedule, meeting briefs,
 // suggested actions) + market watch (web scrape) + AI-written insights.
 // UI/UX only — content arrives from K's 7am cron via GET /api/summary.
-// Mock-mode fallback data is clearly labeled; outside mock mode a 404 renders
-// an honest offline/empty state instead of ever silently showing sample data.
-export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void; metrics: Metrics | null }) {
+// Missing, invalid, or unavailable content renders an explicit state. There
+// is no mock-summary fallback in any agent mode.
+export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
   const [summary, setSummary] = useState<DailySummary | null>(null)
-  const [offline, setOffline] = useState(false)
+  const [summaryError, setSummaryError] = useState<'missing' | 'invalid' | 'unavailable' | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const alive = useRef(true)
 
-  // agent_mode isn't known until the first /api/metrics poll lands (Task 13
-  // pattern — see LocalBadge). modeKnown/isMock are stable primitives so this
-  // effect doesn't rerun on every 5s metrics poll (only when mode flips).
-  const modeKnown = metrics !== null
-  const isMock = metrics?.agent_mode === 'mock'
-
-  // Fetch once mode is known — keep this effect off the onClose dep, which App
-  // recreates every metrics poll (with it, the overlay refetched every 5s).
   useEffect(() => {
-    if (!modeKnown) return
     alive.current = true
-    fetchDailySummary().then((fetched) => {
-      if (!alive.current) return
-      if (fetched) {
+    fetchDailySummary()
+      .then((fetched) => {
+        if (!alive.current) return
         setSummary(fetched)
-      } else if (isMock) {
-        // Mock mode only: labeled sample data so the overlay is demoable
-        // with no backend content yet. See mockSummarySample's own comment.
-        setSummary({ ...mockSummarySample(), date: localDateKey(), generated_at: new Date().toISOString(), mock: true })
-      } else {
-        // Real agent, nothing posted yet — honest empty state, never sample data.
-        setOffline(true)
-      }
-    })
+        setSummaryError(null)
+      })
+      .catch((error) => {
+        if (!alive.current) return
+        setSummaryError(
+          error instanceof ApiError && error.status === 404
+            ? 'missing'
+            : error instanceof ApiError && error.status === 422
+              ? 'invalid'
+              : 'unavailable',
+        )
+      })
     return () => {
       alive.current = false
     }
-  }, [modeKnown, isMock])
+  }, [])
 
   // Research-scope editor, opened from the market-watch header below.
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -84,12 +78,16 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
     if (refreshing) return
     setRefreshing(true)
     const before = summary?.generated_at
-    api
-      .chat(
+    try {
+      await api.chat(
         'Intra-day briefing refresh requested: re-run the market research and AI insights now, then POST the fresh daily summary to /api/summary for today.',
         'summary-trigger',
       )
-      .catch(() => {})
+    } catch {
+      setRefreshing(false)
+      toast('Could not ask the agent to refresh the summary.')
+      return
+    }
     toast('↻ Asked the agent for a fresh briefing — this takes a minute…')
     const today = localDateKey()
     // a full research pass takes ~3 min on the GB10 — poll for 5 before giving up
@@ -100,7 +98,7 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
         if (fresh.generated_at !== before) {
           if (alive.current) {
             setSummary(fresh)
-            setOffline(false)
+            setSummaryError(null)
             toast('✓ Fresh intra-day briefing ready')
             setRefreshing(false)
           }
@@ -145,31 +143,34 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
         <header className="rise">
           <div className="text-sm text-sub/80">{dateLabel} · Daily summary</div>
           <h1 className="text-3xl font-semibold tracking-tight mt-2">
-            {summary?.greeting ?? (offline ? 'No daily summary yet' : 'Preparing your day…')}
+            {summary?.greeting ??
+              (summaryError === 'missing'
+                ? 'No daily summary yet'
+                : summaryError
+                  ? 'Daily summary unavailable'
+                  : 'Preparing your day…')}
           </h1>
-          {summary?.mock && (
-            <div className="mt-3 inline-block rounded-full border border-amber-400/40 bg-amber-400/10 px-2.5 py-0.5 text-xs text-amber-300">
-              ⚠ Sample data (mock mode) · not from your CRM
-            </div>
-          )}
         </header>
 
         {settingsOpen && <ResearchSettings onClose={() => setSettingsOpen(false)} />}
 
         <BriefingSection onDismiss={onClose} />
 
-        {!summary && offline ? (
+        {!summary && summaryError ? (
           <div className="rise mt-10 rounded-xl border border-dashed border-tile bg-surface/40 p-8 text-center">
             <div className="text-2xl mb-2">☀️</div>
             <p className="text-body max-w-md mx-auto">
-              No daily summary has been published. Your real CRM appointments and due follow-ups
-              are shown above. Market research appears only after the configured agent publishes
-              a source-backed summary.
+              {summaryError === 'missing'
+                ? 'No daily summary has been published. Your real CRM appointments and due follow-ups are shown above.'
+                : summaryError === 'invalid'
+                  ? 'The published daily summary was rejected because its structure or source links were invalid.'
+                  : 'The daily summary could not be loaded. Your CRM information above is still current.'}
             </p>
-            <p className="text-xs text-sub/60 mt-3">
-              See "Morning briefing" in <code className="text-sub/80">docs/LOCAL-AI.md</code> to
-              wire up the cron that posts this.
-            </p>
+            {summaryError === 'missing' && (
+              <p className="text-xs text-sub/60 mt-3">
+                Market research appears only after the configured agent publishes a source-backed summary.
+              </p>
+            )}
           </div>
         ) : !summary ? (
           <div className="grid lg:grid-cols-2 gap-8 mt-10">
@@ -207,13 +208,9 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
                         </span>
                       )}
                     </div>
-                    {m.url ? (
-                      <a href={m.url} target="_blank" rel="noreferrer" className="font-semibold hover:text-accent">
-                        {m.title} ↗
-                      </a>
-                    ) : (
-                      <div className="font-semibold">{m.title}</div>
-                    )}
+                    <a href={m.url} target="_blank" rel="noreferrer" className="font-semibold hover:text-accent">
+                      {m.title} ↗
+                    </a>
                     {m.summary && <div className="text-sm text-sub mt-2"><Markdown>{m.summary}</Markdown></div>}
                     <p className="text-sm text-sub mt-2">
                       <span className="text-accent">Why it matters:</span> <Markdown inline>{m.takeaway}</Markdown>
@@ -247,7 +244,8 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
         )}
 
         <footer className="mt-12 text-center text-xs text-sub/60">
-          Generated locally · nothing here leaves this machine
+          CRM inference is local. Optional market research and Google integrations may send
+          necessary data to their configured providers.
         </footer>
       </div>
     </div>

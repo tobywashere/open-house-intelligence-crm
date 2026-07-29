@@ -4,6 +4,11 @@ These routes are an agent-to-UI trust boundary: generated payloads must be
 structurally valid and may only refer to CRM records that actually exist.
 """
 
+import json
+
+import pytest
+
+from app.db import get_conn
 from tests.conftest import make_lead
 
 
@@ -147,3 +152,45 @@ def test_briefing_post_cannot_override_canonical_crm_facts(client):
         "prepare": ["Bring the verified CRM notes"],
         "recommendation": "Ask an open question.",
     }
+
+
+def test_summary_get_rejects_legacy_payload_with_invalid_source(client):
+    payload = {
+        "date": "2026-07-28",
+        "greeting": "Good morning",
+        "market_watch": [
+            {
+                "title": "Unsupported market claim",
+                "source": "Unknown",
+                "url": "not-a-url",
+                "takeaway": "This must not be displayed.",
+            }
+        ],
+        "ai_insights": [],
+    }
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO daily_summary (date, payload) VALUES (?, ?)",
+            ("2026-07-28", json.dumps(payload)),
+        )
+
+    response = client.get("/api/summary?date=2026-07-28")
+
+    assert response.status_code == 422
+    assert "invalid" in response.json()["detail"].lower()
+
+
+def test_summary_get_rejects_malformed_stored_json(client):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO daily_summary (date, payload) VALUES (?, ?)",
+            ("2026-07-28", "{not-json"),
+        )
+
+    try:
+        response = client.get("/api/summary?date=2026-07-28")
+    except json.JSONDecodeError:
+        pytest.fail("malformed stored summary escaped as an unhandled JSON error")
+
+    assert response.status_code == 422
+    assert "invalid" in response.json()["detail"].lower()

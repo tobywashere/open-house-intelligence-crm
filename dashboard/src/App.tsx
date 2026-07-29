@@ -207,7 +207,7 @@ export default function App() {
           💬
         </button>
       )}
-      {summaryOpen && <DailySummaryOverlay onClose={closeSummary} metrics={metrics} />}
+      {summaryOpen && <DailySummaryOverlay onClose={closeSummary} />}
 
       {!isLg && chatOpen && (
         <div className="lg:hidden fixed inset-0 z-50 bg-bg flex flex-col">

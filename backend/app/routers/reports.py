@@ -96,7 +96,23 @@ def post_insights(payload: dict = Body(...)):
 
 @router.get("/summary")
 def get_summary(date: str):
-    return _fetch("daily_summary", date)
+    try:
+        Date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(422, "date must be YYYY-MM-DD")
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM daily_summary WHERE date = ?", (date,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, f"no daily_summary generated for {date}")
+    try:
+        summary = DailySummaryPost.model_validate(json.loads(row["payload"]))
+    except (json.JSONDecodeError, ValidationError):
+        raise HTTPException(422, "stored daily summary is invalid")
+    if summary.date.isoformat() != date:
+        raise HTTPException(422, "stored daily summary date does not match")
+    return summary.model_dump(mode="json")
 
 
 @router.post("/summary")
