@@ -23,6 +23,12 @@ Open **http://localhost:5173**. That's it — you're running the full product in
 
 **Going fully local:** to swap the mock agent for a real local model (any tool-capable model, not just the hardware this project was built on), see [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md).
 
+## Scan a name card
+
+Open **http://localhost:5173/scan**, photograph or upload a name card, review the extracted contact details, and confirm to add them as a CRM profile.
+
+<img src="testData/examplenamecard.jpeg" alt="Example name card for Michael Chen" width="640">
+
 ## Architecture
 
 ![OpenHouse Intelligence architecture: Capture (text, voice notes, Discord) → Virtual AI (unstructured conversation → structured intents) → OpenClaw orchestrator ↔ Client DB (SQLite), enriched by hyper-local market data, with scheduled briefs pushed back to the agent and a live dashboard reading the DB](docs/images/pitch-architecture.png)
