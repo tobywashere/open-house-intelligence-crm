@@ -64,6 +64,14 @@ To deliberately reset to the sample database:
 
 That command erases the current CRM. Do not use it after entering real data.
 
+## Scan a name card
+
+Open [http://localhost:5173/scan](http://localhost:5173/scan), photograph or
+upload a name card, review the extracted contact details, and confirm to add
+them as a CRM profile.
+
+<img src="testData/examplenamecard.jpeg" alt="Example name card for Michael Chen" width="640">
+
 ## Run it on a Mac mini
 
 Use the beginner-friendly [Mac mini setup guide](docs/MAC-MINI-SETUP.md).
@@ -82,6 +90,11 @@ The whole product is then at
 For a different Linux or local-model host, use
 [the general local-AI guide](docs/LOCAL-AI.md). The original GB10 deployment
 is documented separately in [docs/GB10-SETUP.md](docs/GB10-SETUP.md).
+
+Before your first real chat message, confirm that the OpenClaw gateway actually
+serves `AGENT_CHAT_PATH`. A reachable gateway process does not prove that the
+chat endpoint is enabled. Follow the
+[wiring-verification steps](docs/LOCAL-AI.md#7-verify-each-boundary).
 
 ## What you can ask the local agent to do
 
