@@ -95,17 +95,10 @@ def _fmt_val(key: str, value) -> str:
 # Human-readable one-liners for the pending-changes approval dialog. Each does
 # a quick read (via fetch_lead, which 404s on a bad id — appropriately: a
 # write for a nonexistent lead should fail fast, not get queued).
-def summarize_create_lead(body: "LeadIn") -> str:
-    if body.name:
-        detail = body.name
-    elif body.raw_text:
-        text = body.raw_text.strip().replace("\n", " ")
-        detail = f'from note: "{text[:80]}{"…" if len(text) > 80 else ""}"'
-    else:
-        detail = "(unnamed)"
-    extra = [x for x in (body.area, f"${body.budget:,}" if body.budget else None) if x]
+def summarize_create_lead(name: str, fields: dict) -> str:
+    extra = [x for x in (fields.get("area"), f"${fields['budget']:,}" if fields.get("budget") else None) if x]
     suffix = f" ({', '.join(extra)})" if extra else ""
-    return f"Create lead: {detail}{suffix}"
+    return f"Create lead: {name}{suffix}"
 
 
 def summarize_update_lead(lead_id: int, body: "LeadPatch") -> str:
@@ -142,12 +135,24 @@ def summarize_merge_leads(body: "MergeIn") -> str:
 @router.post("")
 async def create_lead(body: LeadIn, request: Request = None):
     if is_agent_write(request):
-        return queue_pending_change(
-            "create_lead", None, body.model_dump(exclude_none=True), summarize_create_lead(body))
+        # Resolve (extract) BEFORE queuing, not at approve time: the operator
+        # needs to see and edit real field values in the dialog, not a raw
+        # note. This does mean the agent's create_lead call pays the
+        # extraction cost up front instead of never paying it until later —
+        # a worthwhile trade since there'd otherwise be nothing concrete to
+        # show or edit.
+        name, fields, raw_text = await _resolve_create_fields(body)
+        payload = {"name": name, "raw_text": raw_text, **fields}
+        return queue_pending_change("create_lead", None, payload, summarize_create_lead(name, fields))
     return await _apply_create_lead(body)
 
 
-async def _apply_create_lead(body: LeadIn):
+async def _resolve_create_fields(body: LeadIn) -> tuple[str, dict, str | None]:
+    """The extraction step, split out so both the immediate-apply path and
+    the pending-approval queue can share it. `fields`' preferences/
+    missing_fields are plain lists here (not yet JSON-encoded) — easy to
+    show/edit in the approval dialog; `_insert_lead` encodes them at write
+    time."""
     fields = body.model_dump(exclude={"raw_text"}, exclude_none=True)
     name = fields.pop("name", None)
 
@@ -157,10 +162,19 @@ async def _apply_create_lead(body: LeadIn):
         for k in ("phone", "email", "budget", "area", "timeline", "intent"):
             if extracted.get(k) is not None:
                 fields.setdefault(k, extracted[k])
-        fields["preferences"] = json.dumps(extracted.get("preferences", []))
-        fields["missing_fields"] = json.dumps(extracted.get("missing_fields", []))
+        fields["preferences"] = extracted.get("preferences", [])
+        fields["missing_fields"] = extracted.get("missing_fields", [])
 
-    name = name or PLACEHOLDER_NAME
+    return name or PLACEHOLDER_NAME, fields, body.raw_text
+
+
+def _insert_lead(name: str, fields: dict, raw_text: str | None) -> dict:
+    fields = dict(fields)
+    if "preferences" in fields:
+        fields["preferences"] = json.dumps(fields["preferences"])
+    if "missing_fields" in fields:
+        fields["missing_fields"] = json.dumps(fields["missing_fields"])
+    source = fields.get("source", "note")
     with get_conn() as conn:
         cols = ["name", *fields.keys()]
         cur = conn.execute(
@@ -168,17 +182,41 @@ async def _apply_create_lead(body: LeadIn):
             [name, *fields.values()],
         )
         lead_id = cur.lastrowid
-        if body.raw_text:
+        if raw_text:
             conn.execute(
                 "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-                (lead_id, body.source if body.source in ("form", "text", "note", "call") else "note",
-                 body.raw_text),
+                (lead_id, source if source in ("form", "text", "note", "call") else "note", raw_text),
             )
         lead = fetch_lead(conn, lead_id)
-        audit(conn, "agent", "create_lead", {"source": body.source}, {"lead_id": lead_id}, lead_id)
+        audit(conn, "agent", "create_lead", {"source": source}, {"lead_id": lead_id}, lead_id)
+    return lead
+
+
+async def _apply_create_lead(body: LeadIn):
+    name, fields, raw_text = await _resolve_create_fields(body)
+    lead = _insert_lead(name, fields, raw_text)
     # create_lead is `async def`: a synchronous hook call here would freeze the
     # whole event loop (e.g. Composio's Gmail/GCal calls run ~15-30s live) —
     # run it in the threadpool so other requests keep flowing.
+    await run_in_threadpool(hooks.on_lead_created, lead)
+    return lead
+
+
+async def _apply_resolved_create(payload: dict) -> dict:
+    """Approval path for a queued create_lead: payload already holds
+    resolved (and possibly operator-edited) fields from _resolve_create_fields
+    — this must NOT re-run extraction, which would silently overwrite any
+    edit the operator made to preferences/missing_fields (extraction assigns
+    those unconditionally, not just when absent)."""
+    payload = dict(payload)
+    name = payload.pop("name", None) or PLACEHOLDER_NAME
+    raw_text = payload.pop("raw_text", None)
+    if payload.get("budget") is not None:
+        try:
+            payload["budget"] = int(payload["budget"])
+        except (TypeError, ValueError):
+            del payload["budget"]
+    lead = _insert_lead(name, payload, raw_text)
     await run_in_threadpool(hooks.on_lead_created, lead)
     return lead
 

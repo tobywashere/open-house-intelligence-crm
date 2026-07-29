@@ -151,11 +151,17 @@ export interface DuplicateCandidate {
 
 // A lead-lifecycle write the agent proposed, awaiting operator approval
 // (docs/CONTRACT.md's pending-changes section). Manual dashboard edits never
-// produce these — only agent-tagged calls do.
+// produce these — only agent-tagged calls do. `payload` shape depends on
+// `operation`: create_lead carries already-resolved fields (name, raw_text,
+// source, phone, email, budget, area, timeline, intent, preferences[],
+// missing_fields[]); update_lead is the proposed field changes; close_lead is
+// {outcome, reason}; delete_lead is {reason}; merge_leads is
+// {primary_id, duplicate_id}.
 export interface PendingChange {
   id: number
   operation: 'create_lead' | 'update_lead' | 'close_lead' | 'delete_lead' | 'merge_leads'
   lead_id: number | null
+  payload: Record<string, unknown>
   summary: string
   status: 'pending' | 'approved' | 'denied'
   created_at: string
@@ -312,7 +318,11 @@ export const api = {
   vertical: <T>() => req<T>('/vertical'),
 
   pendingChanges: () => req<PendingChange[]>('/pending-changes?status=pending'),
-  approvePending: (id: number) => req<Lead | Record<string, unknown>>(`/pending-changes/${id}/approve`, { method: 'POST' }),
+  approvePending: (id: number, fields?: Record<string, unknown>) =>
+    req<Lead | Record<string, unknown>>(`/pending-changes/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ fields }),
+    }),
   denyPending: (id: number, reason?: string) =>
     req<PendingChange>(`/pending-changes/${id}/deny`, {
       method: 'POST',

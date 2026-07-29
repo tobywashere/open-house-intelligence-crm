@@ -123,6 +123,61 @@ def test_pending_changes_status_filter_defaults_to_pending(client):
     assert _pending(client, status="denied") == []
 
 
+def test_agent_create_lead_from_raw_text_resolves_fields_at_queue_time(client):
+    """The operator needs real fields to look at and edit, not a raw note —
+    extraction must happen before queuing, not deferred to approval."""
+    res = client.post("/api/leads", json={
+        "raw_text": "Met Jordan Ellis, Kirkland, budget 850k, timeline 2 months",
+        "source": "note",
+    }, headers=AGENT)
+    assert res.status_code == 202
+    pending_id = res.json()["id"]
+
+    pending = _pending(client)[0]
+    payload = pending["payload"]
+    assert payload["name"] == "Jordan Ellis"
+    assert payload["area"] == "Kirkland"
+    assert payload["budget"] == 850_000
+    assert payload["raw_text"].startswith("Met Jordan Ellis")
+
+    approved = client.post(f"/api/pending-changes/{pending_id}/approve")
+    assert approved.status_code == 200
+    assert approved.json()["area"] == "Kirkland"
+    assert approved.json()["budget"] == 850_000
+
+
+def test_approve_with_edited_fields_overrides_the_queued_payload(client):
+    """The operator can edit a field in the dialog before approving —
+    the applied write must reflect the edit, not the agent's original value."""
+    res = client.post("/api/leads", json={
+        "raw_text": "Met Jordan Ellis, Kirkland, budget 850k",
+        "source": "note",
+    }, headers=AGENT)
+    pending_id = res.json()["id"]
+
+    approved = client.post(f"/api/pending-changes/{pending_id}/approve",
+                            json={"fields": {"budget": 900_000, "area": "Bellevue"}})
+    assert approved.status_code == 200
+    assert approved.json()["budget"] == 900_000
+    assert approved.json()["area"] == "Bellevue"
+    assert approved.json()["name"] == "Jordan Ellis", "unedited fields must pass through unchanged"
+
+
+def test_approve_update_lead_with_edited_fields(client):
+    lead = make_lead(client, budget=900_000, area="Bellevue")
+    res = client.patch(f"/api/leads/{lead['id']}", json={"budget": 1_100_000}, headers=AGENT)
+    pending_id = res.json()["id"]
+
+    # operator edits to a different budget than the agent proposed, and adds
+    # a field the agent never touched
+    approved = client.post(f"/api/pending-changes/{pending_id}/approve",
+                            json={"fields": {"budget": 1_050_000, "timeline": "ASAP"}})
+    assert approved.status_code == 200
+    assert approved.json()["budget"] == 1_050_000
+    assert approved.json()["timeline"] == "ASAP"
+    assert approved.json()["area"] == "Bellevue", "field the operator didn't touch must be untouched"
+
+
 def test_direct_edits_still_apply_instantly_alongside_agent_writes(client):
     """Regression: a human editing a lead directly must never be gated,
     even while an agent-proposed change on the same lead is pending."""
