@@ -38,6 +38,10 @@ SAMPLE_ARGS = {
     "generate_dashboard_insights": ((), {}), "merge_leads": ((1, 2), {}), "delete_lead": ((1,), {}),
     "close_lead": ((1, "won", "Contract signed"), {}),
     "post_briefing": (({"date": "2026-08-01", "greeting": "test"},), {}),
+    "get_research_settings": ((), {}), "get_insights": (("2026-08-01",), {}),
+    "get_summary": (("2026-08-01",), {}),
+    "post_summary": (({"date": "2026-08-01", "generated_at": "2026-08-01T08:00:00Z",
+                      "greeting": "test", "market_watch": [], "ai_insights": []},), {}),
     "search_knowledge": (("Amazon RSU vesting",), {}),
 }
 

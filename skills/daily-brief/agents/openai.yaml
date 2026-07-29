@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daily Brief"
+  short_description: "Publish a deterministic or AI-written daily brief"
+  default_prompt: "Use $daily-brief to publish today’s summary with its default deterministic mode."

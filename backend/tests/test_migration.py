@@ -1,7 +1,10 @@
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ importable
 
@@ -29,6 +32,25 @@ def _sqlite_local(z_ts: str) -> str:
     return sqlite3.connect(":memory:").execute(
         "select strftime('%Y-%m-%dT%H:%M:%S', datetime(?, 'localtime'))", (z_ts,),
     ).fetchone()[0]
+
+
+@pytest.fixture
+def non_utc_local_timezone():
+    """Run timezone-sensitive assertions in a known non-UTC locale."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("process timezone changes require time.tzset()")
+
+    original_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Los_Angeles"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
 
 
 def test_gcal_columns_migrated(client):
@@ -70,7 +92,9 @@ def test_legacy_leads_table_gains_outcome_columns(tmp_path, monkeypatch):
     assert legacy["close_reason"] is None
 
 
-def test_legacy_timestamps_backfilled_to_naive_local(tmp_path, monkeypatch):
+def test_legacy_timestamps_backfilled_to_naive_local(
+    tmp_path, monkeypatch, non_utc_local_timezone
+):
     """A pre-Task-7 DB has Z-suffixed UTC rows (old DEFAULT) and legacy
     space-separated naive rows sitting next to each other. init_db()'s
     backfill (app.db._migrate_timestamps) must normalize every one of them

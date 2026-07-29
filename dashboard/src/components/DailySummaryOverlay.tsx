@@ -80,8 +80,8 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
     const before = summary?.generated_at
     try {
       await api.chat(
-        'Intra-day briefing refresh requested: re-run the market research and AI insights now, then POST the fresh daily summary to /api/summary for today.',
-        'summary-trigger',
+        'Intra-day briefing refresh requested. Use the daily-brief skill and run exactly: python3 skills/daily-brief/scripts/run_daily_brief.py. Do not attempt a direct arbitrary API call. Reply only after the command prints JSON with "ok": true and "published": true.',
+        `summary-trigger-${Date.now()}`,
       )
     } catch {
       setRefreshing(false)

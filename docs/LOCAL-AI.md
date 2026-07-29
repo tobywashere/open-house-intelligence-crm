@@ -70,6 +70,7 @@ mkdir -p ~/.openclaw/skills
 cp -R skills/crm-db-operations ~/.openclaw/skills/
 cp -R skills/business-card-scanner ~/.openclaw/skills/
 cp -R skills/daily-command-center ~/.openclaw/skills/
+cp -R skills/daily-brief ~/.openclaw/skills/
 ```
 
 Keep those names. The card scanner imports from
@@ -211,6 +212,12 @@ publish a newer summary; it reports success only after a newer stored
 If you give OpenClaw a web-search tool, search queries and retrieved pages
 use the internet. Without a configured publishing workflow, leave the
 summary missing—the CRM will not invent one.
+
+The `daily-brief` skill provides that publishing workflow. Its default mode
+fetches the configured URLs deterministically and persists the validated
+report. When explicitly asked for AI WebFetch mode, the agent fetches each
+configured URL with its web tool, summarizes the results, and sends the
+payload through the same validated publish-and-read-back path.
 
 ## Local knowledge
 

@@ -33,6 +33,7 @@ The original model server used port 8000, so the CRM uses port 8080.
    cp -R skills/crm-db-operations ~/.openclaw/skills/
    cp -R skills/business-card-scanner ~/.openclaw/skills/
    cp -R skills/daily-command-center ~/.openclaw/skills/
+   cp -R skills/daily-brief ~/.openclaw/skills/
    ```
 
 4. Give the OpenClaw process:
