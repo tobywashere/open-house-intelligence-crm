@@ -10,6 +10,7 @@ import json
 from fastapi import APIRouter, Body, HTTPException
 
 from ..db import audit, get_conn
+from ..report_models import BriefingPost, DailySummaryPost
 
 router = APIRouter(tags=["reports"])
 
@@ -43,7 +44,22 @@ def get_briefing(date: str):
 
 
 @router.post("/briefing")
-def post_briefing(payload: dict = Body(...)):
+def post_briefing(body: BriefingPost):
+    payload = body.model_dump(mode="json")
+    lead_ids = {brief["lead_id"] for brief in payload["meeting_briefs"]}
+    if lead_ids:
+        marks = ",".join("?" for _ in lead_ids)
+        with get_conn() as conn:
+            existing = {
+                row["id"]
+                for row in conn.execute(
+                    f"SELECT id FROM leads WHERE id IN ({marks})",
+                    tuple(sorted(lead_ids)),
+                )
+            }
+        unknown = sorted(lead_ids - existing)
+        if unknown:
+            raise HTTPException(422, f"briefing references unknown lead ids: {unknown}")
     return _upsert("briefing", "generated_at", payload)
 
 
@@ -63,5 +79,9 @@ def get_summary(date: str):
 
 
 @router.post("/summary")
-def post_summary(payload: dict = Body(...)):
-    return _upsert("daily_summary", "generated_at", payload)
+def post_summary(body: DailySummaryPost):
+    return _upsert(
+        "daily_summary",
+        "generated_at",
+        body.model_dump(mode="json"),
+    )
