@@ -10,6 +10,29 @@ from .base import AgentDriver
 
 AREAS = ["Bellevue", "Redmond", "Kirkland", "Seattle", "Issaquah", "Sammamish", "Renton"]
 
+# Capitalized run of 1-3 tokens, optionally joined by "&" so a couple
+# ("Emily & Josh Tran") stays a single lead rather than splitting.
+_NAME_RE = re.compile(r"[A-Z][a-z'’\-]+(?:\s+(?:&\s+)?[A-Z][a-z'’\-]+){0,2}")
+
+# Capitalized words that open a note but are not the lead's name. A run is
+# trimmed from the left while its first token is one of these, so
+# "Met Alex Rivera" -> "Alex Rivera" and "Spoke With Priya" -> "Priya".
+_NAME_PREFIXES = {
+    "met", "meet", "add", "added", "call", "called", "calling", "spoke",
+    "speak", "talked", "talk", "texted", "text", "emailed", "email", "saw",
+    "new", "lead", "contact", "contacted", "follow", "followed", "with",
+    "from", "re", "about", "note", "walk", "walkin", "referral", "referred",
+}
+
+# A run that is entirely one of these is not a name at all — avoids naming a
+# lead after a city, a weekday, or a stray sentence-initial common word.
+_NAME_STOPWORDS = {a.lower() for a in AREAS} | {
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "today", "tomorrow", "yesterday", "asap", "budget", "timeline",
+    "buyer", "seller", "wants", "looking", "interested", "open", "house",
+    "the", "this", "that", "they", "their", "his", "her", "she", "he",
+}
+
 
 class MockDriver(AgentDriver):
     name = "mock"
@@ -31,9 +54,34 @@ class MockDriver(AgentDriver):
                 "AGENT_MODE=openclaw this reply comes from your local model instead. "
                 "Ask about Sarah, booking, or neglected leads for canned demo replies.")
 
+    @staticmethod
+    def _name(text: str) -> str | None:
+        """First capitalized run that survives prefix-trimming and isn't a stopword.
+
+        Deliberately conservative: when nothing qualifies we return None so the
+        caller records a missing field, rather than inventing a name.
+        """
+        for match in _NAME_RE.finditer(text):
+            words = match.group(0).split()
+            while words and words[0].lower().strip(".") in _NAME_PREFIXES:
+                words.pop(0)
+            # a trailing "&" is left over when the run ended on the joiner
+            while words and words[-1] == "&":
+                words.pop()
+            if not words:
+                continue
+            if all(w.lower() in _NAME_STOPWORDS for w in words if w != "&"):
+                continue
+            return " ".join(words)
+        return None
+
     async def extract(self, raw_text: str) -> dict:
         text = raw_text
         out: dict = {"preferences": [], "missing_fields": [], "intent": "unknown"}
+
+        name = self._name(text)
+        if name:
+            out["name"] = name
 
         money = re.findall(r"\$?([\d,.]+)\s*(m|million|k)?", text, re.I)
         for num, suffix in money:
@@ -75,7 +123,7 @@ class MockDriver(AgentDriver):
         if email:
             out["email"] = email.group(0)
 
-        for field in ("budget", "timeline", "area", "phone", "email"):
+        for field in ("name", "budget", "timeline", "area", "phone", "email"):
             if field not in out:
                 out["missing_fields"].append(field)
         return out

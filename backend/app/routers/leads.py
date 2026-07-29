@@ -16,6 +16,12 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 NOW = "strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
 STATUSES = ["new", "contacted", "meeting_booked", "closed"]
 
+# Stand-in when nothing in the note looks like a name. It is deliberately a
+# named constant: duplicate detection has to recognize it and skip it, since
+# the placeholder is identical across leads and would otherwise match itself
+# at similarity 1.0 and propose merging unrelated people.
+PLACEHOLDER_NAME = "Unknown lead"
+
 # forward-only lifecycle; any state may close. Backward moves need a human
 # with DB access — the agent must never un-close a lead.
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -89,7 +95,7 @@ async def create_lead(body: LeadIn):
         fields["preferences"] = json.dumps(extracted.get("preferences", []))
         fields["missing_fields"] = json.dumps(extracted.get("missing_fields", []))
 
-    name = name or "Unknown lead"
+    name = name or PLACEHOLDER_NAME
     with get_conn() as conn:
         cols = ["name", *fields.keys()]
         cur = conn.execute(
@@ -197,8 +203,12 @@ def find_duplicates(lead_id: int):
                 matches.append({"lead": o, "match_on": "phone"})
             elif lead.get("email") and o.get("email") == lead["email"]:
                 matches.append({"lead": o, "match_on": "email"})
-            elif difflib.SequenceMatcher(
-                    None, lead["name"].lower(), o["name"].lower()).ratio() > 0.85:
+            # Two leads the extractor couldn't name are not the same person.
+            # The placeholder matches itself at ratio 1.0, so without this a
+            # pair of nameless walk-ins is always proposed as a merge.
+            elif (lead["name"] != PLACEHOLDER_NAME and o["name"] != PLACEHOLDER_NAME
+                  and difflib.SequenceMatcher(
+                      None, lead["name"].lower(), o["name"].lower()).ratio() > 0.85):
                 matches.append({"lead": o, "match_on": "name"})
         audit(conn, "agent", "find_duplicate_leads", {"lead_id": lead_id},
               {"count": len(matches)}, lead_id)

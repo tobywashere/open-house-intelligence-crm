@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { api, localDateKey, Metrics } from '../api'
 import { DailySummary, fetchDailySummary, mockSummarySample } from '../summary'
 import { BriefingSection } from './BriefingSection'
 import { Markdown } from './Markdown'
+import { ResearchSettings } from './ResearchSettings'
 import { Skeleton } from './Skeleton'
 import { toast } from './Toast'
 
@@ -46,11 +48,34 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
     }
   }, [modeKnown, isMock])
 
+  // Research-scope editor, opened from the market-watch header below.
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    // With the settings panel up, Escape belongs to the panel — closing the
+    // overlay out from under it would dismiss both at once.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (settingsOpen) setSettingsOpen(false)
+      else onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, settingsOpen])
+
+  // The overlay is fixed and full-screen, so a <Link> inside it (All insights,
+  // Open profile, a suggested action) used to route underneath and leave the
+  // user staring at an unchanged summary — the click looked dead. Dismiss on
+  // any route change rather than wiring onClose through every link.
+  // onClose is held in a ref because App recreates it on every metrics poll
+  // (see the fetch effect above); depending on it here would rerun this at 5s.
+  const location = useLocation()
+  const openedAt = useRef(location.pathname)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    if (location.pathname !== openedAt.current) closeRef.current()
+  }, [location.pathname])
 
   // Intra-day refresh: ask the agent (via the normal chat relay) to re-run the
   // research + insights and POST a fresh summary, then poll until it lands.
@@ -129,7 +154,9 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
           )}
         </header>
 
-        <BriefingSection />
+        {settingsOpen && <ResearchSettings onClose={() => setSettingsOpen(false)} />}
+
+        <BriefingSection onDismiss={onClose} />
 
         {!summary && offline ? (
           <div className="rise mt-10 rounded-xl border border-dashed border-tile bg-surface/40 p-8 text-center">
@@ -152,8 +179,17 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
         ) : (
           <div className="grid lg:grid-cols-2 gap-8 mt-10 items-start">
             <section className="rise" style={{ animationDelay: '80ms' }}>
-              <h2 className="text-sm font-semibold text-sub mb-4">
+              <h2 className="text-sm font-semibold text-sub mb-4 flex items-center gap-2">
                 🌐 Market watch <span className="font-normal text-sub/60">· from today's research</span>
+                {/* the moment an operator sees off-target results is the moment
+                    they want to retune the keywords — put the door right here */}
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  className="ml-auto rounded-full border border-line px-2.5 py-1 text-[11px]
+                             font-normal text-sub hover:text-accent hover:border-accent/60 transition-colors"
+                >
+                  Adjust research keywords
+                </button>
               </h2>
               <div className="space-y-4">
                 {summary.market_watch.map((m, i) => (
