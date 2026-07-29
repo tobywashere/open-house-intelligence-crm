@@ -6,9 +6,12 @@ doesn't interpret the payload; it only stores and serves it by date.
 Shapes: docs/BRIEFING-UI.md (briefing, summary), docs/INSIGHTS.md (insights).
 """
 import json
+from datetime import date as Date
 
 from fastapi import APIRouter, Body, HTTPException
+from pydantic import ValidationError
 
+from ..briefing_service import build_briefing
 from ..db import audit, get_conn
 from ..report_models import BriefingPost, DailySummaryPost
 
@@ -40,7 +43,25 @@ def _upsert(table: str, ts_col: str, payload: dict) -> dict:
 
 @router.get("/briefing")
 def get_briefing(date: str):
-    return _fetch("briefing", date)
+    try:
+        Date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(422, "date must be YYYY-MM-DD")
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM briefing WHERE date = ?", (date,)
+        ).fetchone()
+        advice = None
+        if row:
+            try:
+                candidate = BriefingPost.model_validate(json.loads(row["payload"]))
+                if candidate.date.isoformat() == date:
+                    advice = candidate
+            except (json.JSONDecodeError, ValidationError):
+                # Legacy arbitrary payloads are retained in storage but never
+                # allowed to replace current CRM facts.
+                advice = None
+        return build_briefing(conn, date, advice)
 
 
 @router.post("/briefing")

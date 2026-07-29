@@ -4,6 +4,8 @@ These routes are an agent-to-UI trust boundary: generated payloads must be
 structurally valid and may only refer to CRM records that actually exist.
 """
 
+from tests.conftest import make_lead
+
 
 def test_briefing_post_rejects_unknown_lead_reference(client):
     response = client.post(
@@ -42,3 +44,106 @@ def test_summary_post_requires_a_real_source_url(client):
     )
 
     assert response.status_code == 422
+
+
+def test_briefing_never_promotes_a_lead_to_a_fake_meeting(client):
+    lead = make_lead(client, name="No Appointment")
+
+    response = client.get("/api/briefing?date=2026-07-28")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "crm"
+    assert body["schedule"] == []
+    assert body["meeting_briefs"] == []
+    assert all(action["lead_id"] != lead["id"] for action in body["suggested_actions"])
+
+
+def test_briefing_rehydrates_facts_from_real_appointment(client):
+    lead = make_lead(
+        client,
+        name="Canonical Name",
+        area="Bellevue",
+        budget=900_000,
+        timeline="6 weeks",
+        intent="buy",
+    )
+    appointment = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-07-28T17:00:00",
+            "end_ts": "2026-07-28T17:45:00",
+            "location": "Main Street",
+        },
+    ).json()
+
+    body = client.get("/api/briefing?date=2026-07-28").json()
+
+    assert body["schedule"] == [
+        {
+            "appointment_id": appointment["id"],
+            "start": "17:00",
+            "end": "17:45",
+            "kind": "meeting",
+            "title": "Meeting — Canonical Name",
+            "lead_id": lead["id"],
+        }
+    ]
+    assert body["meeting_briefs"][0]["appointment_id"] == appointment["id"]
+    assert body["meeting_briefs"][0]["name"] == "Canonical Name"
+    assert body["meeting_briefs"][0]["area"] == "Bellevue"
+    assert body["meeting_briefs"][0]["budget"] == 900_000
+
+
+def test_briefing_post_cannot_override_canonical_crm_facts(client):
+    lead = make_lead(client, name="Real Name", area="Redmond", budget=750_000)
+    appointment = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-07-28T18:00:00",
+            "end_ts": "2026-07-28T18:45:00",
+            "location": "Real Location",
+        },
+    ).json()
+    posted = client.post(
+        "/api/briefing",
+        json={
+            "date": "2026-07-28",
+            "greeting": "Three invented meetings",
+            "schedule": [
+                {
+                    "start": "09:00",
+                    "end": "10:00",
+                    "kind": "meeting",
+                    "title": "Invented meeting",
+                    "lead_id": lead["id"],
+                }
+            ],
+            "meeting_briefs": [
+                {
+                    "lead_id": lead["id"],
+                    "name": "Invented Name",
+                    "area": "Invented Area",
+                    "score": 100,
+                    "summary": "Invented facts",
+                    "prepare": ["Bring the verified CRM notes"],
+                    "recommendation": "Ask an open question.",
+                }
+            ],
+        },
+    )
+    assert posted.status_code == 200
+
+    body = client.get("/api/briefing?date=2026-07-28").json()
+
+    assert body["schedule"][0]["appointment_id"] == appointment["id"]
+    assert body["schedule"][0]["start"] == "18:00"
+    assert body["meeting_briefs"][0]["name"] == "Real Name"
+    assert body["meeting_briefs"][0]["area"] == "Redmond"
+    assert body["meeting_briefs"][0]["budget"] == 750_000
+    assert body["meeting_briefs"][0]["assistant_advice"] == {
+        "prepare": ["Bring the verified CRM notes"],
+        "recommendation": "Ask an open question.",
+    }

@@ -16,13 +16,18 @@ POST /api/briefing                    → agent cron writes the day's briefing (
 
 ### Briefing shape
 
+The GET response is a **verified CRM view**. Schedule blocks and factual lead
+fields are rebuilt from current appointment/lead rows on every request.
+Agent-posted content may supply only `assistant_advice`; it cannot override
+names, times, scores, counts, or create a meeting that does not exist.
+
 ```json
 {
   "date": "2026-07-26",
   "greeting": "Good morning, Annie 👋 — 2 showings, 1 listing appointment, 3 follow-ups due.",
   "generated_at": "2026-07-26T07:00:12Z",
   "schedule": [
-    {"start": "10:00", "end": "10:45", "kind": "meeting", "title": "Showing — Michael Rodriguez", "lead_id": 4},
+    {"appointment_id": 12, "start": "10:00", "end": "10:45", "kind": "meeting", "title": "Meeting — Michael Rodriguez", "lead_id": 4},
     {"start": "10:45", "end": "11:05", "kind": "travel",  "title": "Travel to Bellevue"},
     {"start": "11:05", "end": "11:45", "kind": "buffer",  "title": "Buffer / follow-ups"}
   ],
@@ -30,9 +35,11 @@ POST /api/briefing                    → agent cron writes the day's briefing (
     {
       "lead_id": 4, "name": "Michael Rodriguez", "area": "Medina",
       "persona": "Luxury Executive", "score": 98,
-      "summary": "Cash buyer referred by Tom Wilson. Waterfront luxury. Analytical — wants data.",
-      "prepare": ["Luxury comps", "Waterfront inventory", "Privacy info"],
-      "recommendation": "Lead with evidence, not opinions."
+      "summary": "Intent: buy. Area: Medina. Budget: $2000000.",
+      "assistant_advice": {
+        "prepare": ["Luxury comps", "Waterfront inventory", "Privacy info"],
+        "recommendation": "Lead with evidence, not opinions."
+      }
     }
   ],
   "suggested_actions": [
@@ -94,9 +101,8 @@ render as router links into profiles.
 with a "now" indicator (meeting blocks emerald, travel dim, buffers dashed), meeting-brief
 cards (persona chip, score ring, summary, prepare checklist, recommendation callout,
 "Open profile →"), suggested-actions rail with reason text, daily-memory input.
-Powered by `GET /api/briefing`; on 404, a **client-side mock generator** derives a plausible
-briefing from `/leads` + `/appointments` so the page looks finished today and flips to real
-agent content with zero UI changes.
+Powered by `GET /api/briefing`. With no appointments it renders an honest empty
+schedule. There is no client-side mock or fabricated-meeting fallback.
 
 **B. Profile page upgrade** — breadcrumb ("Briefing → Sarah Chen") + back button
 (`navigate(-1)`), persona chip + relationship-summary hero when present, facts grid
