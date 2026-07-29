@@ -77,6 +77,32 @@ def test_existing_field_extraction_still_works():
     assert out["intent"] == "unknown"
 
 
+def test_chris_report_note_yields_a_name():
+    """Verbatim from the bug report: every saved lead came back "Unknown"."""
+    assert extract("Met George yesterday at yoga. $1M budget")["name"] == "George"
+
+
+def test_placeholder_named_leads_are_not_duplicates_of_each_other(client):
+    """Second half of the same report: because every lead was named
+    "Unknown lead", they matched each other at similarity 1.0 and the CRM
+    suggested merging unrelated people. Extraction now finds a name in the
+    normal case, but a genuinely nameless walk-in must still never be
+    proposed as a merge on the strength of the placeholder alone.
+    """
+    a = client.post("/api/leads", json={"name": "Unknown lead", "source": "note"}).json()
+    client.post("/api/leads", json={"name": "Unknown lead", "source": "note"})
+    matched_on = [m["match_on"] for m in client.get(f"/api/leads/{a['id']}/duplicates").json()]
+    assert "name" not in matched_on
+
+
+def test_real_names_still_match_as_duplicates(client):
+    """The guard above must not disable genuine name-based dedup."""
+    a = client.post("/api/leads", json={"name": "Sarah Chen", "source": "note"}).json()
+    client.post("/api/leads", json={"name": "Sarah Chen", "source": "note"})
+    matched_on = [m["match_on"] for m in client.get(f"/api/leads/{a['id']}/duplicates").json()]
+    assert "name" in matched_on
+
+
 def test_intent_still_detected_on_the_phrasings_it_does_support():
     assert extract("wants to buy in Kirkland")["intent"] == "buy"
     assert extract("looking for a 3br in Renton")["intent"] == "buy"
