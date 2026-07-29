@@ -41,7 +41,7 @@ def test_execute_success(monkeypatch):
     assert captured_kwargs["timeout"] == 15
 
 
-def test_execute_retries_once_then_raises(monkeypatch):
+def test_non_idempotent_send_is_not_retried_after_ambiguous_failure(monkeypatch):
     monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.setenv("COMPOSIO_API_KEY", "k")
     attempts = []
@@ -55,6 +55,34 @@ def test_execute_retries_once_then_raises(monkeypatch):
                         lambda *a, **kw: attempts.append(1) or FakeResp())
     with pytest.raises(cc.IntegrationError):
         cc.execute("GMAIL_SEND_EMAIL", {})
+    assert len(attempts) == 1
+
+
+def test_read_only_fetch_retries_once_on_transient_failure(monkeypatch):
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "k")
+    attempts = []
+
+    class FakeResp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_post(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            return FakeResp(503, {})
+        return FakeResp(
+            200,
+            {"successful": True, "data": {"messages": []}},
+        )
+
+    monkeypatch.setattr(cc.httpx, "post", fake_post)
+
+    assert cc.execute("GMAIL_FETCH_EMAILS", {}) == {"messages": []}
     assert len(attempts) == 2
 
 

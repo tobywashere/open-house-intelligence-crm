@@ -51,6 +51,16 @@ ALLOWED_SLUGS = frozenset({
     "GOOGLECALENDAR_FREE_BUSY_QUERY",  # poller.py: busy cache
 })
 
+READ_ONLY_SLUGS = frozenset({
+    "GMAIL_FETCH_EMAILS",
+    "GOOGLECALENDAR_FREE_BUSY_QUERY",
+})
+
+
+def max_attempts(slug: str) -> int:
+    """Only replay operations that cannot create an external side effect."""
+    return 2 if slug in READ_ONLY_SLUGS else 1
+
 
 def mode() -> str:
     return os.environ.get("INTEGRATIONS_MODE", "off")
@@ -109,7 +119,7 @@ def execute(slug: str, arguments: dict) -> dict:
     body = {"user_id": os.environ.get("COMPOSIO_USER_ID", "default"),
             "arguments": arguments}
     last_err = None
-    for _ in range(2):  # one retry
+    for _ in range(max_attempts(slug)):
         try:
             r = httpx.post(f"{base}/api/v3/tools/execute/{slug}",
                            headers={"x-api-key": key}, json=body, timeout=15)
