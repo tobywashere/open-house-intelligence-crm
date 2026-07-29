@@ -1,6 +1,8 @@
 """Agent driver interface. Two implementations: mock (dev default) and openclaw (GB10)."""
 from abc import ABC, abstractmethod
 
+from .status import AgentProbe
+
 
 class AgentDriver(ABC):
     name = "base"
@@ -27,6 +29,17 @@ class AgentDriver(ABC):
 
     async def connected(self) -> bool:
         return True
+
+    async def probe(self) -> AgentProbe:
+        return AgentProbe(
+            status="mock",
+            gateway_reachable=False,
+            endpoint_enabled=False,
+            last_chat_ok=True,
+        )
+
+    async def live_check(self) -> AgentProbe:
+        return await self.probe()
 
 
 def get_driver() -> AgentDriver:

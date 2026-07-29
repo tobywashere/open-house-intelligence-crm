@@ -17,6 +17,7 @@ import uuid
 import httpx
 
 from .base import AgentDriver
+from .status import AgentProbe, last_chat, record_chat
 
 GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://gb10:18789")
 CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
@@ -52,34 +53,45 @@ def _parse_json_reply(reply: str) -> dict:
 class OpenClawDriver(AgentDriver):
     name = "openclaw"
 
+    def __init__(self, client_factory=None):
+        self._client_factory = client_factory or httpx.AsyncClient
+
     async def _send(self, message: str, session_id: str = "backend") -> str:
         # Gateways running gateway.auth.mode="none" take no credential, and httpx
         # rejects a bare "Bearer " as an illegal header value — so send it only
         # when a token is actually configured.
         headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.post(
-                GATEWAY_URL.rstrip("/") + CHAT_PATH,
-                headers=headers,
-                json={
-                    "model": "openclaw",
-                    "user": session_id,
-                    "messages": [{"role": "user", "content": message}],
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        try:
+            async with self._client_factory(timeout=TIMEOUT) as client:
+                resp = await client.post(
+                    GATEWAY_URL.rstrip("/") + CHAT_PATH,
+                    headers=headers,
+                    json={
+                        "model": "openclaw",
+                        "user": session_id,
+                        "messages": [{"role": "user", "content": message}],
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("OpenClaw completion content was empty")
+        except Exception as exc:
+            record_chat(False, _safe_error(exc))
+            raise
+        record_chat(True)
+        return content
 
     async def chat(self, message: str, session_id: str) -> str:
         # A gateway timeout/error must degrade to a readable reply, not a 500 —
         # chat.py has already persisted the user turn by the time this runs.
         try:
             return await self._send(message, session_id)
-        except httpx.HTTPError as exc:
+        except Exception as exc:
             logging.warning("openclaw chat failed (%s)", exc)
-            return ("⚠ The agent didn't answer in time (it may be mid-task on the GB10). "
-                    "Your message is saved — try again in a moment.")
+            return ("⚠ The local agent is unavailable or returned an invalid response. "
+                    "Your message is saved — check agent readiness and try again.")
 
     async def extract(self, raw_text: str) -> dict:
         try:
@@ -108,7 +120,7 @@ class OpenClawDriver(AgentDriver):
                 + json.dumps(lead, default=str),
                 session_id=f"draft-{uuid.uuid4().hex[:8]}",
             )
-        except httpx.HTTPError as exc:
+        except Exception as exc:
             logging.warning("openclaw draft_followup failed (%s) — mock fallback", exc)
             from .mock import MockDriver
             return await MockDriver().draft_followup(lead)
@@ -121,15 +133,82 @@ class OpenClawDriver(AgentDriver):
                 + json.dumps(lead, default=str),
                 session_id=f"score-{uuid.uuid4().hex[:8]}",
             )
-        except httpx.HTTPError as exc:
+        except Exception as exc:
             logging.warning("openclaw explain_score failed (%s) — mock fallback", exc)
             from .mock import MockDriver
             return await MockDriver().explain_score(lead, score)
 
     async def connected(self) -> bool:
+        probe = await self.probe()
+        return probe.status in {"endpoint_enabled", "verified"}
+
+    async def probe(self) -> AgentProbe:
+        headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
         try:
-            async with httpx.AsyncClient(timeout=3) as client:
-                resp = await client.get(GATEWAY_URL)
-                return resp.status_code < 500
-        except httpx.HTTPError:
-            return False
+            async with self._client_factory(timeout=3) as client:
+                resp = await client.options(
+                    GATEWAY_URL.rstrip("/") + CHAT_PATH,
+                    headers=headers,
+                )
+        except Exception as exc:
+            return AgentProbe(
+                status="unreachable",
+                gateway_reachable=False,
+                endpoint_enabled=False,
+                last_chat_ok=last_chat()[0],
+                detail=_safe_error(exc),
+            )
+
+        last_ok, last_detail = last_chat()
+        if resp.status_code in (401, 403):
+            return AgentProbe(
+                status="unauthorized",
+                gateway_reachable=True,
+                endpoint_enabled=False,
+                last_chat_ok=last_ok,
+                detail=f"HTTP {resp.status_code}",
+            )
+        if resp.status_code == 404:
+            return AgentProbe(
+                status="endpoint_disabled",
+                gateway_reachable=True,
+                endpoint_enabled=False,
+                last_chat_ok=last_ok,
+                detail="Chat Completions endpoint returned HTTP 404",
+            )
+        if 200 <= resp.status_code < 400 or resp.status_code == 405:
+            status = "verified" if last_ok is True else "failed" if last_ok is False else "endpoint_enabled"
+            return AgentProbe(
+                status=status,
+                gateway_reachable=True,
+                endpoint_enabled=True,
+                last_chat_ok=last_ok,
+                detail=last_detail,
+            )
+        return AgentProbe(
+            status="failed",
+            gateway_reachable=True,
+            endpoint_enabled=False,
+            last_chat_ok=last_ok,
+            detail=f"Unexpected probe response HTTP {resp.status_code}",
+        )
+
+    async def live_check(self) -> AgentProbe:
+        try:
+            await self._send(
+                "Reply with exactly READY. Do not use tools and do not change any data.",
+                "readiness-check",
+            )
+        except Exception:
+            pass
+        return await self.probe()
+
+
+def _safe_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError)):
+        return "invalid completion response"
+    return exc.__class__.__name__

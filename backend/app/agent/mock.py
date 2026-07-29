@@ -38,7 +38,7 @@ class MockDriver(AgentDriver):
     name = "mock"
 
     async def chat(self, message: str, session_id: str) -> str:
-        m = message.lower()
+        m = message.lower().replace("-", " ")
         if "neglect" in m or "follow up" in m:
             return ("[mock] I checked the pipeline — 2 leads haven't been touched in "
                     "3+ days. Top one: [Marcus Webb](lead:3) (score 97). Want me to "

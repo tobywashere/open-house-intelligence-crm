@@ -1,4 +1,5 @@
 import os
+from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -157,4 +158,16 @@ def metrics():
 @router.get("/health")
 async def health():
     driver = get_driver()
-    return {"ok": True, "agent_mode": driver.name, "agent_connected": await driver.connected()}
+    probe = await driver.probe()
+    return {
+        "ok": True,
+        "agent_mode": driver.name,
+        "agent_connected": probe.status in {"mock", "endpoint_enabled", "verified"},
+        "agent_status": asdict(probe),
+    }
+
+
+@router.post("/health/agent-check")
+async def agent_check():
+    driver = get_driver()
+    return asdict(await driver.live_check())
