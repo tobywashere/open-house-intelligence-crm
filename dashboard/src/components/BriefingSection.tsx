@@ -9,7 +9,10 @@ import { toast } from './Toast'
 // Morning-briefing content (schedule, meeting briefs, suggested actions, daily
 // memory), embedded in the DailySummaryOverlay — the old /briefing page folded
 // into the daily summary. Data still arrives from K's 7am cron via GET /api/briefing.
-export function BriefingSection() {
+// onDismiss lets a link whose target is the page already behind the overlay
+// ("All insights →" routes to "/") close it — a route-change handler cannot,
+// because navigating to the route you are already on changes nothing.
+export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) {
   const [briefing, setBriefing] = useState<BriefingData | null>(null)
   const [upcoming, setUpcoming] = useState<Appointment[]>([])
   const [now, setNow] = useState(currentHHMM())
@@ -167,7 +170,11 @@ export function BriefingSection() {
                 </div>
               ))}
             </div>
-            <Link to="/" className="mt-3 inline-block text-xs text-accent hover:underline">
+            <Link
+              to="/"
+              onClick={onDismiss}
+              className="mt-3 inline-block text-xs text-accent hover:underline"
+            >
               All insights →
             </Link>
           </section>

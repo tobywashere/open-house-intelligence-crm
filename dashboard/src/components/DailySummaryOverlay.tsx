@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { api, localDateKey, Metrics } from '../api'
 import { DailySummary, fetchDailySummary, mockSummarySample } from '../summary'
 import { BriefingSection } from './BriefingSection'
@@ -51,6 +52,20 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  // The overlay is fixed and full-screen, so a <Link> inside it (All insights,
+  // Open profile, a suggested action) used to route underneath and leave the
+  // user staring at an unchanged summary — the click looked dead. Dismiss on
+  // any route change rather than wiring onClose through every link.
+  // onClose is held in a ref because App recreates it on every metrics poll
+  // (see the fetch effect above); depending on it here would rerun this at 5s.
+  const location = useLocation()
+  const openedAt = useRef(location.pathname)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    if (location.pathname !== openedAt.current) closeRef.current()
+  }, [location.pathname])
 
   // Intra-day refresh: ask the agent (via the normal chat relay) to re-run the
   // research + insights and POST a fresh summary, then poll until it lands.
@@ -129,7 +144,7 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
           )}
         </header>
 
-        <BriefingSection />
+        <BriefingSection onDismiss={onClose} />
 
         {!summary && offline ? (
           <div className="rise mt-10 rounded-xl border border-dashed border-tile bg-surface/40 p-8 text-center">
