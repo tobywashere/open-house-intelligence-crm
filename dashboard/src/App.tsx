@@ -12,6 +12,7 @@ import { loadVertical, pack, Pack } from './vertical'
 import { DashboardPage } from './pages/Dashboard'
 import { ScanCardPage } from './pages/ScanCard'
 import { Inbox } from './pages/Inbox'
+import { Knowledge } from './pages/Knowledge'
 import { LeadPage } from './pages/Lead'
 
 const CHAT_W_KEY = 'ohi-chat-width'
@@ -112,6 +113,7 @@ export default function App() {
         </Link>
         <nav className="flex gap-1 text-sm">
           <NavLink to="/leads" className={navCls}>Leads</NavLink>
+          <NavLink to="/knowledge" className={navCls}>Knowledge</NavLink>
         </nav>
         {/* live KPIs live in the navbar now that it has the room */}
         {kpis && (
@@ -167,6 +169,7 @@ export default function App() {
             <Route path="/leads" element={<Inbox />} />
             <Route path="/scan" element={<ScanCardPage />} />
             <Route path="/lead/:id" element={<LeadPage />} />
+            <Route path="/knowledge" element={<Knowledge />} />
             <Route path="/activity" element={<AuditLog full />} />
           </Routes>
         </main>

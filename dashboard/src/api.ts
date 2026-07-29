@@ -100,6 +100,37 @@ export interface Metrics {
   cloud_llm_requests: number
 }
 
+export interface KnowledgeDoc {
+  name: string
+  chunks: number
+  bytes: number
+}
+
+export interface KnowledgeHit {
+  doc: string
+  heading: string
+  breadcrumb: string
+  text: string
+  score: number
+}
+
+// The editable research scope (backend/app/routers/settings.py). Sent on PUT.
+export interface ResearchSettingsInput {
+  role: string
+  audience: string
+  lookback_days: number
+  regions: string[]
+  topics: string[]
+  exclusions: string[]
+  national_scope_note: string
+}
+
+// GET/PUT echo the fields back plus the filled template, so the operator can
+// see exactly what the agent will be asked — no hidden prompt construction.
+export interface ResearchSettings extends ResearchSettingsInput {
+  rendered_prompt: string
+}
+
 // Non-OK responses throw this. `message` keeps the legacy `"<status>: <body>"`
 // shape (some callers match on the status prefix); `detail` carries the parsed
 // JSON {"detail": "..."} body when the backend sent one.
@@ -186,6 +217,26 @@ export const api = {
   postInsights: <T>(payload: T) =>
     req<T>('/insights', { method: 'POST', body: JSON.stringify(payload) }),
   insightsFor: <T>(date: string) => req<T>(`/insights?date=${date}`),
+
+  knowledgeDocs: () => req<KnowledgeDoc[]>('/knowledge/docs'),
+  uploadKnowledgeDoc: (filename: string, data: string) =>
+    req<KnowledgeDoc>('/knowledge/docs', {
+      method: 'POST',
+      body: JSON.stringify({ filename, data }),
+    }),
+  deleteKnowledgeDoc: (name: string) =>
+    req<{ name: string; deleted: boolean }>(`/knowledge/docs/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+  knowledgeSearch: (q: string) =>
+    req<KnowledgeHit[]>(`/knowledge/search?q=${encodeURIComponent(q)}&k=5`),
+
+  researchSettings: () => req<ResearchSettings>('/research-settings'),
+  saveResearchSettings: (payload: ResearchSettingsInput) =>
+    req<ResearchSettings>('/research-settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
   sendEmail: (lead_id: number, subject: string, body: string) =>
     req<{ sent: boolean; simulated: boolean }>('/email/send', {
       method: 'POST',
