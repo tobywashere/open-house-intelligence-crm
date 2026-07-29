@@ -97,6 +97,14 @@ If the gateway is reachable but chat does not work, test
 `POST /v1/chat/completions` directly. A `404` means the endpoint is disabled;
 `401`/`403` means the gateway token does not match.
 
+If chat always returns the canned “The agent didn't answer in time” fallback
+despite `agent_connected:true`, check the endpoint first: that health field
+only proves the gateway process is reachable. If the agent answers but invents
+CRM data, verify that the `crm-db-operations` skill is loaded from the expected
+OpenClaw workspace. If `agent_connected:false`, check
+`AGENT_GATEWAY_URL` (default `http://localhost:18789`) and confirm that the
+gateway process is running.
+
 ## Optional Google integrations
 
 Gmail and Google Calendar use Composio and the internet:
