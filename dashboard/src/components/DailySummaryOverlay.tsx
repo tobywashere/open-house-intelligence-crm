@@ -162,9 +162,9 @@ export function DailySummaryOverlay({ onClose, metrics }: { onClose: () => void;
           <div className="rise mt-10 rounded-xl border border-dashed border-tile bg-surface/40 p-8 text-center">
             <div className="text-2xl mb-2">☀️</div>
             <p className="text-body max-w-md mx-auto">
-              No daily summary yet — your morning briefing above works fully offline from your
-              CRM. Market watch (news) needs the separate news cron, which requires internet and
-              is optional.
+              No daily summary has been published. Your real CRM appointments and due follow-ups
+              are shown above. Market research appears only after the configured agent publishes
+              a source-backed summary.
             </p>
             <p className="text-xs text-sub/60 mt-3">
               See "Morning briefing" in <code className="text-sub/80">docs/LOCAL-AI.md</code> to

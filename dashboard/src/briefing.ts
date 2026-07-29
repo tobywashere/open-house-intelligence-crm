@@ -1,11 +1,10 @@
-// Briefing data layer. Tries GET /api/briefing (agent-generated, per docs/BRIEFING-UI.md);
-// until K+Toby ship it, a client-side mock derives a plausible briefing from live CRM data
-// so the page is fully demoable today and flips to real content with zero UI changes.
-import { api, Appointment, fmtMoney, Lead, localDateKey } from './api'
-import { computeInsights } from './insights'
+// Briefing facts come from GET /api/briefing, which rehydrates appointments
+// and lead fields from SQLite. This module never invents fallback content.
+import { api, Lead, localDateKey } from './api'
 import { pack, PersonaCond } from './vertical'
 
 export interface ScheduleBlock {
+  appointment_id: number
   start: string // "HH:MM"
   end: string
   kind: 'meeting' | 'travel' | 'buffer' | 'personal'
@@ -14,14 +13,21 @@ export interface ScheduleBlock {
 }
 
 export interface MeetingBrief {
+  appointment_id: number
   lead_id: number
   name: string
   area: string | null
-  persona: string
+  budget: number | null
+  timeline: string | null
+  intent: string
+  preferences: string[]
+  persona: string | null
   score: number | null
   summary: string
-  prepare: string[]
-  recommendation: string
+  assistant_advice: {
+    prepare: string[]
+    recommendation: string | null
+  } | null
 }
 
 export interface SuggestedAction {
@@ -36,27 +42,14 @@ export interface Briefing {
   date: string
   greeting: string
   generated_at: string
+  source: 'crm'
   schedule: ScheduleBlock[]
   meeting_briefs: MeetingBrief[]
   suggested_actions: SuggestedAction[]
-  // top insights (AI purpose #4, the deterministic insights engine) — input for the summary narrative
-  insight_headlines?: { severity: 'info' | 'good' | 'warn'; headline: string }[]
-  mock?: boolean
 }
 
 export async function fetchBriefing(): Promise<Briefing> {
-  const today = new Date()
-  const date = localDateKey(today)
-  try {
-    return await api.briefing<Briefing>(date)
-  } catch {
-    const [leads, appts, audit] = await Promise.all([api.leads(), api.appointments(), api.audit(200)])
-    const briefing = mockBriefing(date, leads, appts)
-    briefing.insight_headlines = computeInsights(leads, appts, audit)
-      .insights.slice(0, 3)
-      .map(({ severity, headline }) => ({ severity, headline }))
-    return briefing
-  }
+  return api.briefing<Briefing>(localDateKey())
 }
 
 // Resolves one field referenced by a persona rule's `when` condition off a
@@ -116,18 +109,6 @@ function evalPersonaCond(cond: PersonaCond, lead: Lead): boolean {
   }
 }
 
-// Plain-object lookup that refuses to resolve to an inherited prototype
-// member. `persona` and `lead.intent` are agent/DB-controlled strings, not
-// developer-chosen literals — a lead persona of "toString" or an intent of
-// "constructor" would otherwise resolve through the JS prototype chain
-// (`{}.toString` is a function, `{}.constructor` is native code) instead of
-// falling through to `fallback`, and callers here `.replace(...)` the result
-// or interpolate it straight into rendered text.
-function lookupString(map: Record<string, string> | undefined, key: string, fallback: string): string {
-  const v = map?.[key]
-  return typeof v === 'string' ? v : fallback
-}
-
 export function personaOf(lead: Lead): string {
   if (lead.persona) return lead.persona
   // Defense in depth (fix round 2): the backend now sanitizes persona_rules
@@ -175,127 +156,4 @@ function personaStyleMap(): Record<string, string> {
 export function personaStyle(name: string): string {
   const map = personaStyleMap()
   return map[name] ?? map[defaultPersonaKey()] ?? PERSONA_PALETTE[PERSONA_PALETTE.length - 1]
-}
-
-function briefOf(lead: Lead): MeetingBrief {
-  const persona = personaOf(lead)
-  const bits: string[] = []
-  if (lead.intent === 'sell') bits.push(`Selling in ${lead.area ?? 'the area'}.`)
-  else bits.push(`${persona === 'Luxury Executive' ? 'High-end buyer' : 'Buyer'} focused on ${lead.area ?? 'the Eastside'}.`)
-  if (lead.budget) bits.push(`Budget ${fmtMoney(lead.budget)}.`)
-  if (lead.timeline) bits.push(`Timeline: ${lead.timeline}.`)
-  if (lead.preferences?.length) bits.push(`Wants: ${lead.preferences.join(', ')}.`)
-  if (lead.relationship_summary) bits.unshift(lead.relationship_summary)
-
-  const prepare = [
-    `${lead.area ?? 'Local'} comparable sales`,
-    lead.budget ? `Inventory near ${fmtMoney(lead.budget)}` : 'Ask budget range',
-    ...(lead.preferences ?? []).slice(0, 2).map((p) => `Notes on: ${p}`),
-  ]
-
-  const recTemplate = lookupString(
-    pack().persona_recommendations,
-    persona,
-    pack().persona_recommendation_default ?? 'Confirm their timeline and agree the next concrete step.',
-  )
-  const recommendation = recTemplate.replace('{timeline}', lead.timeline ?? 'tight')
-
-  return {
-    lead_id: lead.id,
-    name: lead.name,
-    area: lead.area,
-    persona,
-    score: lead.score,
-    summary: bits.join(' '),
-    prepare,
-    recommendation,
-  }
-}
-
-function hhmm(iso: string): string {
-  return iso.slice(11, 16)
-}
-
-function mockBriefing(date: string, leads: Lead[], appts: Appointment[]): Briefing {
-  const open = leads.filter((l) => l.status !== 'closed')
-  const byId = new Map(open.map((l) => [l.id, l]))
-
-  // real appointments today, else fabricate showings from the top leads
-  const todays = appts.filter((a) => a.start_ts.startsWith(date))
-  let meetings: { start: string; end: string; lead: Lead; title: string }[]
-  if (todays.length) {
-    meetings = todays
-      .filter((a) => byId.has(a.lead_id))
-      .map((a) => ({
-        start: hhmm(a.start_ts),
-        end: hhmm(a.end_ts),
-        lead: byId.get(a.lead_id)!,
-        title: `${lookupString(pack().schedule_titles, 'default', 'Showing')} — ${byId.get(a.lead_id)!.name}${a.location ? ` (${a.location})` : ''}`,
-      }))
-  } else {
-    const top = open.slice(0, 2)
-    const times = [
-      ['10:00', '10:45'],
-      ['14:00', '14:45'],
-    ]
-    meetings = top.map((lead, i) => ({
-      start: times[i][0],
-      end: times[i][1],
-      lead,
-      title: `${lookupString(pack().schedule_titles, lead.intent, lookupString(pack().schedule_titles, 'default', 'Showing'))} — ${lead.name}${lead.area ? ` (${lead.area})` : ''}`,
-    }))
-  }
-  meetings.sort((a, b) => a.start.localeCompare(b.start))
-
-  const schedule: ScheduleBlock[] = []
-  for (const m of meetings) {
-    schedule.push({
-      start: shiftMinutes(m.start, -20),
-      end: m.start,
-      kind: 'travel',
-      title: `Drive to ${m.lead.area ?? 'meeting'}`,
-    })
-    schedule.push({ start: m.start, end: m.end, kind: 'meeting', title: m.title, lead_id: m.lead.id })
-    schedule.push({
-      start: m.end,
-      end: shiftMinutes(m.end, 30),
-      kind: 'buffer',
-      title: 'Buffer / follow-ups',
-    })
-  }
-  schedule.push({ start: '12:00', end: '13:00', kind: 'personal', title: 'Lunch' })
-  schedule.sort((a, b) => a.start.localeCompare(b.start))
-
-  const meetingIds = new Set(meetings.map((m) => m.lead.id))
-  const actionable = open
-    .filter((l) => !meetingIds.has(l.id))
-    .sort((a, b) => (b.is_neglected - a.is_neglected) || (b.score ?? 0) - (a.score ?? 0))
-    .slice(0, 3)
-  const channels: SuggestedAction['channel'][] = ['text', 'call', 'email']
-  const suggested_actions: SuggestedAction[] = actionable.map((l, i) => ({
-    lead_id: l.id,
-    name: l.name,
-    channel: channels[i % 3],
-    action: `${channels[i % 3] === 'text' ? 'Text' : channels[i % 3] === 'call' ? 'Call' : 'Email'} ${l.name}`,
-    reason: l.is_neglected
-      ? `No contact since ${l.last_activity_at.slice(0, 10)} — score ${l.score ?? '—'} is too warm to go cold.`
-      : `Score ${l.score ?? '—'}${l.timeline ? ` with a ${l.timeline} timeline` : ''} — keep the momentum.`,
-  }))
-
-  const followupsDue = open.filter((l) => l.is_neglected).length
-  return {
-    date,
-    greeting: `Good morning, Annie 👋 — ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} today, ${followupsDue} follow-up${followupsDue === 1 ? '' : 's'} due.`,
-    generated_at: new Date().toISOString(),
-    schedule,
-    meeting_briefs: meetings.map((m) => briefOf(m.lead)),
-    suggested_actions,
-    mock: true,
-  }
-}
-
-function shiftMinutes(time: string, delta: number): string {
-  const [h, m] = time.split(':').map(Number)
-  const total = Math.max(0, h * 60 + m + delta)
-  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }

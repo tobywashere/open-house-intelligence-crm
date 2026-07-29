@@ -14,13 +14,27 @@ import { toast } from './Toast'
 // because navigating to the route you are already on changes nothing.
 export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) {
   const [briefing, setBriefing] = useState<BriefingData | null>(null)
+  const [briefingError, setBriefingError] = useState<string | null>(null)
+  const [briefingLoading, setBriefingLoading] = useState(true)
   const [upcoming, setUpcoming] = useState<Appointment[]>([])
   const [now, setNow] = useState(currentHHMM())
   const [memory, setMemory] = useState('')
   const [savingMemory, setSavingMemory] = useState(false)
 
+  const loadBriefing = async () => {
+    setBriefingLoading(true)
+    setBriefingError(null)
+    try {
+      setBriefing(await fetchBriefing())
+    } catch {
+      setBriefingError('The CRM briefing could not be loaded.')
+    } finally {
+      setBriefingLoading(false)
+    }
+  }
+
   useEffect(() => {
-    fetchBriefing().then(setBriefing).catch(() => {})
+    void loadBriefing()
     // upcoming appointments feed the schedule empty state on meeting-free days
     api
       .appointments()
@@ -52,7 +66,7 @@ export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) 
     }
   }
 
-  if (!briefing)
+  if (briefingLoading && !briefing)
     return (
       <div className="grid lg:grid-cols-[1fr_300px] gap-8 mt-10">
         <div className="space-y-2">
@@ -64,18 +78,34 @@ export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) 
       </div>
     )
 
+  if (briefingError && !briefing)
+    return (
+      <div className="mt-10 rounded-xl border border-alert/30 bg-alert/5 px-5 py-4">
+        <div className="text-sm font-medium text-alert">Briefing unavailable</div>
+        <p className="mt-1 text-sm text-sub">{briefingError}</p>
+        <button
+          onClick={() => void loadBriefing()}
+          className="mt-3 rounded-md border border-line px-3 py-1.5 text-sm text-body hover:border-accent/60"
+        >
+          Retry
+        </button>
+      </div>
+    )
+
+  if (!briefing) return null
+
   return (
     <div className="grid lg:grid-cols-[1fr_300px] gap-8 items-start mt-10">
       <div className="space-y-8 min-w-0">
         <section className="rise" style={{ animationDelay: '40ms' }}>
           <h2 className="text-sm font-semibold text-sub mb-3">Today's schedule</h2>
           <div className="space-y-1">
-            {briefing.schedule.map((b, i) => (
-              <ScheduleRow key={i} block={b} active={now >= b.start && now < b.end} />
+            {briefing.schedule.map((b) => (
+              <ScheduleRow key={b.appointment_id} block={b} active={now >= b.start && now < b.end} />
             ))}
             {!briefing.schedule.length && (
               <div className="rounded-lg border border-dashed border-tile px-4 py-3.5 text-sm text-sub">
-                Nothing on the calendar today — a good day for follow-ups.
+                No appointments are scheduled today.
                 {upcoming.length > 0 && (
                   <div className="mt-2.5 space-y-1">
                     <div className="text-xs text-sub/60">Coming up</div>
@@ -119,11 +149,13 @@ export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) 
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold">{brief.name}</span>
                       {brief.area && <span className="text-sub/80 text-sm">· {brief.area}</span>}
-                      <span
-                        className={`rounded-full border px-2 py-0.5 text-xs ${personaStyle(brief.persona)}`}
-                      >
-                        {brief.persona}
-                      </span>
+                      {brief.persona && (
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-xs ${personaStyle(brief.persona)}`}
+                        >
+                          {brief.persona}
+                        </span>
+                      )}
                     </div>
                     <div className="text-sm text-body mt-1.5"><Markdown>{brief.summary}</Markdown></div>
                   </div>
@@ -134,22 +166,38 @@ export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) 
                     Open profile →
                   </Link>
                 </div>
-                <div className="mt-4 grid sm:grid-cols-2 gap-3">
-                  <div className="rounded-lg bg-surface/60 border border-tile p-3">
-                    <div className="text-xs text-sub/80 mb-1.5">Prepare</div>
-                    <ul className="text-sm text-body space-y-1">
-                      {brief.prepare.map((p) => (
-                        <li key={p} className="flex gap-2">
-                          <span className="text-sub/60">□</span> <Markdown inline>{p}</Markdown>
-                        </li>
-                      ))}
-                    </ul>
+                {brief.assistant_advice ? (
+                  <div className="mt-4 grid sm:grid-cols-2 gap-3">
+                    <div className="rounded-lg bg-surface/60 border border-tile p-3">
+                      <div className="text-xs text-sub/80 mb-1.5">AI preparation suggestions</div>
+                      {brief.assistant_advice.prepare.length ? (
+                        <ul className="text-sm text-body space-y-1">
+                          {brief.assistant_advice.prepare.map((p) => (
+                            <li key={p} className="flex gap-2">
+                              <span className="text-sub/60">□</span> <Markdown inline>{p}</Markdown>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-sm text-sub/60">No preparation checklist was generated.</div>
+                      )}
+                    </div>
+                    <div className="rounded-lg bg-accent/5 border border-accent/20 p-3">
+                      <div className="text-xs text-accent mb-1.5">AI recommendation</div>
+                      <div className="text-sm text-body">
+                        {brief.assistant_advice.recommendation ? (
+                          <Markdown>{brief.assistant_advice.recommendation}</Markdown>
+                        ) : (
+                          <span className="text-sub/60">No recommendation was generated.</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div className="rounded-lg bg-accent/5 border border-accent/20 p-3">
-                    <div className="text-xs text-accent mb-1.5">Recommendation</div>
-                    <div className="text-sm text-body"><Markdown>{brief.recommendation}</Markdown></div>
+                ) : (
+                  <div className="mt-4 rounded-lg border border-dashed border-tile px-3 py-2 text-xs text-sub/70">
+                    No AI suggestions have been generated for this meeting.
                   </div>
-                </div>
+                )}
               </div>
             ))}
           </div>
@@ -157,29 +205,6 @@ export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) 
       </div>
 
       <aside className="space-y-6">
-        {briefing.insight_headlines && briefing.insight_headlines.length > 0 && (
-          <section className="rise rounded-xl border border-tile bg-surface p-4" style={{ animationDelay: '100ms' }}>
-            <h2 className="text-sm font-semibold text-sub mb-3">Pipeline insights</h2>
-            <div className="space-y-2.5">
-              {briefing.insight_headlines.map((h) => (
-                <div key={h.headline} className="flex gap-2 text-sm">
-                  <span className={h.severity === 'warn' ? 'text-alert' : h.severity === 'good' ? 'text-accent' : 'text-sub/80'}>
-                    {h.severity === 'warn' ? '▲' : h.severity === 'good' ? '●' : '○'}
-                  </span>
-                  <span className="text-body">{h.headline}</span>
-                </div>
-              ))}
-            </div>
-            <Link
-              to="/"
-              onClick={onDismiss}
-              className="mt-3 inline-block text-xs text-accent hover:underline"
-            >
-              All insights →
-            </Link>
-          </section>
-        )}
-
         <section className="rise rounded-xl border border-tile bg-surface p-4" style={{ animationDelay: '140ms' }}>
           <h2 className="text-sm font-semibold text-sub mb-3">Suggested actions</h2>
           <div className="space-y-3">
@@ -197,7 +222,7 @@ export function BriefingSection({ onDismiss }: { onDismiss?: () => void } = {}) 
               </div>
             ))}
             {!briefing.suggested_actions.length && (
-              <div className="text-sm text-sub/60">Nothing urgent — pipeline is healthy.</div>
+              <div className="text-sm text-sub/60">No due reminders or neglected leads.</div>
             )}
           </div>
         </section>
