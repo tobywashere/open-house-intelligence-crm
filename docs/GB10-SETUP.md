@@ -61,9 +61,16 @@ dashboard itself — **one port, one URL: `http://gb10:8080`**.
 | Discord: same question | same behavior, same audit trail |
 | Header badge | green pulse: "Local agent · live" |
 
-If chat 401s → token mismatch. If the agent answers but invents data → the skill
-isn't loaded (check the OpenClaw workspace path). If `agent_connected:false` →
-gateway URL/port (`AGENT_GATEWAY_URL`, default `http://localhost:18789`).
+If chat always returns the canned "⚠ The agent didn't answer in time"
+fallback despite `agent_connected:true` → the OpenAI-compat chat endpoint is
+probably disabled on the gateway (some OpenClaw builds ship it off by
+default). Check `curl -X POST http://localhost:18789/v1/chat/completions -d
+'{"model":"openclaw","messages":[{"role":"user","content":"hi"}]}'` — a
+`404` confirms it, and [`docs/LOCAL-AI.md`](LOCAL-AI.md#1-install-openclaw-and-point-it-at-a-local-model)
+has the `openclaw config patch` command to enable it. If chat 401s → token
+mismatch. If the agent answers but invents data → the skill isn't loaded
+(check the OpenClaw workspace path). If `agent_connected:false` → gateway
+URL/port (`AGENT_GATEWAY_URL`, default `http://localhost:18789`).
 
 ## Dev machines (unchanged)
 

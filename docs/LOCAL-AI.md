@@ -39,6 +39,30 @@ agent talks to OpenClaw's OpenAI-compatible `/v1/chat/completions` endpoint
 (`AGENT_CHAT_PATH` in `.env.example`) and OpenClaw handles the model
 underneath.
 
+> **Check that endpoint is actually enabled — this is the #1 cause of chat
+> silently failing.** Several OpenClaw builds ship `/v1/chat/completions`
+> *disabled* by default, even with the gateway itself up and reachable. If
+> every chat message comes back with the canned "⚠ The agent didn't answer
+> in time" fallback, check this before anything else:
+> ```bash
+> curl -X POST http://localhost:18789/v1/chat/completions \
+>   -H "Content-Type: application/json" \
+>   -d '{"model":"openclaw","messages":[{"role":"user","content":"hi"}]}'
+> ```
+> A `404` means it's off. Enable it (field names/version may differ — check
+> `openclaw config schema`):
+> ```bash
+> openclaw config patch --stdin <<'EOF'
+> { "gateway": { "http": { "endpoints": {
+>   "chatCompletions": { "enabled": true },
+>   "responses": { "enabled": true }
+> } } } }
+> EOF
+> ```
+> The gateway picks this up on its own (config changes trigger an automatic
+> restart); re-run the `curl` above to confirm you now get `200` with a real
+> completion before moving on.
+
 ## 2. Install the CRM skill
 
 The skills live in this repo under `skills/`. Copy them into OpenClaw's
@@ -105,10 +129,14 @@ Work through these in order — each one isolates a different link in the chain.
 | Dashboard chat: "who needs a follow-up?" | a real answer from your model, grounded in tool calls (watch them land in `/activity`) |
 | Header badge | green pulse reading "Local agent · live" |
 
-If chat 401s → gateway token mismatch (`AGENT_GATEWAY_TOKEN`). If the agent
-answers but invents data → the skill isn't loaded (check the OpenClaw skills
-path). If `agent_connected:false` → check `AGENT_GATEWAY_URL` (default
-`http://localhost:18789`) and that the gateway process is actually up.
+If chat always returns the canned "⚠ The agent didn't answer in time"
+fallback despite `agent_connected:true` → that health check only proves the
+gateway process is reachable, not that `/v1/chat/completions` is enabled —
+see the check in §1 above. If chat 401s → gateway token mismatch
+(`AGENT_GATEWAY_TOKEN`). If the agent answers but invents data → the skill
+isn't loaded (check the OpenClaw skills path). If `agent_connected:false` →
+check `AGENT_GATEWAY_URL` (default `http://localhost:18789`) and that the
+gateway process is actually up.
 
 ## 5. Morning briefing (fully offline)
 
