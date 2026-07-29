@@ -10,7 +10,6 @@ import base64
 import binascii
 import json
 import logging
-import re
 import time
 from pathlib import Path
 
@@ -18,7 +17,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..agent import get_driver
-from ..db import audit, get_conn, row_to_dict
+from ..db import audit, get_conn
+from ..duplicates import find_duplicate_candidates
 
 router = APIRouter(tags=["scan"])
 
@@ -123,17 +123,8 @@ async def scan_card(body: ScanIn):
         extracted = dict(MOCK_CARD)
 
     # duplicate pre-check on phone/email so the review step can warn
-    duplicates = []
-    phone = re.sub(r"[^\d+]", "", extracted.get("phone") or "") or None
-    email = (extracted.get("email") or "").strip().lower() or None
     with get_conn() as conn:
-        if phone or email:
-            for r in conn.execute("SELECT * FROM leads"):
-                lead = row_to_dict(r)
-                if phone and re.sub(r"[^\d+]", "", lead.get("phone") or "") == phone:
-                    duplicates.append({"lead": lead, "match_on": "phone"})
-                elif email and (lead.get("email") or "").lower() == email:
-                    duplicates.append({"lead": lead, "match_on": "email"})
+        duplicates = find_duplicate_candidates(conn, extracted)
         audit(conn, "agent", "scan_card",
               {"filename": body.filename},
               {"extracted": bool(extracted), "duplicates": len(duplicates)})

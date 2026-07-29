@@ -130,6 +130,30 @@ export interface KnowledgeHit {
   score: number
 }
 
+export interface VoiceDraft {
+  name: string | null
+  phone: string | null
+  email: string | null
+  budget: number | null
+  area: string | null
+  timeline: string | null
+  intent: 'buy' | 'sell' | 'browse' | 'unknown'
+  preferences: string[]
+  missing_fields: string[]
+}
+
+export interface DuplicateCandidate {
+  lead: Lead
+  match_on: string
+}
+
+export interface VoicePrepareResult {
+  transcript: string
+  draft: VoiceDraft
+  duplicates: DuplicateCandidate[]
+  warnings: string[]
+}
+
 // The editable research scope (backend/app/routers/settings.py). Sent on PUT.
 export interface ResearchSettingsInput {
   role: string
@@ -189,6 +213,11 @@ export const api = {
       '/scan-card',
       { method: 'POST', body: JSON.stringify({ filename, data }) },
     ),
+  prepareVoiceNote: (filename: string, content_type: string, data: string) =>
+    req<VoicePrepareResult>('/voice-note/prepare', {
+      method: 'POST',
+      body: JSON.stringify({ filename, content_type, data }),
+    }),
   patchLead: (id: number, fields: Partial<Lead>) =>
     req<Lead>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
   processLead: (id: number) =>

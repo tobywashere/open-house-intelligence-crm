@@ -11,6 +11,7 @@ import { fetchFunnel, Kpi } from './funnel'
 import { loadVertical, pack, Pack } from './vertical'
 import { DashboardPage } from './pages/Dashboard'
 import { ScanCardPage } from './pages/ScanCard'
+import { VoiceNotePage } from './pages/VoiceNote'
 import { Inbox } from './pages/Inbox'
 import { Knowledge } from './pages/Knowledge'
 import { LeadPage } from './pages/Lead'
@@ -172,6 +173,7 @@ export default function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/leads" element={<Inbox />} />
             <Route path="/scan" element={<ScanCardPage />} />
+            <Route path="/voice-note" element={<VoiceNotePage />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/knowledge" element={<Knowledge />} />
             <Route path="/activity" element={<AuditLog full />} />

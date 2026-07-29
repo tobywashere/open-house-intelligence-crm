@@ -78,12 +78,21 @@ export function DashboardPage() {
     <div className="max-w-6xl space-y-4">
       {/* sales funnel + summary */}
       <section className="rise rounded-xl border border-tile bg-surface p-5">
-        <div className="flex items-center mb-5">
+        <div className="flex items-center gap-2 mb-5">
           <h1 className="text-lg font-semibold text-ink">Sales funnel</h1>
+          <Link
+            to="/voice-note"
+            title="Record or upload a voice note and review it before saving"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line
+                       hover:border-accent/60 px-3 py-1.5 text-xs text-body hover:text-accent
+                       transition-colors"
+          >
+            ● Add voice note
+          </Link>
           <Link
             to="/scan"
             title="Scan a business card to add a lead"
-            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line
+            className="inline-flex items-center gap-1.5 rounded-full border border-line
                        hover:border-accent/60 px-3 py-1.5 text-xs text-body hover:text-accent
                        transition-colors"
           >
