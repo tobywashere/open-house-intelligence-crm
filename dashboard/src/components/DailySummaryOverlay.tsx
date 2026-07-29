@@ -8,9 +8,9 @@ import { ResearchSettings } from './ResearchSettings'
 import { Skeleton } from './Skeleton'
 import { toast } from './Toast'
 
-// Full-screen daily summary: morning briefing (schedule, meeting briefs,
-// suggested actions) + market watch (web scrape) + AI-written insights.
-// UI/UX only — content arrives from K's 7am cron via GET /api/summary.
+// Full-screen daily summary: canonical CRM briefing + source-linked market
+// watch + AI-written insights. Optional report content is separately
+// published and validated.
 // Missing, invalid, or unavailable content renders an explicit state. There
 // is no mock-summary fallback in any agent mode.
 export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {

@@ -6,9 +6,9 @@ import { Markdown } from './Markdown'
 import { Skeleton } from './Skeleton'
 import { toast } from './Toast'
 
-// Morning-briefing content (schedule, meeting briefs, suggested actions, daily
-// memory), embedded in the DailySummaryOverlay — the old /briefing page folded
-// into the daily summary. Data still arrives from K's 7am cron via GET /api/briefing.
+// Morning-briefing content embedded in the DailySummaryOverlay. Factual data
+// is rebuilt from the CRM; a scheduled skill may add bounded, visibly labeled
+// meeting advice.
 // onDismiss lets a link whose target is the page already behind the overlay
 // ("All insights →" routes to "/") close it — a route-change handler cannot,
 // because navigating to the route you are already on changes nothing.

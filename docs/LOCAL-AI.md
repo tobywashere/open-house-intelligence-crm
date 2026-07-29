@@ -1,271 +1,260 @@
-# Running OpenHouse Intelligence with a real local model
+# Run OpenHouse Intelligence with a real local model
 
-`bash scripts/dev.sh` gets you the full product with a mock agent — no model,
-no GPU, canned-but-realistic responses. This doc is for swapping the mock
-agent for a real one: any machine running OpenClaw in front of a
-tool-capable local model. Nothing here is tied to specific
-hardware — the project was originally built and demoed on a Dell GB10 running
-Qwen 3.6 35B-A3B (see [`docs/GB10-SETUP.md`](GB10-SETUP.md) for that exact
-deployment as a worked example), but any local model that OpenClaw can drive
-and that supports tool/function calling will work.
+This is the general setup guide for OpenClaw hosts. Mac mini owners should
+start with [MAC-MINI-SETUP.md](MAC-MINI-SETUP.md).
 
-## 1. Install OpenClaw and point it at a local model
+The CRM does not install OpenClaw or a model. Configure those first, then use
+OpenClaw as the gateway between the CRM and your chosen model.
+Current upstream references:
+[Chat Completions endpoint](https://docs.openclaw.ai/gateway/openai-http-api),
+[inference/audio CLI](https://docs.openclaw.ai/cli/infer), and
+[configuration CLI](https://docs.openclaw.ai/cli/config).
 
-This repo doesn't ship or install OpenClaw — follow the OpenClaw project's
-own install docs for your platform first. Once it's installed, configure its
-gateway to serve an OpenAI-compatible chat endpoint backed by your local
-model. The shape of that config (adjust to whatever OpenClaw version/schema
-you're on — check `openclaw --help` or its own docs for the authoritative
-reference):
+## Requirements
 
-```jsonc
-// ~/.openclaw/openclaw.json (illustrative — field names may differ by version)
-{
-  "model": {
-    "endpoint": "http://localhost:8001/v1",   // your local inference server (vLLM, llama.cpp, etc.)
-    "name": "<your-local-model-name>"          // e.g. "qwen3.6-35b-a3b" — any tool-capable model
-  },
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18789,
-    "auth": { "mode": "none" }                 // set "token" and add a token for anything network-reachable
-  }
-}
-```
+- Python 3.11+
+- Node.js 20+
+- OpenClaw
+- a tool-capable model configured in OpenClaw
+- enough memory for that model (Apple silicon with 16 GB is the supported
+  minimum; use a modest quantized model at that size)
 
-Any tool-capable local model works — the project was built and demoed
-against Qwen 3.6 35B-A3B, but there's nothing Qwen-specific in the app; the
-agent talks to OpenClaw's OpenAI-compatible `/v1/chat/completions` endpoint
-(`AGENT_CHAT_PATH` in `.env.example`) and OpenClaw handles the model
-underneath.
+The original deployment used a Dell Pro Max GB10 and Qwen 3.6 35B-A3B, but
+the CRM has no GB10- or Qwen-specific dependency.
 
-> **Check that endpoint is actually enabled — this is the #1 cause of chat
-> silently failing.** Several OpenClaw builds ship `/v1/chat/completions`
-> *disabled* by default, even with the gateway itself up and reachable. If
-> every chat message comes back with the canned "⚠ The agent didn't answer
-> in time" fallback, check this before anything else:
-> ```bash
-> curl -X POST http://localhost:18789/v1/chat/completions \
->   -H "Content-Type: application/json" \
->   -d '{"model":"openclaw","messages":[{"role":"user","content":"hi"}]}'
-> ```
-> A `404` means it's off. Enable it (field names/version may differ — check
-> `openclaw config schema`):
-> ```bash
-> openclaw config patch --stdin <<'EOF'
-> { "gateway": { "http": { "endpoints": {
->   "chatCompletions": { "enabled": true },
->   "responses": { "enabled": true }
-> } } } }
-> EOF
-> ```
-> The gateway picks this up on its own (config changes trigger an automatic
-> restart); re-run the `curl` above to confirm you now get `200` with a real
-> completion before moving on.
+## 1. Verify OpenClaw itself
 
-## 2. Install the CRM skill
-
-The skills live in this repo under `skills/`. Copy them into OpenClaw's
-skills directory so the model can find them (per
-[`docs/GB10-SETUP.md`](GB10-SETUP.md) §1, which this mirrors):
+Complete OpenClaw's current setup for your model/provider. These commands
+should succeed:
 
 ```bash
-cp -r skills/crm-db-operations \
-      skills/business-card-scanner \
-      skills/daily-command-center  ~/.openclaw/skills/
+openclaw --version
+openclaw config validate
 ```
 
-Copy all three together and keep the directory names — `business-card-scanner`
-imports `tools.py` from `crm-db-operations` by path, so renaming or splitting
-them up breaks that import. (`composio-email-calendar` is optional — see
-§5 below.)
+The provider configured inside OpenClaw determines whether inference is
+local or remote. This repository cannot make a remote provider local.
 
-The skill needs to reach this app's backend over HTTP:
+## 2. Enable the Chat Completions endpoint
+
+The CRM calls OpenClaw at `/v1/chat/completions`. OpenClaw may keep that
+endpoint disabled by default even while the gateway process is healthy.
 
 ```bash
-export CRM_API_URL=http://localhost:8080/api
+openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
+openclaw config validate
 ```
 
-Set that in whatever environment OpenClaw's gateway process runs under (a
-service env file, not something you export by hand each boot). If the
-backend and the model server are on different machines, point it at the
-backend's real address instead of `localhost`.
+Follow the restart hint OpenClaw prints, then test it:
 
-## 3. Run the product
+```bash
+curl -X POST http://localhost:18789/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openclaw","messages":[{"role":"user","content":"Reply with READY"}]}'
+```
+
+Expected: a JSON response containing a real assistant completion.
+
+- `404`: the endpoint is disabled or the path is different.
+- `401`/`403`: configure the matching `AGENT_GATEWAY_TOKEN`.
+- connection refused: start the gateway or correct `AGENT_GATEWAY_URL`.
+
+Treat access to this endpoint as broad operator access to the OpenClaw
+instance. Keep it on a private interface and require authentication when it
+is network-reachable.
+
+## 3. Install the CRM skills
+
+```bash
+mkdir -p ~/.openclaw/skills
+cp -R skills/crm-db-operations ~/.openclaw/skills/
+cp -R skills/business-card-scanner ~/.openclaw/skills/
+cp -R skills/daily-command-center ~/.openclaw/skills/
+```
+
+Keep those names. The card scanner imports from
+`~/.openclaw/skills/crm-db-operations`.
+
+Give the OpenClaw process this environment value:
+
+```text
+CRM_API_URL=http://localhost:8080/api
+```
+
+The CRM skill supports natural-language reads, creates, updates, reminders,
+availability checks, booking, and explicit won/lost closes. It never writes
+SQL directly. Ambiguous closes must be clarified rather than guessed.
+
+## 4. Configure the CRM
+
+```bash
+cp .env.example .env
+```
+
+For a same-machine deployment, set:
+
+```dotenv
+AGENT_MODE=openclaw
+AGENT_GATEWAY_URL=http://localhost:18789
+AGENT_CHAT_PATH=/v1/chat/completions
+AGENT_GATEWAY_TOKEN=
+HOST=127.0.0.1
+PORT=8080
+CRM_API_URL=http://localhost:8080/api
+```
+
+Both launchers load `.env` automatically. A value explicitly exported in the
+shell wins over the file.
+
+## 5. Configure and verify voice
+
+Voice intake invokes this exact OpenClaw CLI surface:
+
+```bash
+openclaw infer audio transcribe --file /path/to/memo.m4a --json
+```
+
+The command must return a non-empty `text` or `transcript` field. If a
+specific provider/model is required:
+
+```dotenv
+VOICE_TRANSCRIBE_COMMAND=openclaw
+VOICE_TRANSCRIBE_MODEL=provider/model
+VOICE_TRANSCRIBE_TIMEOUT_SECONDS=120
+```
+
+There is no cloud fallback. Whether transcription stays local depends on the
+provider you configured in OpenClaw.
+
+The application accepts WebM, Ogg, WAV, MP4/M4A, and MP3 up to 20 MB. It
+checks the audio signature, writes a uniquely named temporary file, deletes
+that file after transcription even on errors, and prepares an editable draft.
+It does not create or update a lead until the operator confirms.
+
+## 6. Run the product
 
 ```bash
 bash scripts/serve.sh
 ```
 
-This builds the dashboard and serves the whole product from one port
-(`AGENT_MODE=openclaw`, default `:8080`), relaying chat to the OpenClaw
-gateway on `:18789`. Binds to `127.0.0.1` unless you set `HOST` — see
-`.env.example` before exposing it beyond localhost (`OHI_API_TOKEN` gates the
-API once `HOST` is network-reachable).
+This creates/synchronizes the Python environment, installs dashboard
+dependencies when missing, builds the UI, initializes an empty database when
+needed, and serves the application on
+[http://localhost:8080](http://localhost:8080).
 
-If this is the first run, `serve.sh` seeds the database only if it's
-missing — and a fresh seed is **schema-only, no leads**, since that's the
-correct starting point for real use. If you want the 15-lead demo dataset to
-explore the product with (what §4 below assumes), run `serve.sh` once first
-(it creates the `.venv` this needs), then:
+It does not overwrite an existing database.
+
+## 7. Verify each boundary
+
+Run:
 
 ```bash
-.venv/bin/python backend/seed.py --demo
+python3 scripts/doctor.py
+python3 scripts/doctor.py --live-agent
 ```
 
-⚠ This **resets the database** — it wipes and recreates it (schema-only, or
-schema + demo leads with `--demo`). Fine for a fresh install or a deliberate
-reset; do **not** run it against a CRM you've already started using through
-the agent, or you'll silently lose every real lead in it.
+The first command is read-only. The second sends one harmless completion to
+the configured chat endpoint.
 
-## 4. Verify the wiring
+Useful direct checks:
 
-Work through these in order — each one isolates a different link in the chain.
+```bash
+curl http://localhost:8080/api/health
 
-| Check | Expect |
-|---|---|
-| `curl localhost:8080/api/health` | `{"ok":true,"agent_mode":"openclaw","agent_connected":true}` |
-| `CRM_API_URL=http://localhost:8080/api python3 -c "import sys;sys.path.insert(0,'skills/crm-db-operations');import tools;print(tools.list_leads()[0]['name'])"` | a lead name — the skill reaches the backend |
-| Dashboard chat: "who needs a follow-up?" | a real answer from your model, grounded in tool calls (watch them land in `/activity`) |
-| Header badge | green pulse reading "Local agent · live" |
-
-If chat always returns the canned "⚠ The agent didn't answer in time"
-fallback despite `agent_connected:true` → that health check only proves the
-gateway process is reachable, not that `/v1/chat/completions` is enabled —
-see the check in §1 above. If chat 401s → gateway token mismatch
-(`AGENT_GATEWAY_TOKEN`). If the agent answers but invents data → the skill
-isn't loaded (check the OpenClaw skills path). If `agent_connected:false` →
-check `AGENT_GATEWAY_URL` (default `http://localhost:18789`) and that the
-gateway process is actually up.
-
-## 5. Morning briefing (fully offline)
-
-The headline "offline-first" feature: every morning the `daily-command-center`
-skill (`skills/daily-command-center/SKILL.md`) pulls the day's schedule and
-priorities straight out of your own CRM data — `list_leads()` and
-`get_lead_context(id)` from `crm-db-operations` — composes the briefing JSON
-(shape frozen in `docs/BRIEFING-UI.md`, echoed in the skill's own **Output
-contract** section), and posts it with the skill's new `post_briefing(payload)`
-tool (`POST /briefing`). The dashboard's daily-summary overlay reads it back
-via `GET /briefing?date=` with zero UI changes once it lands.
-
-**No internet required** — this whole path is CRM data in, CRM data out,
-run entirely by your local model through OpenClaw. Nothing about the morning
-briefing itself depends on a network connection; only the separate
-market-watch news portion of the daily summary (§6 below) does.
-
-To run it on a schedule, set up an OpenClaw cron that fires the skill once a
-day, e.g. 7:00 local, and let the agent do the rest:
-
-```jsonc
-// Illustrative shape only — verify against your installed OpenClaw version's
-// own cron/schedule docs (`openclaw --help` or its config reference); this
-// repo doesn't pin an exact schema and none of the exact field names below
-// have been confirmed against a running OpenClaw instance.
-{
-  "crons": [
-    {
-      "session": "daily-brief",
-      "schedule": "0 7 * * *",           // 7:00 local, every day — verify cron-string support in your OpenClaw version
-      "prompt": "Run the daily-command-center skill for today. Pull today's data from the live CRM per its Step 0, compose the briefing JSON per its Output contract, and post it with post_briefing."
-    }
-  ]
-}
+CRM_API_URL=http://localhost:8080/api python3 -c \
+  "import sys; sys.path.insert(0,'skills/crm-db-operations'); import tools; print(tools.list_leads())"
 ```
 
-If your OpenClaw version doesn't support a `crons` block like this (or uses a
-different mechanism — a separate scheduler process, a shell cron calling an
-`openclaw run`-style CLI, etc.), fall back to whatever OpenClaw's own docs
-describe for "run this session on a schedule" and point the prompt at the
-same skill.
+The header distinguishes mock, endpoint enabled, verified, disabled,
+unauthorized, unreachable, and failed states. A reachable gateway is not
+reported as a verified completion until an actual completion succeeds.
 
-You can also trigger a one-off run by hand to test it before wiring up the
-schedule — ask the agent in chat ("run the daily-command-center skill and
-post today's briefing") and then `curl "$BASE/briefing?date=$(date +%F)"` to
-confirm it landed.
+Then test the real workflow:
 
-## 6. Domain knowledge base (fully offline)
+1. Ask for a new disposable lead.
+2. Ask for an update and a reminder.
+3. Check availability, then book a specific free slot.
+4. Record a disposable voice note and cancel from the review screen; no lead
+   should be written.
+5. Confirm a voice note and verify the resulting lead.
+6. Close one lead won and one lost; only the win counts as conversion.
 
-The agent is grounded in your own market-intelligence docs, not just CRM
-data, through two paths — one precise, one best-effort fallback:
+## Morning CRM briefing: factual boundary
 
-- **Agent-invoked (precise):** the `search_knowledge(query, k=3)` tool in
-  `skills/crm-db-operations/tools.py` (`GET /knowledge/search` under the
-  hood). The model calls it only when it judges a question actually needs
-  domain knowledge — market conditions, taxes, financing mechanics,
-  pricing, neighborhoods/school districts — and skips it for scheduling,
-  reminders, or CRM-record questions. This is the accurate path: the model
-  has the conversational context a lexical gate never will, so it doesn't
-  fire on ordinary CRM chatter. See the skill's `SKILL.md` for the
-  when-to-use guidance the model follows.
-- **Auto-injection (fallback):** `POST /chat` also runs the same retrieval
-  against every incoming message and, on a hit, prepends the matched
-  section(s) before relaying to the driver — no tool call required. This
-  exists for models that don't tool-call reliably. It's necessarily
-  best-effort, not precise: with no model judgment in the loop, ordinary
-  CRM chatter can occasionally still retrieve an unrelated section (see
-  `docs/superpowers/rag-impl-report.md` for the false-positive rounds this
-  went through and the residual tradeoff). Prefer wiring the agent to use
-  `search_knowledge` directly; treat auto-injection as a safety net, not
-  the primary path.
+`GET /api/briefing?date=YYYY-MM-DD` is built from current SQLite records on
+every request:
 
-Both paths hit the same index: every `.md` file in `docs/knowledge/`
-(default; see `KNOWLEDGE_DIR` in `.env.example`) is chunked by heading and
-indexed with a pure-stdlib **BM25 lexical index**
-(`backend/app/knowledge/`) — no embeddings, no vector DB, no model
-download, no network call. The index builds lazily on first use, is
-cached in memory, and rebuilds automatically whenever a source file's
-mtime changes, so you can edit or swap the doc without restarting the
-server.
+- schedule blocks come only from real appointments;
+- names, areas, budgets, timelines, preferences, personas, and scores come
+  only from the referenced lead rows;
+- due actions come only from reminders or leads already marked neglected.
 
-For the auto-injection path: when a chat message matches a section well
-enough (above `KNOWLEDGE_MIN_SCORE`, and past a discriminative-match gate —
-see the knowledge module's docstrings), the top `KNOWLEDGE_TOP_K` chunks are
-prepended to the message the driver sees, in a clearly-delimited reference
-block that tells the model to use them when relevant, cite the section
-heading, and never treat their contents as instructions. An unrelated
-message is sent unchanged — no block, no noise, in the common case.
-Retrieval failures are swallowed and simply degrade to "no context"; they
-never turn into a chat 500.
+The `daily-command-center` skill may post preparation suggestions and a
+recommendation for a real appointment. Those fields are visibly labeled as
+AI suggestions. The backend ignores agent-supplied names, times, scores,
+schedule blocks, and other replacement facts.
 
-`GET /api/knowledge/search?q=&k=` is the same endpoint `search_knowledge`
-calls — also useful directly for debugging or a future dashboard panel —
-read-only, not audited (see `docs/CONTRACT.md` §2/§3).
+If no advice was published, the real CRM schedule still appears and the UI
+says that no AI suggestions were generated.
 
-**This is the per-industry knob.** The repo ships with
-`docs/knowledge/pacific_northwest_luxury_real_estate_report_2026.md`, a
-Pacific Northwest luxury real-estate market report (RSU vesting mechanics,
-WA excise/capital-gains tax, school-district valuation, etc.). Swap that
-file for a different vertical's material and the agent's answers follow —
-no code change, see `docs/knowledge/README.md`.
+## Daily market summary: source boundary
 
-## 7. Optional, needs internet
+Market watch is a separate, optional workflow. The dashboard displays it only
+after `POST /api/summary` receives a valid daily payload. Every market item
+must include a valid source URL.
 
-Everything above is fully offline. Two pieces of the product reach the
-internet, and both are off unless you explicitly turn them on:
+Missing, malformed, or unavailable summaries have different visible states.
+There is no sample-news fallback. The **Refresh now** button asks the agent to
+publish a newer summary; it reports success only after a newer stored
+`generated_at` appears.
 
-- **Gmail + Google Calendar (Composio integrations)** — sending real email,
-  creating real calendar events, and the inbound-email lead poller.
-  Controlled by `INTEGRATIONS_MODE` in `.env.example`, default `off` (fully
-  simulated, no network calls). The inbox poller has its own separate flag,
-  `INTEGRATIONS_POLLER`, also default `off`, since it reads a real mailbox
-  with no human in the loop when enabled. Setup:
-  [`skills/composio-email-calendar/SKILL.md`](../skills/composio-email-calendar/SKILL.md)
-  and the "Google integrations" section of
-  [`docs/GB10-SETUP.md`](GB10-SETUP.md). Once live, set `AGENT_DISPLAY_NAME`
-  in `.env.example` if you want AI-drafted intro emails to leads signed with
-  your name — left unset, those drafts go out unsigned rather than with a
-  placeholder name.
-- **Market-news / daily-briefing research** — the "↻ Refresh now" action on
-  the daily summary overlay asks the agent to re-run research and repost a
-  briefing. This only does real research if your OpenClaw setup gives the
-  model an internet-capable tool (e.g. web search); without one, or in mock
-  mode, it returns static/canned content instead of live market data. There's
-  no separate on/off flag for it — it's simply bounded by what tools your
-  agent actually has.
+If you give OpenClaw a web-search tool, search queries and retrieved pages
+use the internet. Without a configured publishing workflow, leave the
+summary missing—the CRM will not invent one.
 
-## Another industry?
+## Local knowledge
 
-The knowledge base is per-vertical: the corpus, the funnel stages, the UI copy,
-and the daily research scope all come from a swappable pack. See
-[`VERTICALS.md`](VERTICALS.md).
+Markdown files in `docs/knowledge/` are indexed locally using the bundled
+BM25 implementation. No vector database or embedding service is required.
+The agent can use the `search_knowledge` CRM tool for market, tax, financing,
+pricing, neighborhood, and school-district questions.
+
+The active directory can be changed with `KNOWLEDGE_DIR`. The dashboard also
+supports adding and removing Markdown knowledge files.
+
+## Optional internet services
+
+Gmail and Google Calendar use Composio. They are off by default:
+
+```dotenv
+INTEGRATIONS_MODE=off
+INTEGRATIONS_POLLER=off
+```
+
+When enabled, necessary email/calendar data is sent to Composio and the
+connected Google services. The inbound mailbox poller is a separate opt-in
+because it reads a real mailbox automatically.
+
+Market research also uses the internet when an internet-capable tool is
+configured.
+
+Do not claim that all client data stays on the machine when these services
+or a remote OpenClaw provider are enabled.
+
+## Private network access
+
+The default `HOST=127.0.0.1` is localhost-only. To use a private Tailscale/LAN
+address:
+
+1. set `HOST` to that exact private address;
+2. set a long identical value in `OHI_API_TOKEN` and `VITE_API_TOKEN`;
+3. add the exact browser origin to `CORS_ORIGINS` if it differs; and
+4. rebuild/restart with `bash scripts/serve.sh`.
+
+Avoid `0.0.0.0` unless you have deliberately secured every reachable
+interface. Do not expose the CRM or gateway directly to the public internet.
+
+## Another industry
+
+The funnel stages, field labels, copy, personas, knowledge, and research
+scope come from a vertical pack. See [VERTICALS.md](VERTICALS.md).

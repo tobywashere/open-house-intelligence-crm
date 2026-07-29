@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# GB10 production launcher: builds the dashboard, seeds the DB if missing, and
-# serves everything on one port with the real OpenClaw agent.
-# The whole product is then at http://<gb10-tailscale-name>:$PORT (default 8080;
-# 8000 on the GB10 belongs to the vLLM server that backs the agent).
+# Local production launcher: builds the dashboard, seeds the DB if missing,
+# and serves everything on one port with the configured OpenClaw agent.
+# The whole product is then at http://<host>:$PORT (default 8080).
 # Binds to 127.0.0.1 by default — nothing outside this machine can reach it.
 # For GB10/Tailscale deployments, set HOST=<tailscale-ip> to opt in to
 # binding a network-reachable interface (pair with OHI_API_TOKEN).
@@ -52,6 +51,6 @@ fi
 
 echo "──────────────────────────────────────────────"
 echo " Open House Intelligence → http://$HOST:$PORT"
-echo " agent: openclaw @ $AGENT_GATEWAY_URL"
+echo " agent: $AGENT_MODE @ $AGENT_GATEWAY_URL"
 echo "──────────────────────────────────────────────"
 cd backend && exec ../.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT"

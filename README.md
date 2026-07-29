@@ -1,139 +1,197 @@
 # OpenHouse Intelligence
 
-**Your AI-powered operating system for the modern real estate agent.** Spend less time managing your CRM. Spend more time building relationships.
+OpenHouse Intelligence is a local-first CRM for real-estate agents. You can
+describe a lead in ordinary language, record a voice note, scan a business
+card, schedule a follow-up, or book a tour. The CRM turns those actions into
+organized records and shows what needs attention.
 
-Real estate agents have data everywhere but intelligence nowhere — leads scattered across text messages, voice notes, emails, business cards, spreadsheets, and legacy CRMs, where information gets lost and nothing helps the agent get better. OpenHouse Intelligence turns those scattered conversations into an intelligent, always-on real estate operation: **just tell your agent what happened** ("I met Sarah Chen at the open house — she wants a 3-bed in Bellevue under $1.2M") and the AI reads and writes the CRM through natural language, drafts the follow-ups, books the tours, and generates real analytics — pipeline health, conversion, lead aging, source performance, next-best actions — with zero manual data entry. The result: less administration, faster follow-up, more closed deals.
+The easiest supported local-AI host is an Apple-silicon Mac mini with **16 GB
+of memory or more**. The original demo ran on a Dell Pro Max GB10. A smaller
+local model works on 16 GB; model speed and quality depend on the model you
+choose in OpenClaw.
 
-And it's **local-first**: inference runs on your own machine (a local model via OpenClaw — originally demoed on a Dell Pro Max GB10 running Qwen 3.6 35B-A3B, but any tool-capable local model works), so client PII — budgets, financial situations, relocation reasons — never leaves the machine. Full story: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
+## What works today
 
-**[`docs/CONTRACT.md`](docs/CONTRACT.md) is the frozen schema/API/tool contract — read it before writing code.** [`docs/history/PLAN.md`](docs/history/PLAN.md) is the original hackathon plan, kept for history; statuses, pages, and scope have evolved since (the contract is the source of truth).
+| Feature | Demo mode | Real local-AI mode |
+|---|---|---|
+| Leads, notes, reminders, booking, duplicate review | Yes | Yes |
+| Natural-language CRM reads and writes | Sample responses | Yes, after the OpenClaw chat endpoint and CRM skill are enabled |
+| Voice-note intake | Requires local transcription | Yes: record/upload → local transcript → review → confirm |
+| Business-card intake | Sample extraction | Yes, with the scanner skill |
+| Won/lost outcomes and conversion reporting | Yes | Yes |
+| CRM schedule and due follow-ups in the morning view | Real database facts only | Real database facts only |
+| AI meeting-preparation suggestions | No suggestion until published | Yes, when the briefing skill publishes them |
+| Market-news daily summary | Not fabricated | Only after an agent publishes a summary with valid source links |
+| Gmail and Google Calendar | Simulated and labeled off | Optional; requires Composio and internet access |
 
-## Quickstart
+The morning view never fills missing appointments, lead facts, or market
+stories with plausible-looking sample content. If a source-backed summary is
+missing, the interface says so.
+
+## Five-minute demo
+
+You need Git, Python 3.11 or newer, and Node.js 20 or newer.
 
 ```bash
-git clone <this repo> && cd open-intelligence-crm
+git clone https://github.com/tobywashere/open-house-intelligence-crm.git open-intelligence-crm
+cd open-intelligence-crm
 bash scripts/dev.sh
 ```
 
-Needs Python 3.11+ and Node 20+ on your PATH; the first run takes a few minutes while it creates a venv and installs `pip`/`npm` dependencies.
+Open [http://localhost:5173](http://localhost:5173).
 
-Open **http://localhost:5173**. That's it — you're running the full product in **mock-agent mode**: every dashboard page, the chat rail, business-card scan, follow-up drafts, and the daily briefing all work against a deterministic mock agent (canned, realistic AI responses) and a seeded set of 15 demo leads. No GPU, no local model, and no API keys required.
+Demo mode needs no model, GPU, API key, or internet connection. On the first
+run it creates the local database and, when no database exists yet, loads 15
+sample leads. It uses clearly labeled deterministic agent behavior so you can
+try the interface safely.
 
-**Another industry?** The real-estate specifics — funnel stages, field labels, UI copy, personas, and the market-research scope — live in a swappable [vertical pack](docs/VERTICALS.md). Example packs for B2B SaaS, insurance, and recruiting ship in `verticals/`.
+Try this:
 
-**Going fully local:** to swap the mock agent for a real local model (any tool-capable model, not just the hardware this project was built on), see [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md).
+1. Open **Leads** and select a person.
+2. Add a note or schedule a reminder.
+3. Return to the dashboard and choose **Add voice note** to see the
+   review-before-save flow. Actual transcription needs the local-AI setup.
+4. Choose **Scan card** to try the card review flow.
+5. On a profile, choose **Close opportunity**, then select **Won** or **Lost**.
+6. Open **Daily summary**. CRM appointments and due follow-ups are real
+   database facts; missing market research remains visibly missing.
 
-## Scan a name card
-
-Open **http://localhost:5173/scan**, photograph or upload a name card, review the extracted contact details, and confirm to add them as a CRM profile.
-
-<img src="testData/examplenamecard.jpeg" alt="Example name card for Michael Chen" width="640">
-
-## Architecture
-
-![OpenHouse Intelligence architecture: Capture (text, voice notes, Discord) → Virtual AI (unstructured conversation → structured intents) → OpenClaw orchestrator ↔ Client DB (SQLite), enriched by hyper-local market data, with scheduled briefs pushed back to the agent and a live dashboard reading the DB](docs/images/pitch-architecture.png)
-
-<details>
-<summary>Original whiteboard sketch this grew from</summary>
-
-![Architecture sketch: Client text UI → Virtual AI assistant → OpenClaw harness ↔ Client DB (SQLite), with scheduled reminders flowing back to the UI](docs/images/architecture-sketch.png)
-
-</details>
-
-## One-command startup (dev, mock agent)
+To deliberately reset to the sample database:
 
 ```bash
-bash scripts/dev.sh
+.venv/bin/python backend/seed.py --demo
 ```
 
-Seeds the database and starts the backend (http://localhost:8000, mock agent mode) + dashboard (http://localhost:5173). API docs at http://localhost:8000/docs.
+That command erases the current CRM. Do not use it after entering real data.
 
-## Production (real agent)
+## Run it on a Mac mini
+
+Use the beginner-friendly [Mac mini setup guide](docs/MAC-MINI-SETUP.md).
+The short version is:
+
+1. Install and configure OpenClaw with a tool-capable local model.
+2. Enable OpenClaw's `/v1/chat/completions` endpoint.
+3. Copy the CRM, card-scanner, and daily-command-center skills into OpenClaw.
+4. Copy `.env.example` to `.env`.
+5. Verify local audio transcription.
+6. Run `bash scripts/serve.sh`.
+
+The whole product is then at
+[http://localhost:8080](http://localhost:8080).
+
+For a different Linux or local-model host, use
+[the general local-AI guide](docs/LOCAL-AI.md). The original GB10 deployment
+is documented separately in [docs/GB10-SETUP.md](docs/GB10-SETUP.md).
+
+## What you can ask the local agent to do
+
+With the OpenClaw chat endpoint and `crm-db-operations` skill configured, the
+agent can perform audited CRM work from plain language:
+
+- “Add Taylor Brooks, looking in Bellevue around $900k.”
+- “Update Taylor's timeline to six weeks.”
+- “Remind me Monday at 9 to call Taylor.”
+- “What times are free Saturday?”
+- “Book Taylor for the 10:00 slot.”
+- “Close Taylor as won; the contract was signed.”
+
+If “won” versus “lost” is unclear, the agent must ask instead of guessing.
+The agent uses the REST tool layer; it does not write SQL directly.
+
+## Voice-note intake
+
+Open **Add voice note**, record or choose an audio file, and select
+**Transcribe and review**. The server:
+
+1. checks that the file is recognizable audio and no larger than 20 MB;
+2. transcribes it with the local OpenClaw CLI;
+3. extracts an editable CRM draft and possible duplicates;
+4. deletes the temporary audio file; and
+5. writes nothing until you explicitly add a new lead or update an existing
+   one.
+
+There is no cloud transcription fallback. See
+[Mac mini setup: verify voice](docs/MAC-MINI-SETUP.md#6-verify-voice-transcription).
+
+## Privacy: what stays local and what may leave
+
+SQLite data, local-model inference, local transcription, and the bundled
+knowledge index stay on the host.
+
+Data can leave the host only when you enable an external service:
+
+- Composio sends the necessary email/calendar data to Gmail or Google
+  Calendar.
+- Web or market-research tools send search requests and retrieve public pages.
+- A model or transcription provider configured inside OpenClaw may be remote.
+
+Those services are optional. Gmail/Calendar integrations and the inbox poller
+are off by default. Check your OpenClaw model/provider configuration before
+calling a deployment fully local.
+
+## Back up and update
+
+Stop the app before copying the database, then:
 
 ```bash
+cp backend/data/crm.db ~/Desktop/openhouse-crm-backup.db
+```
+
+To update:
+
+```bash
+git pull
 bash scripts/serve.sh
 ```
 
-Builds the dashboard and serves the whole product from **one port** (default `:8080`) with `AGENT_MODE=openclaw`, relaying chat to a local OpenClaw gateway. Hardware-agnostic setup guide: [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md). [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) walks through one example deployment (the original demo hardware) end to end. (`scripts/gb10.sh` still works as a compat shim for `serve.sh`.)
+Startup applies additive database migrations automatically. Keep the backup
+until you have checked your leads after the update.
 
-## What's in the dashboard
+## Troubleshooting
 
-![Real analytics. Period. — the dashboard concept: KPI strip, sales funnel with per-stage conversion, lead source performance, stage velocity, top opportunities, demand by area, next-best actions, and the chat rail](docs/images/pitch-dashboard.png)
-
-- `/` — the dashboard: live KPI strip in the navbar, sales funnel (with derived Qualified / Offers Submitted stages), and the deterministic insights engine (`dashboard/src/insights.ts` — computed from DB data, never LLM-invented)
-- `/leads` — prioritized inbox with the "Needs attention" neglect section
-- `/scan` — business-card capture with camera relay into lead intake
-- `/lead/:id` — profile: persona chip + AI relationship summary, activity timeline, follow-up draft with closed-loop "Mark as sent", booking, client-safe export, merge review
-- `/activity` — agent audit stream (every tool call), reachable from the dev icon in the navbar
-- Global resizable **chat rail** — sessions, markdown rendering, `[Name](lead:12)` links into profiles
-- **Daily summary overlay** — auto-opens once per day; "↻ Refresh now" asks the agent (chat session `summary-trigger`) to re-run research and repost
-
-## Manual setup
+Run the read-only readiness check while the hosted app is running:
 
 ```bash
-# backend (Python 3.11+)
-python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
-.venv/bin/python backend/seed.py --demo
-cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8000
-
-# dashboard (Node 20+), separate terminal
-cd dashboard && npm install && npm run dev
+python3 scripts/doctor.py
 ```
 
-## Project layout
+To send one harmless request through the real OpenClaw chat endpoint:
 
-| Path | Holds | Start here |
-|---|---|---|
-| `backend/` | FastAPI app, SQLite schema & business logic | schema in `backend/schema.sql`, scoring weights in `app/scoring.py`, seed data in `seed.py`, agent drivers in `app/agent/` (`mock.py` for dev, `openclaw.py` for the real relay) |
-| `dashboard/` | React + TypeScript + Vite frontend | typed API client in `src/api.ts`, deterministic insights in `src/insights.ts` |
-| `skills/` | Stdlib-only tools the agent calls (never third-party deps) | one directory per skill — `crm-db-operations/` (`SKILL.md` + `tools.py`) is the core one; `business-card-scanner/` and `daily-command-center/` build on it; `composio-email-calendar/` is the optional Gmail/Calendar integration |
-| `docs/` | Design docs, the frozen contract, setup guides | [`docs/CONTRACT.md`](docs/CONTRACT.md) is the schema/API/tool source of truth; [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md) for running a real local model |
-| `scripts/` | Dev & production launchers | `dev.sh` (mock mode), `serve.sh` (production, real agent) |
+```bash
+python3 scripts/doctor.py --live-agent
+```
 
-The contract (`docs/CONTRACT.md`) is frozen — breaking changes go through an issue/PR discussion, per [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Common results:
 
-## Environment variables
+- **Endpoint disabled**: enable
+  `gateway.http.endpoints.chatCompletions.enabled` in OpenClaw.
+- **Unauthorized**: `AGENT_GATEWAY_TOKEN` does not match the gateway.
+- **Unreachable**: check that OpenClaw is running on port 18789 and
+  `AGENT_GATEWAY_URL` is correct.
+- **Voice transcription failed**: test
+  `openclaw infer audio transcribe --file <audio-file> --json` directly.
+- **No daily market summary**: this is an honest empty state. Configure the
+  summary/research workflow; the CRM does not make up articles.
 
-| Var | Default | Meaning |
-|---|---|---|
-| `AGENT_MODE` | `mock` | `mock` (dev, no local model needed) or `openclaw` (relay to a real local model via OpenClaw) |
-| `AGENT_GATEWAY_URL` | `http://gb10:18789` | OpenClaw gateway; default hostname is from the original demo box (see [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md)) — `scripts/serve.sh` overrides to `http://localhost:18789` when backend and gateway share the same box |
-| `AGENT_GATEWAY_TOKEN` | — | Gateway bearer token — only needed if the gateway has token auth enabled (default is `gateway.auth.mode: "none"`) |
-| `AGENT_CHAT_PATH` | `/v1/chat/completions` | Gateway chat endpoint path |
-| `DB_PATH` | `backend/data/crm.db` | SQLite location |
-| `PORT` | `8080` | Serve port for `scripts/serve.sh` (dev mode uses 8000 + 5173) |
-| `VITE_API_URL` | `http://localhost:8000/api` | Backend URL for the dashboard |
-| `CRM_API_URL` | `http://localhost:8080/api` | Backend URL for the agent's `skills/crm-db-operations/tools.py` (the vLLM/model server has its own port — this must point at the CRM backend, not it) |
-| `INTEGRATIONS_MODE` | `off` | `off` (demo-safe, simulated) or `live` (real Gmail + Google Calendar via Composio) |
-| `COMPOSIO_API_KEY` | — | Composio project API key (`ak_…`) — create one at https://app.composio.dev → project settings → API keys. Not needed with `COMPOSIO_TRANSPORT=cli` |
-| `COMPOSIO_TRANSPORT` | `api` | `api` (REST, needs `COMPOSIO_API_KEY`) or `cli` (shell out to the GB10's logged-in `composio` CLI — managed OAuth, no key; the CLI's `uak_` session key does NOT work with the REST API) |
-| `COMPOSIO_USER_ID` | `default` | Composio connected-account user id |
-| `GCAL_TIMEZONE` | `America/Los_Angeles` | Timezone for created calendar events |
+## Developer reference
 
-Everyone develops locally in mock mode. For integration tests against a real local model, point `VITE_API_URL` / `AGENT_GATEWAY_URL` at that machine over Tailscale (or your own network).
+- [docs/CONTRACT.md](docs/CONTRACT.md) — schema, REST, and tool contract
+- [docs/LOCAL-AI.md](docs/LOCAL-AI.md) — general OpenClaw/local-model setup
+- [docs/VERTICALS.md](docs/VERTICALS.md) — use another industry pack
+- [docs/BRIEFING-UI.md](docs/BRIEFING-UI.md) — source and trust boundaries
+- [CONTRIBUTING.md](CONTRIBUTING.md) — tests and contribution workflow
+- [docs/OpenHouse-Pitch.pdf](docs/OpenHouse-Pitch.pdf) — original pitch deck
 
-**Before your first real chat message:** confirm the OpenClaw gateway actually serves `AGENT_CHAT_PATH` — some builds ship it disabled by default, and `agent_connected:true` on `/api/health` does *not* prove otherwise (it only checks the gateway process is reachable). See the wiring-verification steps in [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md#4-verify-the-wiring).
+Main folders:
 
-## Origins
+| Path | Purpose |
+|---|---|
+| `backend/` | FastAPI, SQLite, validation, and agent adapters |
+| `dashboard/` | React/TypeScript user interface |
+| `skills/` | OpenClaw CRM, card, daily, and optional integration skills |
+| `scripts/` | launchers and readiness checks |
+| `docs/` | operator and developer documentation |
 
-OpenHouse Intelligence was built at the **Dell × NVIDIA BuilderBase hackathon in Seattle**, where it placed among the **top-8 finalist teams**. It's grown past the hackathon build since — see [`docs/CONTRACT.md`](docs/CONTRACT.md) for the current source of truth — but that's where the local-first premise and the core product loop started. Full pitch deck: [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf).
-
-Team: **Johaan, K, Chris, and Toby**.
-
-## Docs index
-
-- [`docs/OpenHouse-Pitch.pdf`](docs/OpenHouse-Pitch.pdf) — the pitch deck: vision, problem, architecture, demo story
-- [`docs/VERTICALS.md`](docs/VERTICALS.md) — adapt the CRM to another industry (vertical packs)
-- [`docs/CONTRACT.md`](docs/CONTRACT.md) — frozen schema / API / agent tools (source of truth)
-- [`docs/history/TODO.md`](docs/history/TODO.md) — post-MVP work, tracked by owner
-- [`docs/LOCAL-AI.md`](docs/LOCAL-AI.md) — running a real local model (hardware-agnostic)
-- [`docs/GB10-SETUP.md`](docs/GB10-SETUP.md) — one example deployment, on the original demo hardware
-- [`docs/INSIGHTS.md`](docs/INSIGHTS.md) — deterministic insights engine
-- [`docs/BRIEFING-UI.md`](docs/BRIEFING-UI.md), [`docs/FUNNEL-UI.md`](docs/FUNNEL-UI.md) — briefing & funnel design docs (nav has since merged into `/`)
-- [`docs/superpowers/specs/`](docs/superpowers/specs/) — approved specs (Google Calendar + Gmail integration)
-- [`docs/history/PLAN.md`](docs/history/PLAN.md) — original hackathon plan (historical)
-
-## Demo helpers
-
-- `python backend/seed.py --demo` — reset to the 15-lead demo dataset (Sarah Chen's un-merged duplicate is leads #1/#2); bare `python backend/seed.py` seeds an empty schema (clean install)
-- `POST /api/demo/advance-time {"days":3}` — backdate activity so the neglected-lead check fires on stage
+OpenHouse Intelligence began at the Dell × NVIDIA BuilderBase hackathon in
+Seattle and placed among the top-eight finalist teams. Team: Johaan, K, Chris,
+and Toby.

@@ -91,6 +91,27 @@ def main(demo: bool):
                     (i, source if source in ("form", "text", "note") else "note",
                      f"Initial contact via {source}.", f"-{days_ago + 1} days"),
                 )
+                if status == "closed":
+                    # Demo closures carry an explicit outcome and enough
+                    # status evidence for the funnel to show only stages this
+                    # lead actually reached.
+                    conn.execute(
+                        "UPDATE leads SET outcome = 'won', "
+                        "close_reason = 'Demo transaction completed' WHERE id = ?",
+                        (i,),
+                    )
+                    for event_type, content in (
+                        ("status_change", "new → contacted"),
+                        ("status_change", "contacted → meeting_booked"),
+                        ("offer", "Offer accepted for demo transaction"),
+                        ("status_change", "meeting_booked → closed (won)"),
+                    ):
+                        conn.execute(
+                            "INSERT INTO events (lead_id, type, content, created_at) "
+                            "VALUES (?,?,?,strftime('%Y-%m-%dT%H:%M:%S', "
+                            "datetime('now','localtime', ?)))",
+                            (i, event_type, content, f"-{days_ago} days"),
+                        )
 
             for lead_id, etype, content in SARAH_EVENTS:
                 conn.execute(

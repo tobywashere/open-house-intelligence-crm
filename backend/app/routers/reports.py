@@ -1,9 +1,8 @@
-"""Date-keyed generated content: Executive Briefing, dashboard Insights, and the
-Daily Summary overlay. All three follow the same shape — one JSON payload per
-date, upserted by the agent (K's crons) and read by the dashboard. The backend
-doesn't interpret the payload; it only stores and serves it by date.
+"""Date-keyed reporting.
 
-Shapes: docs/BRIEFING-UI.md (briefing, summary), docs/INSIGHTS.md (insights).
+Briefing GETs rehydrate canonical CRM facts and accept only bounded stored
+advice. Daily summaries are schema-validated and require source URLs for
+market items. Dashboard insights remain a deterministic persisted payload.
 """
 import json
 from datetime import date as Date

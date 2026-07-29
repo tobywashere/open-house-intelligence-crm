@@ -63,9 +63,11 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 
 ### `briefing`, `insights`, `daily_summary` — date-keyed generated content
 `date TEXT PRIMARY KEY, payload TEXT (JSON), generated_at`/`computed_at`. One row
-per date, upserted by whoever posts. The backend stores/serves the payload as-is —
-see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
-[`docs/INSIGHTS.md`](INSIGHTS.md) for the payload shapes.
+per date. Briefing storage contains bounded meeting advice; every briefing GET
+rehydrates displayed facts from canonical CRM rows. Daily summaries are
+schema-validated and market items require valid source URLs. Insights remain
+the deterministic dashboard payload. See [`docs/BRIEFING-UI.md`](BRIEFING-UI.md)
+and [`docs/INSIGHTS.md`](INSIGHTS.md).
 
 ## 2. REST API (base: `http://<host>:8000/api` dev / `:8080` single-port serve)
 
@@ -90,20 +92,22 @@ see §2 for the endpoints and [`docs/BRIEFING-UI.md`](BRIEFING-UI.md) /
 | `GET /chat/sessions` | → `[{session_id, message_count, last_at, preview}]` | additive 2026-07-26 (chat history picker) |
 | `DELETE /chat/history?session_id=` | → `{deleted}` | additive 2026-07-26 (clear conversation) |
 | `POST /scan-card` | `{filename, data: base64}` → `{extracted, duplicates, filename}` | additive 2026-07-26; extraction ONLY (review-first) — agent reads the saved image via business-card-scanner; mock returns a canned card; **413** image > 8 MB, **400** invalid base64, **422** not a recognized image (unrecognized extension or content doesn't sniff as one), **502** agent couldn't extract |
+| `POST /voice-note/prepare` | `{filename, content_type, data: base64}` → `{transcript, draft, duplicates, warnings}` | local transcription and extraction only; validates audio signature/20 MB limit, deletes temporary audio, and never writes a lead |
 | `POST /reminders` | `{lead_id, due_ts, note}` → reminder | schedule a follow-up |
 | `GET /reminders?due=1` | → `[reminder + lead_name]` | dashboard polls this for the reminder banner |
 | `PATCH /reminders/{id}` | → reminder | marks done |
 | `GET /audit?limit=50` | → `[audit rows]` | newest first |
 | `GET /metrics` | → dashboard tile numbers | see below |
-| `GET /health` | → `{ok, agent_mode, agent_connected}` | |
+| `GET /health` | → `{ok, agent_mode, agent_connected, agent_status}` | structured mock/enabled/verified/disabled/auth/unreachable/failed readiness |
+| `POST /health/agent-check` | → `agent_status` | one explicit harmless completion check |
 | `POST /demo/advance-time` | `{days}` → `{neglected: [lead]}` | backdates activity, runs neglect check |
-| `GET /briefing?date=YYYY-MM-DD` | → briefing JSON | **404** if none generated yet; shape in `docs/BRIEFING-UI.md` |
-| `POST /briefing` | briefing JSON (must include `date`) → same JSON | upsert by date |
+| `GET /briefing?date=YYYY-MM-DD` | → canonical CRM briefing JSON | always derives schedule, lead facts, and due actions from current rows; stored agent advice is optional |
+| `POST /briefing` | `{date, generated_at?, meeting_briefs:[{lead_id,prepare,recommendation}]}` → validated advice | factual replacement fields are ignored; unknown lead IDs are rejected |
 | `GET /insights?date=YYYY-MM-DD` | → insights JSON | **404** if none yet; shape in `docs/INSIGHTS.md` |
 | `POST /insights` | insights JSON (must include `date`) → same JSON | upsert by date |
 | `GET /summary?date=YYYY-MM-DD` | → daily summary JSON | **404** if none yet; shape in `docs/BRIEFING-UI.md` |
 | `POST /summary` | summary JSON (must include `date`) → same JSON | upsert by date |
-| `GET /integrations/status` | → `{mode, gmail, gcal}` | additive, recorded 2026-07-27; `mode` is `INTEGRATIONS_MODE`, `gmail`/`gcal` reflect whether Composio is actually live (mode=live AND a key is configured) |
+| `GET /integrations/status` | → `{mode, configured, last_operation, detail}` | distinguishes off/configured/verified/failed without exposing secrets |
 | `POST /email/send` | `{lead_id, subject, body}` → `{sent: true, simulated}` | additive, recorded 2026-07-27; recipient must be the lead's own `email` (400 otherwise); `simulated: true` when integrations aren't live; logs an `events` row + reminder + audit row; this is the only outbound-email path that is audited (see §3 preamble) |
 | `GET /knowledge/search?q=&k=` | → `[{doc, heading, breadcrumb, score, text}]` | additive, recorded 2026-07-28; local BM25 lexical search over `docs/knowledge/*.md` (`backend/app/knowledge/`), ranked highest-score-first, empty list if nothing clears `KNOWLEDGE_MIN_SCORE`; `q` required non-empty (422 otherwise), `k` bounded 1-10; debug/dashboard endpoint — the same retrieval also runs inside `POST /chat` (see §3) to ground agent replies in the operator's own market-intelligence doc; read-only, does **not** audit (see §3 preamble — it is not one of the two audited reads) |
 | `GET /knowledge/docs` | → `[{name, chunks, bytes}]` | additive, recorded 2026-07-28; the `*.md` files in `KNOWLEDGE_DIR`, sorted by name. `chunks` is counted from the **live** corpus, so a file present but unindexed honestly reports `0` rather than a count it doesn't have; `README.md` is excluded from indexing by convention (see `knowledge/index.py`) and so reports `0`. Read-only, does **not** audit (see §3 preamble) |
@@ -179,7 +183,7 @@ really an **audit activity** stream covering all three, not agent-only.
 | `schedule_followup(lead_id, due_ts, note)` | `POST /reminders` |
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` — runs the neglect check now and returns newly-flagged leads; use `list_leads(neglected=1)` to see all currently-neglected leads without re-running it |
 | `generate_dashboard_insights()` | `GET /metrics` + LLM summary |
-| `post_briefing(payload)` | `POST /briefing` — upserts by `date` (additive, recorded 2026-07-28); used by the `daily-command-center` skill's final step, shape in `docs/BRIEFING-UI.md` |
+| `post_briefing(payload)` | `POST /briefing` — publishes bounded advice for real appointments; backend supplies all visible CRM facts |
 | `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28); agent-invoked precise path — called when the model itself decides a question needs domain knowledge (market/tax/financing/neighborhood); the same retrieval also runs as best-effort auto-injection inside `POST /chat`, see that row's note |
 | `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28) — agent-invoked path onto the same BM25 retrieval `POST /chat` uses for auto-injection (see §2); this is the precise path — the model decides when domain knowledge is actually needed, rather than a lexical gate guessing from the raw message |
 

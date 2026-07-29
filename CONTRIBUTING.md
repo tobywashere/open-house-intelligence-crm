@@ -12,16 +12,16 @@ database, installs dashboard dependencies, and starts both the backend
 
 ## Running tests
 
-Backend (108 tests):
+Backend:
 
 ```bash
-cd backend && ../.venv/bin/python -m pytest tests/ -q
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest backend/tests -p no:cacheprovider -q
 ```
 
 Dashboard (typecheck + build):
 
 ```bash
-cd dashboard && npx tsc -b && npm run build
+cd dashboard && npm run build
 ```
 
 Both must pass before opening a PR. CI runs the same checks (with plain

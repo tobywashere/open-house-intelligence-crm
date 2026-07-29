@@ -235,11 +235,12 @@ def generate_dashboard_insights() -> dict:
 
 
 def post_briefing(payload: dict) -> dict:
-    """Upsert the day's morning-briefing JSON (POST /briefing, upsert by
-    date). payload must match the shape in docs/BRIEFING-UI.md and include a
-    "date" key (YYYY-MM-DD) — that's the upsert key. Used by the
-    daily-command-center skill's final step; the dashboard reads it back via
-    GET /briefing?date=.
+    """Upsert bounded meeting-preparation advice for today's CRM briefing.
+
+    Payload: ``{date, generated_at?, meeting_briefs:
+    [{lead_id, prepare[], recommendation?}]}``. The backend discards
+    agent-supplied schedule and lead facts, then rebuilds the visible briefing
+    from canonical appointments, leads, and reminders on every GET.
     """
     return _request("POST", "/briefing", body=payload)
 

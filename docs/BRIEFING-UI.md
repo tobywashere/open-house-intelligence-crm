@@ -1,17 +1,15 @@
-# Executive Briefing — Dashboard Plan
+# Executive Briefing — source and UI contract
 
-> Product vision: the CRM is the memory, the AI is the trusted assistant. Every morning the
-> realtor gets an AI-generated executive briefing: today's schedule, a brief for every meeting,
-> and the highest-impact suggested actions. Johaan owns everything visual here; the agent
-> (K) generates the content on a morning cron; the backend (Toby) stores and serves it.
+The CRM is the factual source. The agent may add visibly labeled preparation
+advice, but it cannot replace schedule or lead facts.
 
-## Contract addition (proposed — Toby & K sign off)
+## Endpoints
 
 ### New endpoint pair
 
 ```
-GET  /api/briefing?date=YYYY-MM-DD   → briefing JSON below, or 404 if none generated yet
-POST /api/briefing                    → agent cron writes the day's briefing (upsert by date)
+GET  /api/briefing?date=YYYY-MM-DD   → canonical CRM briefing JSON
+POST /api/briefing                    → agent writes optional meeting advice
 ```
 
 ### Briefing shape
@@ -24,18 +22,17 @@ names, times, scores, counts, or create a meeting that does not exist.
 ```json
 {
   "date": "2026-07-26",
-  "greeting": "Good morning, Annie 👋 — 2 showings, 1 listing appointment, 3 follow-ups due.",
-  "generated_at": "2026-07-26T07:00:12Z",
+  "source": "crm",
+  "greeting": "Good morning — 1 appointment scheduled today.",
+  "generated_at": "2026-07-26T07:00:12",
   "schedule": [
-    {"appointment_id": 12, "start": "10:00", "end": "10:45", "kind": "meeting", "title": "Meeting — Michael Rodriguez", "lead_id": 4},
-    {"start": "10:45", "end": "11:05", "kind": "travel",  "title": "Travel to Bellevue"},
-    {"start": "11:05", "end": "11:45", "kind": "buffer",  "title": "Buffer / follow-ups"}
+    {"appointment_id": 12, "start": "10:00", "end": "10:45", "kind": "meeting", "title": "Meeting — Michael Rodriguez", "lead_id": 4}
   ],
   "meeting_briefs": [
     {
       "lead_id": 4, "name": "Michael Rodriguez", "area": "Medina",
       "persona": "Luxury Executive", "score": 98,
-      "summary": "Intent: buy. Area: Medina. Budget: $2000000.",
+      "summary": "Intent: buy. Area: Medina. Budget: $2,000,000.",
       "assistant_advice": {
         "prepare": ["Luxury comps", "Waterfront inventory", "Privacy info"],
         "recommendation": "Lead with evidence, not opinions."
@@ -43,9 +40,10 @@ names, times, scores, counts, or create a meeting that does not exist.
     }
   ],
   "suggested_actions": [
-    {"lead_id": 9, "name": "Ryan Miller", "channel": "text",
-     "action": "Text Ryan Miller",
-     "reason": "No contact for 6 days; mortgage-rate concerns; responds better to text."}
+    {"lead_id": 9, "name": "Ryan Miller", "channel": "call",
+     "action": "Follow up with Ryan Miller",
+     "reason": "Call Ryan about the documents due today.",
+     "evidence": {"kind": "reminder", "id": 31}}
   ]
 }
 ```
@@ -64,15 +62,15 @@ event. Mock mode just acknowledges.
 ## Daily summary overlay (added 2026-07-26)
 
 The daily summary is a **full-screen overlay** (auto-opens once per day, ✕/Esc to
-close, "☀️ Daily summary" header button reopens any time) — it is NOT delivered in
-chat. Two portions, both agent-generated (K), UI already built and mock-backed:
+close, "☀️ Daily summary" header button reopens any time). The market/insight
+portion has no mock fallback:
 
 ```
 GET/POST /api/summary?date=YYYY-MM-DD
 {
   "date": "…", "generated_at": "…", "greeting": "…",
-  "market_watch": [{ "title", "source", "takeaway",           // required
-                     "url?", "date?", "summary?", "geo?",     // optional — all rendered
+  "market_watch": [{ "title", "source", "takeaway", "url",    // required
+                     "date?", "summary?", "geo?",              // optional — all rendered
                      "content_opportunity?" }],               //   (mirrors prompts/seattle-real-estate-news-reporter.md)
   "ai_insights":  [{ "title", "body" }]                       // model-written narrative
 }
@@ -80,6 +78,8 @@ GET/POST /api/summary?date=YYYY-MM-DD
 
 `ai_insights` here are the model's *written* observations — separate from the
 deterministic insights engine (`docs/INSIGHTS.md`), which K's cron can use as input.
+Every market item requires a valid HTTP(S) source URL. Missing or invalid
+summaries render an explicit state rather than sample content.
 
 ## Dashboard information architecture
 
@@ -111,13 +111,12 @@ appointments, notes, booking (existing).
 
 **C. Chat integration** — briefing card message type, `lead:` link parsing, unchanged driver.
 
-**D. Cool factor** — persona → accent-color mapping, SVG score rings, staggered card entrance
-animation, now-line that moves in real time, empty state ("Your briefing generates at 7:00 —
-here's yesterday's" / mock).
+**D. Visual treatment** — persona → accent-color mapping, SVG score rings,
+staggered card entrance animation, now-line that moves in real time, and
+honest empty/error states.
 
-## What Johaan needs from teammates (non-blocking, mock covers until then)
+## Current publishing responsibility
 
-- **Toby**: `briefing` table + GET/POST endpoints, `persona` + `relationship_summary` columns.
-- **K**: 7am cron on the GB10 — Qwen 3.6 35B-A3B composes the briefing JSON from leads,
-  events, and appointments, POSTs it to `/api/briefing`. (This is the "scheduled workflows"
-  bullet from docs/history/PLAN.md — same shape as the neglected-lead cron.)
+The backend and UI trust boundary is shipped. An OpenClaw schedule may run
+`daily-command-center` to publish optional meeting advice. A separate
+source-backed workflow must publish the market summary to `/api/summary`.
