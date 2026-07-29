@@ -119,3 +119,19 @@ CREATE TABLE IF NOT EXISTS settings (
   payload TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
+
+-- Agent-proposed lead-lifecycle writes awaiting a human decision (see
+-- routers/pending_changes.py). Only agent-tagged calls (X-Actor: agent) to
+-- create/update/close/delete/merge get queued here instead of applied.
+CREATE TABLE IF NOT EXISTS pending_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation TEXT NOT NULL,     -- create_lead | update_lead | close_lead | delete_lead | merge_leads
+  lead_id INTEGER,             -- target lead when known; NULL for create_lead
+  payload TEXT NOT NULL,       -- JSON body as submitted, replayed verbatim on approve
+  summary TEXT NOT NULL,       -- human-readable one-liner for the approval dialog
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | denied
+  result TEXT,                 -- JSON of the applied result, filled on approve
+  deny_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+  decided_at TEXT
+);

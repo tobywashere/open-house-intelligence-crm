@@ -58,6 +58,14 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 ### `audit_log` — powers the dashboard's agent-activity stream
 `id, ts, actor (agent|user|cron), tool, input JSON, output JSON, lead_id nullable`
 
+### `pending_changes` — agent-initiated lead writes awaiting operator approval
+(additive, recorded 2026-07-28) `id, operation (create_lead|update_lead|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, status (pending|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`.
+Rows are created only when one of the 5 lead-lifecycle write endpoints is
+called with header `X-Actor: agent` (sent by `skills/crm-db-operations/tools.py`
+on every call — the only thing that executes those tools). Calls without that
+header (the dashboard) are unaffected and apply immediately, exactly as
+before. See §2/§3 below and `backend/app/approvals.py`.
+
 ### `chat_messages`
 `id, session_id, role (user|agent), content, created_at`
 
@@ -71,17 +79,28 @@ and [`docs/INSIGHTS.md`](INSIGHTS.md).
 
 ## 2. REST API (base: `http://<host>:8000/api` dev / `:8080` single-port serve)
 
+**Pending-approval deviation (additive, recorded 2026-07-28):** on the 5
+lead-lifecycle write endpoints marked **⏸** below, a request carrying header
+`X-Actor: agent` does NOT apply — it queues a `pending_changes` row and
+returns `202 {pending: true, id, operation, summary, status: "pending"}`
+instead of the documented lead/result shape. Requests without that header
+(the dashboard) are unaffected and get the documented response exactly as
+before. See the `pending_changes` table (§1) and §3's tool-catalog note.
+
 | Method & path | Body → Response | Notes |
 |---|---|---|
-| `POST /leads` | `{raw_text, source}` or structured fields → lead | raw notes get mock/LLM extraction via process |
+| `POST /leads` ⏸ | `{raw_text, source}` or structured fields → lead | raw notes get mock/LLM extraction via process |
 | `GET /leads?sort=priority&status=&neglected=` | → `[lead]` | priority = score desc, neglected first; `neglected=1` filters to `is_neglected=1` only (additive, recorded 2026-07-27) |
 | `GET /leads/{id}` | → `{...lead, events: [...], appointments: [...]}` | full profile |
-| `PATCH /leads/{id}` | partial lead → lead | status transitions validated; cannot set `closed` directly |
-| `POST /leads/{id}/close` | `{outcome: "won"|"lost", reason?}` → lead | forward-only close with an explicit business outcome |
-| `DELETE /leads/{id}` | → `{deleted}` | additive, recorded 2026-07-27; clears the lead's `audit_log.lead_id` to NULL rather than deleting those rows |
+| `PATCH /leads/{id}` ⏸ | partial lead → lead | status transitions validated; cannot set `closed` directly |
+| `POST /leads/{id}/close` ⏸ | `{outcome: "won"|"lost", reason?}` → lead | forward-only close with an explicit business outcome |
+| `DELETE /leads/{id}` ⏸ | → `{deleted}` | additive, recorded 2026-07-27; clears the lead's `audit_log.lead_id` to NULL rather than deleting those rows |
 | `POST /leads/{id}/events` | `{type, content}` → event | bumps `last_activity_at` |
 | `GET /leads/{id}/duplicates` | → `[{lead, match_on}]` | exact phone/email, fuzzy name |
-| `POST /leads/merge` | `{primary_id, duplicate_id}` → merged lead | moves events, deletes duplicate |
+| `POST /leads/merge` ⏸ | `{primary_id, duplicate_id}` → merged lead | moves events, deletes duplicate |
+| `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`) |
+| `POST /pending-changes/{id}/approve` | → the applied lead/result | additive, recorded 2026-07-28; replays the queued write through the same logic the direct path uses; **400** if not currently `pending`; on failure (e.g. the lead was deleted meanwhile) the row stays `pending` for retry or denial |
+| `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
 | `POST /leads/{id}/process` | `{}` → `{lead, followup_draft}` | extract → score → draft (mock or agent) |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |
 | `POST /appointments` | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; sets status `meeting_booked` |
@@ -165,16 +184,32 @@ an `audit_log` row for outbound comms. Note for readers of the dashboard:
 `audit_log` table in §1) — the dashboard's "agent activity" stream is
 really an **audit activity** stream covering all three, not agent-only.
 
+**Pending-approval gate (additive, recorded 2026-07-28):** `create_lead`,
+`update_lead`, `close_lead`, `delete_lead`, and `merge_leads` — the 5 tools
+below marked ⏸ — no longer write directly. Because `tools.py` sends
+`X-Actor: agent` on every call (see §2), calling one of these queues a
+`pending_changes` row (not itself audited — nothing was applied yet) and
+returns `{pending: true, ...}` instead of applying; a human then approves or
+denies it from the dashboard. Denying writes a single `deny_pending_change`
+audit row (actor `user`) and nothing else. Approving runs the original write,
+so it audits twice: the original tool's own row (actor `agent`, e.g.
+`create_lead`) plus the operator's `approve_pending_change` (actor `user`).
+The in-process
+Gmail-poller auto-intake path (`_intake_lead` in `integrations/poller.py`)
+calls `create_lead` directly with no HTTP request at all and is unaffected by
+this gate — it still audits as `email_lead_intake` (actor `cron`), same as
+before.
+
 | Tool | Endpoint |
 |---|---|
-| `create_lead(raw_text, source)` | `POST /leads` |
-| `update_lead(id, fields)` | `PATCH /leads/{id}` |
-| `close_lead(id, outcome, reason)` | `POST /leads/{id}/close` |
+| `create_lead(raw_text, source)` ⏸ | `POST /leads` |
+| `update_lead(id, fields)` ⏸ | `PATCH /leads/{id}` |
+| `close_lead(id, outcome, reason)` ⏸ | `POST /leads/{id}/close` |
 | `find_duplicate_leads(id)` | `GET /leads/{id}/duplicates` |
-| `merge_leads(primary_id, duplicate_id)` | `POST /leads/merge` (additive, recorded 2026-07-27) |
+| `merge_leads(primary_id, duplicate_id)` ⏸ | `POST /leads/merge` (additive, recorded 2026-07-27) |
 | `get_lead_context(id)` | `GET /leads/{id}` |
 | `list_leads(sort, status, neglected)` | `GET /leads?sort=&status=&neglected=` (additive, recorded 2026-07-27) |
-| `delete_lead(lead_id, reason)` | `DELETE /leads/{id}` (additive, recorded 2026-07-27) |
+| `delete_lead(lead_id, reason)` ⏸ | `DELETE /leads/{id}` (additive, recorded 2026-07-27) |
 | `score_lead(id)` | `POST /leads/{id}/process` (score part) |
 | `draft_followup(id)` | `POST /leads/{id}/process` (draft part) |
 | `check_availability(date)` | `GET /availability?date=` |

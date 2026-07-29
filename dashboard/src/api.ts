@@ -149,6 +149,18 @@ export interface DuplicateCandidate {
   match_on: string
 }
 
+// A lead-lifecycle write the agent proposed, awaiting operator approval
+// (docs/CONTRACT.md's pending-changes section). Manual dashboard edits never
+// produce these — only agent-tagged calls do.
+export interface PendingChange {
+  id: number
+  operation: 'create_lead' | 'update_lead' | 'close_lead' | 'delete_lead' | 'merge_leads'
+  lead_id: number | null
+  summary: string
+  status: 'pending' | 'approved' | 'denied'
+  created_at: string
+}
+
 export interface VoicePrepareResult {
   transcript: string
   draft: VoiceDraft
@@ -298,6 +310,14 @@ export const api = {
     }),
   integrationsStatus: () => req<IntegrationsStatus>('/integrations/status'),
   vertical: <T>() => req<T>('/vertical'),
+
+  pendingChanges: () => req<PendingChange[]>('/pending-changes?status=pending'),
+  approvePending: (id: number) => req<Lead | Record<string, unknown>>(`/pending-changes/${id}/approve`, { method: 'POST' }),
+  denyPending: (id: number, reason?: string) =>
+    req<PendingChange>(`/pending-changes/${id}/deny`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
 }
 
 // Calendar download must go through an authenticated fetch — a plain <a href>

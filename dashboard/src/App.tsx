@@ -5,6 +5,7 @@ import { AuditLog } from './components/AuditLog'
 import { ChatPanel } from './components/ChatPanel'
 import { DailySummaryOverlay } from './components/DailySummaryOverlay'
 import { LocalBadge } from './components/LocalBadge'
+import { PendingApprovals } from './components/PendingApprovals'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
 import { fetchFunnel, Kpi } from './funnel'
@@ -155,6 +156,7 @@ export default function App() {
         </div>
       </header>
       <Toasts />
+      <PendingApprovals />
 
       <ReminderBanner />
 

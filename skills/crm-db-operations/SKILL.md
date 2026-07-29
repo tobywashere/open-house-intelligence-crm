@@ -37,6 +37,16 @@ is auditable.
    the user clearly says the opportunity was **won** or **lost**. If they only
    say "close it," ask which outcome applies; never guess. Do not set
    `status="closed"` through `update_lead`.
+9. `create_lead`, `update_lead`, `close_lead`, `delete_lead`, and `merge_leads`
+   are **queued for operator approval**, not applied immediately — the
+   backend records your proposed change and a human approves or denies it
+   from the dashboard. A successful call to one of these returns
+   `{"pending": true, "id", "operation", "summary", "status": "pending"}`
+   instead of the usual lead/result shape. **Do not treat a `pending` response
+   as if the write happened** — tell the user their request was submitted and
+   is awaiting the operator's review (e.g. "I've queued that lead for your
+   approval"), not that it's done. There's nothing to retry or poll for; the
+   operator decides on their own time.
 
 ## Setup
 

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from .live_server import live_server  # noqa: F401  (end-to-end search_knowledge test)
@@ -119,6 +120,18 @@ def test_search_knowledge_end_to_end(live_server):
         assert no_hits == []
 
 
+def _approve(live_server, pending):
+    """create_lead/update_lead/close_lead now queue for operator approval
+    (tools.py sends X-Actor: agent — see docs/CONTRACT.md's pending-changes
+    section) instead of applying directly. Approving stands in for the
+    operator's dashboard click so these end-to-end tests can keep exercising
+    the rest of the natural-language flow against a real applied lead."""
+    assert pending["pending"] is True
+    res = httpx.post(f"{live_server}/api/pending-changes/{pending['id']}/approve")
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
 def test_natural_language_crm_write_and_booking_contract_end_to_end(live_server):
     from app.db import get_conn
 
@@ -128,8 +141,8 @@ def test_natural_language_crm_write_and_booking_contract_end_to_end(live_server)
         )
 
     with patch.object(crm, "BASE_URL", f"{live_server}/api"):
-        lead = crm.create_lead(name="Taylor Brooks", source="note", area="Bellevue")
-        updated = crm.update_lead(lead["id"], budget=900_000)
+        lead = _approve(live_server, crm.create_lead(name="Taylor Brooks", source="note", area="Bellevue"))
+        updated = _approve(live_server, crm.update_lead(lead["id"], budget=900_000))
         reminder = crm.schedule_followup(
             lead["id"], "2026-08-03T09:00:00", "Call Taylor"
         )
@@ -149,8 +162,8 @@ def test_natural_language_crm_write_and_booking_contract_end_to_end(live_server)
 
 def test_close_lead_tool_records_explicit_won_outcome(live_server):
     with patch.object(crm, "BASE_URL", f"{live_server}/api"):
-        lead = crm.create_lead(name="Won Client", source="note")
-        closed = crm.close_lead(lead["id"], "won", "Contract signed")
+        lead = _approve(live_server, crm.create_lead(name="Won Client", source="note"))
+        closed = _approve(live_server, crm.close_lead(lead["id"], "won", "Contract signed"))
 
         assert closed["status"] == "closed"
         assert closed["outcome"] == "won"

@@ -1,11 +1,12 @@
 import json
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from ..agent import get_driver
+from ..approvals import is_agent_write, queue_pending_change
 from ..db import audit, get_conn, row_to_dict
 from ..duplicates import PLACEHOLDER_NAME, find_duplicate_candidates
 from ..integrations import hooks
@@ -80,8 +81,73 @@ def fetch_lead(conn, lead_id: int) -> dict:
     return row_to_dict(row)
 
 
+def _fmt_val(key: str, value) -> str:
+    if value is None or value == "":
+        return "—"
+    if key == "budget":
+        try:
+            return f"${int(value):,}"
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+# Human-readable one-liners for the pending-changes approval dialog. Each does
+# a quick read (via fetch_lead, which 404s on a bad id — appropriately: a
+# write for a nonexistent lead should fail fast, not get queued).
+def summarize_create_lead(body: "LeadIn") -> str:
+    if body.name:
+        detail = body.name
+    elif body.raw_text:
+        text = body.raw_text.strip().replace("\n", " ")
+        detail = f'from note: "{text[:80]}{"…" if len(text) > 80 else ""}"'
+    else:
+        detail = "(unnamed)"
+    extra = [x for x in (body.area, f"${body.budget:,}" if body.budget else None) if x]
+    suffix = f" ({', '.join(extra)})" if extra else ""
+    return f"Create lead: {detail}{suffix}"
+
+
+def summarize_update_lead(lead_id: int, body: "LeadPatch") -> str:
+    fields = body.model_dump(exclude_none=True)
+    with get_conn() as conn:
+        old = fetch_lead(conn, lead_id)
+    changes = [f"{k} {_fmt_val(k, old.get(k))} → {_fmt_val(k, v)}"
+               for k, v in fields.items() if old.get(k) != v]
+    detail = "; ".join(changes) if changes else "no field changes"
+    return f"Update lead #{lead_id} ({old.get('name')}): {detail}"
+
+
+def summarize_close_lead(lead_id: int, body: "CloseLeadIn") -> str:
+    with get_conn() as conn:
+        old = fetch_lead(conn, lead_id)
+    base = f"Close lead #{lead_id} ({old.get('name')}) as {body.outcome}"
+    return base + (f": {body.reason}" if body.reason else "")
+
+
+def summarize_delete_lead(lead_id: int, body: "LeadDelete | None") -> str:
+    with get_conn() as conn:
+        old = fetch_lead(conn, lead_id)
+    reason = f" — {body.reason}" if body and body.reason else ""
+    return f"Delete lead #{lead_id} ({old.get('name')}){reason}"
+
+
+def summarize_merge_leads(body: "MergeIn") -> str:
+    with get_conn() as conn:
+        primary = fetch_lead(conn, body.primary_id)
+        dup = fetch_lead(conn, body.duplicate_id)
+    return f"Merge #{body.duplicate_id} ({dup.get('name')}) into #{body.primary_id} ({primary.get('name')})"
+
+
 @router.post("")
-async def create_lead(body: LeadIn):
+async def create_lead(body: LeadIn, request: Request = None):
+    if is_agent_write(request):
+        return queue_pending_change(
+            "create_lead", None, body.model_dump(exclude_none=True), summarize_create_lead(body))
+    return await _apply_create_lead(body)
+
+
+async def _apply_create_lead(body: LeadIn):
     fields = body.model_dump(exclude={"raw_text"}, exclude_none=True)
     name = fields.pop("name", None)
 
@@ -147,7 +213,15 @@ def get_lead(lead_id: int):
 
 
 @router.patch("/{lead_id}")
-def patch_lead(lead_id: int, body: LeadPatch):
+def patch_lead(lead_id: int, body: LeadPatch, request: Request = None):
+    if is_agent_write(request):
+        return queue_pending_change(
+            "update_lead", lead_id, body.model_dump(exclude_none=True),
+            summarize_update_lead(lead_id, body))
+    return _apply_patch_lead(lead_id, body)
+
+
+def _apply_patch_lead(lead_id: int, body: LeadPatch):
     fields = body.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(400, "no fields to update")
@@ -179,7 +253,15 @@ def patch_lead(lead_id: int, body: LeadPatch):
 
 
 @router.post("/{lead_id}/close")
-def close_lead(lead_id: int, body: CloseLeadIn):
+def close_lead(lead_id: int, body: CloseLeadIn, request: Request = None):
+    if is_agent_write(request):
+        return queue_pending_change(
+            "close_lead", lead_id, body.model_dump(exclude_none=True),
+            summarize_close_lead(lead_id, body))
+    return _apply_close_lead(lead_id, body)
+
+
+def _apply_close_lead(lead_id: int, body: CloseLeadIn):
     reason = body.reason.strip() if body.reason else None
     reason = reason or None
     with get_conn() as conn:
@@ -243,9 +325,16 @@ def find_duplicates(lead_id: int):
 
 
 @router.post("/merge")
-def merge_leads(body: MergeIn):
+def merge_leads(body: MergeIn, request: Request = None):
     if body.primary_id == body.duplicate_id:
         raise HTTPException(400, "primary_id and duplicate_id must differ")
+    if is_agent_write(request):
+        return queue_pending_change(
+            "merge_leads", body.primary_id, body.model_dump(), summarize_merge_leads(body))
+    return _apply_merge_leads(body)
+
+
+def _apply_merge_leads(body: MergeIn):
     with get_conn() as conn:
         primary = fetch_lead(conn, body.primary_id)
         dup = fetch_lead(conn, body.duplicate_id)
@@ -333,7 +422,15 @@ async def process_lead(lead_id: int):
 
 
 @router.delete("/{lead_id}")
-def delete_lead(lead_id: int, body: LeadDelete = None):
+def delete_lead(lead_id: int, request: Request = None, body: LeadDelete = None):
+    if is_agent_write(request):
+        return queue_pending_change(
+            "delete_lead", lead_id, (body.model_dump() if body else {"reason": ""}),
+            summarize_delete_lead(lead_id, body))
+    return _apply_delete_lead(lead_id, body)
+
+
+def _apply_delete_lead(lead_id: int, body: LeadDelete = None):
     """Delete a lead and its linked rows. events/appointments/reminders have
     NOT NULL lead_id columns, so they are removed with the lead; audit_log rows
     are kept (lead_id set NULL) so the paper trail survives the delete."""

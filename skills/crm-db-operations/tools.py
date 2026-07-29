@@ -45,7 +45,12 @@ def _request(method: str, path: str, *, params: dict | None = None,
         if clean:
             url += "?" + urllib.parse.urlencode(clean)
     data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"}
+    # Marks every call here as agent-originated. The backend only acts on
+    # this for create_lead/update_lead/close_lead/delete_lead/merge_leads,
+    # which it queues as a pending change instead of applying — see
+    # docs/CONTRACT.md's pending-changes section. Harmless on every other
+    # endpoint, which ignores the header.
+    headers = {"Content-Type": "application/json", "X-Actor": "agent"}
     if API_TOKEN:
         headers["X-API-Token"] = API_TOKEN
     req = urllib.request.Request(url, data=data, method=method, headers=headers)

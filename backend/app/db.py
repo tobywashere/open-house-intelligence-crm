@@ -85,6 +85,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
         " updated_at TEXT NOT NULL DEFAULT"
         " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')))"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pending_changes ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " operation TEXT NOT NULL,"
+        " lead_id INTEGER,"
+        " payload TEXT NOT NULL,"
+        " summary TEXT NOT NULL,"
+        " status TEXT NOT NULL DEFAULT 'pending',"
+        " result TEXT,"
+        " deny_reason TEXT,"
+        " created_at TEXT NOT NULL DEFAULT"
+        " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
+        " decided_at TEXT)"
+    )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
     for col in ("persona", "relationship_summary", "close_reason"):
         if col not in cols:
