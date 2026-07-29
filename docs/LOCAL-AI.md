@@ -170,6 +170,18 @@ The header distinguishes mock, endpoint enabled, verified, disabled,
 unauthorized, unreachable, and failed states. A reachable gateway is not
 reported as a verified completion until an actual completion succeeds.
 
+Use the visible symptom to isolate common wiring problems:
+
+- If chat always returns the canned “The agent didn't answer in time”
+  fallback despite `agent_connected:true`, test `/v1/chat/completions`
+  directly. That health field proves only that the gateway process is
+  reachable, not that the chat endpoint is enabled.
+- If chat returns `401`/`403`, check `AGENT_GATEWAY_TOKEN`.
+- If the agent answers but invents CRM data, verify that the
+  `crm-db-operations` skill is loaded from the expected OpenClaw skills path.
+- If `agent_connected:false`, check `AGENT_GATEWAY_URL` (default
+  `http://localhost:18789`) and confirm that the gateway is running.
+
 Then test the real workflow:
 
 1. Ask for a new disposable lead.
