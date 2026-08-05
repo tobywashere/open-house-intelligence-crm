@@ -2,7 +2,7 @@
 
 Date: 2026-08-05
 
-Status: Approved design, pending written-spec review
+Status: Approved for implementation planning
 
 ## 1. Purpose
 
@@ -137,12 +137,14 @@ Health will distinguish these layers:
 The existing live check remains useful for chat transport, but it will no longer
 cause the UI to claim that CRM capability is verified.
 
-The CRM capability probe will use a fresh agent session and request an existing,
-audited, read-only operation such as `check_availability` for a diagnostic date.
-The doctor will record the audit position before the request and verify that a
-new agent audit entry with the requested date appears afterward. This proves a
-real skill execution and avoids a new business-data mutation. Merely seeing the
-date or a plausible result in model text is not sufficient.
+The CRM capability probe will use a fresh agent session and request the existing
+deterministic `generate_dashboard_insights` read. The metrics route will audit
+this read only when it carries the skill client's `X-Actor: agent` marker, so
+normal dashboard polling does not create probe evidence. The doctor will record
+the audit position before the request and verify that a new matching agent audit
+entry appears afterward. This proves real skill execution without a business-data
+mutation or optional calendar/network call. Merely seeing plausible metrics in
+model text is not sufficient.
 
 The status UI should use plain labels such as:
 
