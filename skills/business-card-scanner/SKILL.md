@@ -74,12 +74,13 @@ Use the `image` tool to analyze the business card image. Read all visible text:
 
 Before creating the lead, search existing leads to see if this person is already in the CRM:
 
-```python
-import os, sys; sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations")); import tools
-all_leads = tools.list_leads()
-# Look for exact phone or email match in the returned list
-# Also fuzzy name match if you have it
+```bash
+{baseDir}/../crm-db-operations/cli.py list_leads --args '{"sort":"priority"}'
 ```
+
+Look for an exact phone or email match in the returned result. Also consider a
+close name match, but do not treat a name alone as proof that two people are
+the same.
 
 If a strong duplicate match is found (same phone or email), report it to the user:
 
@@ -89,37 +90,21 @@ If no strong match, proceed to create.
 
 ### 4. Create the lead
 
-```python
-import os, sys; sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations")); import tools
-lead = tools.create_lead(
-    name="Jessica Martinez",
-    phone="(555) 123-4567",
-    email="jessica@leaprealestate.com",
-    area="San Diego, CA",
-    source="form",
-    raw_text="LEAP Real Estate — Real Estate Agent. Specialties: Buying, Selling, Investing, Local Expertise. Website: www.leaprealestate.com. Address: 123 Market St., Suite 200, San Diego, CA 92101"
-)
+```bash
+{baseDir}/../crm-db-operations/cli.py create_lead --args '{"name":"Jessica Martinez","phone":"(555) 123-4567","email":"jessica@leaprealestate.com","area":"San Diego, CA","source":"form","raw_text":"LEAP Real Estate. Specialties: Buying, Selling, Investing. Website: www.leaprealestate.com. Address: 123 Market St., Suite 200, San Diego, CA 92101"}'
 ```
 
-### 5. Post-create duplicate check
+The CRM returns a pending-change record for human review. Do not claim the lead
+was created, and do not run a post-create duplicate check because there is no
+new lead ID until the operator approves the change.
 
-Use the returned `lead_id` to run a final duplicate check:
+### 5. Report back
 
-```python
-duplicates = tools.find_duplicate_leads(lead.lead_id)
-if duplicates:
-    # Present to user for merge decision
-```
-
-### 6. Report back
-
-> Added **Jessica Martinez** to the CRM:
-> - Lead #[id]
+> Queued **Jessica Martinez** for review:
 > - Phone: (555) 123-4567
 > - Email: jessica@leaprealestate.com
 > - Company: LEAP Real Estate
-> - Specialties: Buying, Selling, Investing, Local Expertise
-> - No duplicates found.
+> - Status: waiting for approval
 
 ## Rules
 

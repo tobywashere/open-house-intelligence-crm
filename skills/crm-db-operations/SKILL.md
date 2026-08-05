@@ -55,10 +55,12 @@ needed) over the backend REST API. The backend (FastAPI + SQLite) must be
 running and reachable — for the demo it runs on the same GB10 box.
 
 ```bash
-# CRM_API_URL is already set in the gateway service environment (GB10: http://localhost:8080/api).
-# Do NOT export it yourself — :8000 on the GB10 is the vLLM server, not the CRM.
-python3 -c "import sys; sys.path.insert(0,'.'); import tools; print(tools.list_leads()[:1])"
+{baseDir}/cli.py list_leads --args '{"sort":"priority"}'
 ```
+
+`CRM_API_URL` is supplied by the OpenClaw skill configuration. Do not export it
+inside a chat command. The setup helper defaults it to
+`http://localhost:8080/api`.
 
 If the backend is bound beyond localhost (`HOST` set to a Tailscale/LAN IP)
 and `OHI_API_TOKEN` is set on it, set the same value as `OHI_API_TOKEN` in
@@ -66,17 +68,13 @@ this skill's environment too — `tools.py` reads it and sends it as the
 `X-API-Token` header on every call. Without it, every call 401s once the
 backend's guard is on.
 
-```python
-import os, sys
-sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations"))
-import tools
-
-lead = tools.create_lead(raw_text="Met at open house, Bellevue, $1.1M budget", source="form")
+```bash
+{baseDir}/cli.py create_lead --args '{"raw_text":"Met at open house, Bellevue, $1.1M budget","source":"form"}'
 ```
 
-Every call raises `tools.CRMError(status, message)` on failure (400/404/409/etc).
-Catch it and turn it into a clarifying question or an apology to the user —
-never let a raw stack trace reach the chat.
+The wrapper catches CRM API failures and exits `2` with a JSON error on stderr.
+Turn that error into a clarifying question or a short apology to the user.
+Never expose a raw stack trace in chat.
 
 ## Tool catalog
 
@@ -108,36 +106,6 @@ never let a raw stack trace reach the chat.
 Full request/response shapes and the underlying REST endpoints are frozen in
 [`docs/CONTRACT.md`](../../docs/CONTRACT.md) — this file is the model-facing
 view of that same contract; if they ever disagree, the contract wins.
-
-## Curl equivalents (for debugging without the Python client)
-
-```bash
-BASE="${CRM_API_URL:-http://localhost:8080/api}"
-
-curl -s -X POST "$BASE/leads" -H 'content-type: application/json' \
-  -d '{"raw_text":"Met at open house, Bellevue, budget $1.1M","source":"form"}'
-
-curl -s "$BASE/leads/1"                                  # get_lead_context
-curl -s "$BASE/leads/1/duplicates"                       # find_duplicate_leads
-curl -s -X PATCH "$BASE/leads/1" -d '{"status":"contacted"}' -H 'content-type: application/json'
-curl -s -X POST "$BASE/leads/1/close" -H 'content-type: application/json' \
-  -d '{"outcome":"won","reason":"Contract signed"}'
-curl -s -X POST "$BASE/leads/1/process"                   # score_lead + draft_followup
-curl -s "$BASE/availability?date=2026-07-28"              # check_availability
-curl -s "$BASE/appointments"                              # list_appointments
-curl -s -X POST "$BASE/appointments" -H 'content-type: application/json' \
-  -d '{"lead_id":1,"start_ts":"2026-07-28T18:00:00","end_ts":"2026-07-28T18:45:00"}'
-curl -s -X POST "$BASE/demo/advance-time" -d '{"days":0}' -H 'content-type: application/json'  # find_neglected_leads
-curl -s "$BASE/metrics"                                   # generate_dashboard_insights
-curl -s -X POST "$BASE/briefing" -H 'content-type: application/json' \
-  -d '{"date":"2026-07-28","greeting":"Good morning"}'    # post_briefing (shape in docs/BRIEFING-UI.md)
-curl -s "$BASE/research-settings"                         # get_research_settings
-curl -s "$BASE/insights?date=2026-07-28"                 # get_insights
-curl -s "$BASE/summary?date=2026-07-28"                  # get_summary
-curl -s -X POST "$BASE/summary" -H 'content-type: application/json' \
-  -d @daily-summary.json                                  # post_summary
-curl -s "$BASE/knowledge/search?q=Amazon+RSU+vesting&k=3"  # search_knowledge
-```
 
 ## Maintaining the database
 

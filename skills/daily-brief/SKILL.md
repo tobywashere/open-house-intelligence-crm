@@ -24,7 +24,7 @@ agent-written summaries. Do not silently change modes after a failure.
 Make exactly one terminal call:
 
 ```bash
-python3 skills/daily-brief/scripts/run_daily_brief.py
+{baseDir}/scripts/run_daily_brief.py
 ```
 
 Do not fetch or publish manually in this mode. The script fetches, extracts,
@@ -66,7 +66,7 @@ Use only when the request explicitly selects this mode:
 6. Publish and verify it through the same guarded CRM client:
 
 ```bash
-python3 skills/daily-brief/scripts/run_daily_brief.py --publish-payload /tmp/<unique-name>.json
+{baseDir}/scripts/run_daily_brief.py --publish-payload /tmp/<unique-name>.json
 ```
 
 Never call `/api/summary` directly. If any WebFetch fails, report which URL

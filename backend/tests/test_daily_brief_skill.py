@@ -84,3 +84,19 @@ def test_publisher_uses_shared_crm_helpers_and_reads_back(monkeypatch):
     assert base == "http://127.0.0.1:8000/api"
     assert saved == payload
     assert calls == [("post", payload), ("get", payload["date"])]
+
+
+def test_installed_skill_commands_are_location_independent():
+    daily = (REPO_ROOT / "skills" / "daily-brief" / "SKILL.md").read_text()
+    card = (REPO_ROOT / "skills" / "business-card-scanner" / "SKILL.md").read_text()
+    crm = (REPO_ROOT / "skills" / "crm-db-operations" / "SKILL.md").read_text()
+    command_center = (
+        REPO_ROOT / "skills" / "daily-command-center" / "SKILL.md"
+    ).read_text()
+
+    assert "{baseDir}/scripts/run_daily_brief.py" in daily
+    assert "python3 {baseDir}" not in daily
+    assert "~/.openclaw/skills/crm-db-operations" not in card
+    assert "python3 -c" not in crm
+    assert "{baseDir}/cli.py" in crm
+    assert "{baseDir}/../crm-db-operations/cli.py list_appointments" in command_center

@@ -26,10 +26,20 @@ suggestions and a recommendation for a real appointment.
 
 ## Pull today's data
 
-1. Call `list_appointments()`.
+1. Run:
+
+   ```bash
+   {baseDir}/../crm-db-operations/cli.py list_appointments --args '{}'
+   ```
+
 2. Filter appointments to today's local `YYYY-MM-DD` date using `start_ts`.
-3. For every unique `lead_id` in those appointments, call
-   `get_lead_context(lead_id)`.
+3. For every unique `lead_id` in those appointments, run the wrapper with that
+   real ID:
+
+   ```bash
+   {baseDir}/../crm-db-operations/cli.py get_lead_context --args '{"lead_id":4}'
+   ```
+
 4. Use the returned lead fields and events only to decide whether a short
    preparation checklist or recommendation is warranted.
 
@@ -86,8 +96,14 @@ the API drops them.
 
 ## Publish
 
-Call `post_briefing(payload)` with the output above. If it raises `CRMError`,
-report the failure in the run output; do not substitute a sample briefing.
+Call the wrapper with the complete payload as the named argument:
+
+```bash
+{baseDir}/../crm-db-operations/cli.py post_briefing --args '{"payload":{"date":"2026-07-28","generated_at":"2026-07-28T07:00:12","meeting_briefs":[]}}'
+```
+
+Replace the example values with today's grounded payload. If the command
+returns an error, report it; do not substitute a sample briefing.
 
 After publishing, the dashboard combines this advice with current CRM facts.
 If the advice is absent or invalid, the factual CRM schedule still renders
