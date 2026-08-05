@@ -104,9 +104,15 @@ class OpenClawDriver(AgentDriver):
             return ("⚠ The local agent is unavailable or returned an invalid response. "
                     "Your message is saved — check agent readiness and try again.")
 
-    async def request_crm_capability(self, session_id: str) -> None:
+    async def request_crm_capability(
+        self,
+        session_id: str,
+        probe_nonce: str,
+    ) -> None:
+        arguments = json.dumps({"probe_nonce": probe_nonce})
         await self._send(
-            "Use the crm-db-operations skill to call generate_dashboard_insights. "
+            "Use the crm-db-operations skill to run its fixed CLI operation "
+            f"generate_dashboard_insights --args '{arguments}'. "
             "Do not modify CRM data. After the call, reply with only CHECKED.",
             session_id,
         )

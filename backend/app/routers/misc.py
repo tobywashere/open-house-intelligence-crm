@@ -1,12 +1,13 @@
+import json
 import os
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
-from ..agent.status import record_crm_capability
+from ..agent.status import AgentProbe, record_crm_capability
 from ..approvals import is_agent_write
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
@@ -125,7 +126,15 @@ def audit_log(limit: int = Query(50, ge=1, le=500)):
 
 
 @router.get("/metrics")
-def metrics(request: Request):
+def metrics(
+    request: Request,
+    probe_nonce: str | None = Query(
+        None,
+        min_length=16,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9-]+$",
+    ),
+):
     with get_conn() as conn:
         leads = [row_to_dict(r) for r in conn.execute(
             "SELECT * FROM leads WHERE status != 'closed'")]
@@ -157,7 +166,13 @@ def metrics(request: Request):
             "cloud_llm_requests": composio_client.request_count(),
         }
         if is_agent_write(request):
-            audit(conn, "agent", "generate_dashboard_insights", {}, result)
+            audit(
+                conn,
+                "agent",
+                "generate_dashboard_insights",
+                {"probe_nonce": probe_nonce} if probe_nonce else {},
+                result,
+            )
     return result
 
 
@@ -190,19 +205,76 @@ async def crm_check():
             "SELECT COALESCE(MAX(id), 0) AS id FROM audit_log"
         ).fetchone()["id"]
 
+    probe_nonce = uuid.uuid4().hex
     try:
-        await driver.request_crm_capability(f"crm-check-{uuid.uuid4().hex}")
+        await driver.request_crm_capability(
+            f"crm-check-{probe_nonce}",
+            probe_nonce,
+        )
     except Exception:
         record_crm_capability(False, "capability request failed")
-        return asdict(await driver.probe())
+        return asdict(_capability_result(
+            await driver.probe(),
+            verified=False,
+            detail="capability request failed",
+        ))
 
     with get_conn() as conn:
-        found = conn.execute(
-            "SELECT 1 FROM audit_log "
+        rows = conn.execute(
+            "SELECT input FROM audit_log "
             "WHERE id > ? AND actor = 'agent' "
-            "AND tool = 'generate_dashboard_insights' LIMIT 1",
+            "AND tool = 'generate_dashboard_insights'",
             (before,),
-        ).fetchone() is not None
+        ).fetchall()
+    found = any(_audit_has_nonce(row["input"], probe_nonce) for row in rows)
 
-    record_crm_capability(found, None if found else "no audited CRM call")
-    return asdict(await driver.probe())
+    detail = None if found else "no audited CRM call"
+    record_crm_capability(found, detail)
+    return asdict(_capability_result(
+        await driver.probe(),
+        verified=found,
+        detail=detail,
+    ))
+
+
+def _audit_has_nonce(raw_input: str, probe_nonce: str) -> bool:
+    try:
+        payload = json.loads(raw_input)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("probe_nonce") == probe_nonce
+
+
+def _capability_result(
+    probe: AgentProbe,
+    *,
+    verified: bool,
+    detail: str | None,
+) -> AgentProbe:
+    if not probe.gateway_reachable or not probe.endpoint_enabled:
+        return replace(probe, crm_verified=False)
+    if verified:
+        if probe.last_chat_ok is False:
+            return replace(
+                probe,
+                status="degraded",
+                crm_verified=True,
+            )
+        return replace(
+            probe,
+            status="crm_verified",
+            crm_verified=True,
+            detail=None,
+        )
+    if probe.last_chat_ok is True:
+        status = "chat_verified"
+    elif probe.last_chat_ok is False:
+        status = "failed"
+    else:
+        status = "endpoint_enabled"
+    return replace(
+        probe,
+        status=status,
+        crm_verified=False,
+        detail=detail,
+    )

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -101,6 +103,24 @@ def test_latest_chat_failure_is_not_hidden_by_stale_crm_detail(monkeypatch):
     assert probe.detail == "invalid completion response"
 
 
+def test_chat_failure_after_crm_verification_marks_probe_degraded(monkeypatch):
+    monkeypatch.setattr(agent_status, "_EVENT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_CHAT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_SEQUENCE", 0, raising=False)
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    driver = OpenClawDriver(
+        client_factory=client_factory(post_json={"choices": []})
+    )
+
+    asyncio.run(driver.chat("hello", "dashboard"))
+    probe = asyncio.run(driver.probe())
+
+    assert probe.status == "degraded"
+    assert probe.crm_verified is True
+    assert probe.detail == "invalid completion response"
+
+
 def test_valid_completion_marks_chat_verified(monkeypatch):
     import app.agent.status as status
 
@@ -123,17 +143,19 @@ def test_crm_capability_request_is_read_only_and_targets_skill(monkeypatch):
     monkeypatch.setattr(module, "AGENT_ID", "openhouse-crm")
     driver = OpenClawDriver(client_factory=lambda **_: fake)
 
-    asyncio.run(driver.request_crm_capability("crm-check-123"))
+    asyncio.run(driver.request_crm_capability("crm-check-123", "a" * 32))
 
     payload = fake.last_post_json
     assert payload["user"] == "crm-check-123"
     assert "crm-db-operations" in payload["messages"][0]["content"]
     assert "generate_dashboard_insights" in payload["messages"][0]["content"]
+    assert "--args" in payload["messages"][0]["content"]
+    assert json.dumps({"probe_nonce": "a" * 32}) in payload["messages"][0]["content"]
     assert "Do not modify CRM data" in payload["messages"][0]["content"]
 
 
 def _capability_probe() -> agent_status.AgentProbe:
-    chat_ok, _ = agent_status.last_chat()
+    chat_ok, chat_detail = agent_status.last_chat()
     crm_ok, crm_detail = agent_status.last_crm_capability()
     return agent_status.AgentProbe(
         status=agent_status.resolved_status(gateway_reachable=True, endpoint_enabled=True),
@@ -143,7 +165,7 @@ def _capability_probe() -> agent_status.AgentProbe:
         crm_verified=crm_ok is True,
         agent_id="openhouse-crm",
         fallbacks={},
-        detail=crm_detail,
+        detail=chat_detail if chat_ok is False else crm_detail,
     )
 
 
@@ -151,13 +173,13 @@ def test_crm_check_requires_new_matching_audit(client, monkeypatch):
     class FakeDriver:
         name = "openclaw"
 
-        async def request_crm_capability(self, session_id):
+        async def request_crm_capability(self, session_id, probe_nonce):
             with get_conn() as conn:
                 audit(
                     conn,
                     "agent",
                     "generate_dashboard_insights",
-                    {},
+                    {"probe_nonce": probe_nonce},
                     {"active_leads": 0},
                 )
 
@@ -176,6 +198,34 @@ def test_crm_check_requires_new_matching_audit(client, monkeypatch):
     assert body["agent_id"] == "openhouse-crm"
 
 
+def test_crm_check_keeps_newer_chat_failure_degraded(client, monkeypatch):
+    class AuditedThenFailedDriver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id, probe_nonce):
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "agent",
+                    "generate_dashboard_insights",
+                    {"probe_nonce": probe_nonce},
+                    {"active_leads": 0},
+                )
+
+        async def probe(self):
+            agent_status.record_chat(False, "timeout")
+            return _capability_probe()
+
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: AuditedThenFailedDriver())
+
+    body = client.post("/api/health/crm-check").json()
+
+    assert body["status"] == "degraded"
+    assert body["crm_verified"] is True
+    assert body["detail"] == "timeout"
+
+
 def test_crm_check_does_not_trust_generic_reply_or_old_audit(client, monkeypatch):
     with get_conn() as conn:
         audit(
@@ -189,7 +239,7 @@ def test_crm_check_does_not_trust_generic_reply_or_old_audit(client, monkeypatch
     class GenericDriver:
         name = "openclaw"
 
-        async def request_crm_capability(self, session_id):
+        async def request_crm_capability(self, session_id, probe_nonce):
             return None
 
         async def probe(self):
@@ -207,18 +257,96 @@ def test_crm_check_does_not_trust_generic_reply_or_old_audit(client, monkeypatch
     assert body["detail"] == "no audited CRM call"
 
 
+def test_crm_check_rejects_unrelated_agent_activity(client, monkeypatch):
+    class UnrelatedDriver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id, probe_nonce):
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "agent",
+                    "generate_dashboard_insights",
+                    {"probe_nonce": "unrelated-activity"},
+                    {"active_leads": 4},
+                )
+
+        async def probe(self):
+            return _capability_probe()
+
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: UnrelatedDriver())
+
+    body = client.post("/api/health/crm-check").json()
+
+    assert body["status"] == "chat_verified"
+    assert body["crm_verified"] is False
+    assert body["detail"] == "no audited CRM call"
+
+
+def test_overlapping_crm_checks_do_not_share_audit_evidence(client, monkeypatch):
+    calls_lock = threading.Lock()
+    evidence_written = threading.Event()
+    call_count = 0
+
+    class OverlappingDriver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id, probe_nonce):
+            nonlocal call_count
+            with calls_lock:
+                call_index = call_count
+                call_count += 1
+            if call_index == 0:
+                with get_conn() as conn:
+                    audit(
+                        conn,
+                        "agent",
+                        "generate_dashboard_insights",
+                        {"probe_nonce": probe_nonce},
+                        {"active_leads": 0},
+                    )
+                evidence_written.set()
+            else:
+                await asyncio.to_thread(evidence_written.wait, 2)
+
+        async def probe(self):
+            return _capability_probe()
+
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: OverlappingDriver())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(
+            lambda _: client.post("/api/health/crm-check").json(),
+            range(2),
+        ))
+
+    assert sum(body["crm_verified"] for body in responses) == 1
+    assert sorted(body["status"] for body in responses) == [
+        "chat_verified",
+        "crm_verified",
+    ]
+
+
 def test_metrics_audits_only_agent_tagged_reads(client):
     dashboard_result = client.get("/api/metrics")
     assert dashboard_result.status_code == 200
     assert client.get("/api/audit").json() == []
 
-    agent_result = client.get("/api/metrics", headers={"X-Actor": "agent"})
+    nonce = "b" * 32
+    agent_result = client.get(
+        "/api/metrics",
+        params={"probe_nonce": nonce},
+        headers={"X-Actor": "agent"},
+    )
 
     assert agent_result.status_code == 200
     rows = client.get("/api/audit").json()
     assert len(rows) == 1
     assert rows[0]["actor"] == "agent"
     assert rows[0]["tool"] == "generate_dashboard_insights"
+    assert json.loads(rows[0]["input"]) == {"probe_nonce": nonce}
     assert json.loads(rows[0]["output"]) == agent_result.json()
 
 

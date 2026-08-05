@@ -14,6 +14,9 @@ def clear_integration_status(monkeypatch):
     monkeypatch.setattr(agent_status, "_LAST_DETAIL", None, raising=False)
     monkeypatch.setattr(agent_status, "_CRM_OK", None, raising=False)
     monkeypatch.setattr(agent_status, "_CRM_DETAIL", None, raising=False)
+    monkeypatch.setattr(agent_status, "_EVENT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_CHAT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_SEQUENCE", 0, raising=False)
 
 
 def test_chat_success_does_not_mean_crm_verified():
@@ -34,6 +37,17 @@ def test_crm_success_is_distinct():
         gateway_reachable=True,
         endpoint_enabled=True,
     ) == "crm_verified"
+
+
+def test_newer_chat_failure_degrades_previously_verified_crm():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    agent_status.record_chat(False, "timeout")
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "degraded"
 
 
 def test_configured_integration_is_not_reported_as_verified(client, monkeypatch):

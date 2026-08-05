@@ -33,6 +33,23 @@ def test_dispatch_calls_only_named_tool(monkeypatch):
     assert calls == [{"sort": "priority"}]
 
 
+def test_dispatch_passes_probe_nonce_only_to_dashboard_insights(monkeypatch):
+    calls = []
+    monkeypatch.setitem(
+        skill_cli.OPERATIONS,
+        "generate_dashboard_insights",
+        lambda **kw: calls.append(kw) or {"active_leads": 0},
+    )
+
+    result = skill_cli.dispatch(
+        "generate_dashboard_insights",
+        {"probe_nonce": "d" * 32},
+    )
+
+    assert result == {"active_leads": 0}
+    assert calls == [{"probe_nonce": "d" * 32}]
+
+
 def test_dispatch_rejects_unknown_operation():
     with pytest.raises(ValueError, match="unknown CRM operation"):
         skill_cli.dispatch("shell", {"command": "whoami"})

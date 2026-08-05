@@ -41,7 +41,11 @@ class AgentDriver(ABC):
     async def live_check(self) -> AgentProbe:
         return await self.probe()
 
-    async def request_crm_capability(self, session_id: str) -> None:
+    async def request_crm_capability(
+        self,
+        session_id: str,
+        probe_nonce: str,
+    ) -> None:
         raise RuntimeError("CRM capability is unavailable for this driver")
 
 

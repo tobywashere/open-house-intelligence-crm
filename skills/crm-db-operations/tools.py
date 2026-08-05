@@ -45,11 +45,9 @@ def _request(method: str, path: str, *, params: dict | None = None,
         if clean:
             url += "?" + urllib.parse.urlencode(clean)
     data = json.dumps(body).encode() if body is not None else None
-    # Marks every call here as agent-originated. The backend only acts on
-    # this for create_lead/update_lead/close_lead/delete_lead/merge_leads,
-    # which it queues as a pending change instead of applying — see
-    # docs/CONTRACT.md's pending-changes section. Harmless on every other
-    # endpoint, which ignores the header.
+    # Marks every call here as agent-originated. The backend uses this to gate
+    # writes behind approval and to audit read-only capability evidence. See
+    # docs/CONTRACT.md's pending-changes section. Other endpoints ignore it.
     headers = {"Content-Type": "application/json", "X-Actor": "agent"}
     if API_TOKEN:
         headers["X-API-Token"] = API_TOKEN
@@ -229,14 +227,14 @@ def find_neglected_leads() -> list:
     return _request("POST", "/demo/advance-time", body={"days": 0})["neglected"]
 
 
-def generate_dashboard_insights() -> dict:
+def generate_dashboard_insights(probe_nonce: str | None = None) -> dict:
     """Return the deterministic dashboard numbers (active leads, high-priority
     count, follow-ups due, appointments booked, avg response time, inference
     mode). This tool returns raw numbers only — the model is expected to
     compose the natural-language summary/insight on top of them; the backend
     does not write prose here.
     """
-    return _request("GET", "/metrics")
+    return _request("GET", "/metrics", params={"probe_nonce": probe_nonce})
 
 
 def post_briefing(payload: dict) -> dict:

@@ -35,12 +35,17 @@ _LAST_CHAT_OK: bool | None = None
 _LAST_DETAIL: str | None = None
 _CRM_OK: bool | None = None
 _CRM_DETAIL: str | None = None
+_EVENT_SEQUENCE = 0
+_LAST_CHAT_SEQUENCE = 0
+_CRM_SEQUENCE = 0
 
 
 def record_chat(ok: bool, detail: str | None = None) -> None:
-    global _LAST_CHAT_OK, _LAST_DETAIL
+    global _EVENT_SEQUENCE, _LAST_CHAT_OK, _LAST_CHAT_SEQUENCE, _LAST_DETAIL
     with _LOCK:
+        _EVENT_SEQUENCE += 1
         _LAST_CHAT_OK = ok
+        _LAST_CHAT_SEQUENCE = _EVENT_SEQUENCE
         _LAST_DETAIL = detail
 
 
@@ -50,9 +55,11 @@ def last_chat() -> tuple[bool | None, str | None]:
 
 
 def record_crm_capability(ok: bool, detail: str | None = None) -> None:
-    global _CRM_OK, _CRM_DETAIL
+    global _CRM_DETAIL, _CRM_OK, _CRM_SEQUENCE, _EVENT_SEQUENCE
     with _LOCK:
+        _EVENT_SEQUENCE += 1
         _CRM_OK = ok
+        _CRM_SEQUENCE = _EVENT_SEQUENCE
         _CRM_DETAIL = detail
 
 
@@ -67,6 +74,12 @@ def resolved_status(*, gateway_reachable: bool, endpoint_enabled: bool) -> Agent
             return "unreachable"
         if not endpoint_enabled:
             return "endpoint_disabled"
+        if (
+            _CRM_OK is True
+            and _LAST_CHAT_OK is False
+            and _LAST_CHAT_SEQUENCE > _CRM_SEQUENCE
+        ):
+            return "degraded"
         if _CRM_OK is True:
             return "crm_verified"
         if _LAST_CHAT_OK is True:

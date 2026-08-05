@@ -25,11 +25,15 @@ def test_doctor_help_lists_live_agent_check():
     assert result.returncode == 0, result.stderr
     assert "--live-agent" in result.stdout
     assert "--live-crm" in result.stdout
+    assert "--live-timeout" in result.stdout
     assert "--base-url" in result.stdout
 
 
 def test_doctor_reports_chat_and_crm_capability_separately(monkeypatch):
-    def fake_request(url, method="GET"):
+    calls = []
+
+    def fake_request(url, method="GET", timeout=5):
+        calls.append((url, method, timeout))
         if url.endswith("/health"):
             return {
                 "agent_status": {
@@ -55,6 +59,7 @@ def test_doctor_reports_chat_and_crm_capability_separately(monkeypatch):
         "http://127.0.0.1:8080/api",
         live_agent=True,
         live_crm=True,
+        live_timeout=37,
     )
 
     by_name = {check.name: check for check in checks}
@@ -62,3 +67,30 @@ def test_doctor_reports_chat_and_crm_capability_separately(monkeypatch):
     assert by_name["Live chat completion"].detail == "chat_verified"
     assert by_name["CRM capability"].level == "PASS"
     assert by_name["CRM capability"].detail == "crm_verified"
+    assert calls == [
+        ("http://127.0.0.1:8080/api/health", "GET", 5),
+        ("http://127.0.0.1:8080/api/health/agent-check", "POST", 37),
+        ("http://127.0.0.1:8080/api/health/crm-check", "POST", 37),
+    ]
+
+
+def test_doctor_live_timeout_defaults_above_backend_agent_timeout(monkeypatch):
+    calls = []
+    monkeypatch.setenv("AGENT_TIMEOUT_SECONDS", "120")
+
+    def fake_request(url, method="GET", timeout=5):
+        calls.append((url, timeout))
+        if url.endswith("/health"):
+            return {"agent_status": {"status": "endpoint_enabled"}}
+        return {"status": "chat_verified"}
+
+    monkeypatch.setattr(doctor, "_request_json", fake_request)
+
+    doctor.run_checks(
+        "http://127.0.0.1:8080/api",
+        live_agent=True,
+        live_crm=True,
+    )
+
+    live_timeouts = [timeout for url, timeout in calls if not url.endswith("/health")]
+    assert live_timeouts == [125, 125]

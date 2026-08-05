@@ -106,6 +106,34 @@ def test_x_api_token_header_absent_when_unset():
     assert "X-api-token" not in captured["headers"]
 
 
+def test_dashboard_insights_passes_optional_probe_nonce():
+    import urllib.request
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResponse()
+
+    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        crm.generate_dashboard_insights("c" * 32)
+
+    assert captured["url"].endswith("/metrics?probe_nonce=" + "c" * 32)
+
+
+def test_dashboard_insights_remains_no_argument_compatible():
+    import urllib.request
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResponse()
+
+    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        crm.generate_dashboard_insights()
+
+    assert captured["url"].endswith("/metrics")
+
+
 def test_search_knowledge_end_to_end(live_server):
     """search_knowledge is the agent-invoked path onto the real BM25 index
     over the shipped report (docs/knowledge/) — a domain question should hit,
