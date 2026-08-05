@@ -1,12 +1,16 @@
 """OpenClaw gateway readiness and response-shape handling."""
 
 import asyncio
+import json
 
 import httpx
 import pytest
 
 from app.agent.mock import MockDriver
 from app.agent.openclaw import OpenClawDriver
+from app.agent import status as agent_status
+from app.db import audit, get_conn
+from app.routers import misc
 
 
 class FakeClient:
@@ -83,15 +87,139 @@ def test_malformed_successful_response_marks_chat_failed():
     assert probe.last_chat_ok is False
 
 
-def test_valid_completion_marks_chat_verified():
+def test_latest_chat_failure_is_not_hidden_by_stale_crm_detail(monkeypatch):
+    monkeypatch.setattr(agent_status, "_CRM_OK", False)
+    monkeypatch.setattr(agent_status, "_CRM_DETAIL", "no audited CRM call")
+    driver = OpenClawDriver(
+        client_factory=client_factory(post_json={"choices": []})
+    )
+
+    asyncio.run(driver.chat("hello", "dashboard"))
+    probe = asyncio.run(driver.probe())
+
+    assert probe.status == "failed"
+    assert probe.detail == "invalid completion response"
+
+
+def test_valid_completion_marks_chat_verified(monkeypatch):
+    import app.agent.status as status
+
+    monkeypatch.setattr(status, "_CRM_OK", None)
     driver = OpenClawDriver(client_factory=client_factory())
 
     reply = asyncio.run(driver.chat("hello", "dashboard"))
     probe = asyncio.run(driver.probe())
 
     assert reply == "READY"
-    assert probe.status == "verified"
+    assert probe.status == "chat_verified"
     assert probe.last_chat_ok is True
+    assert probe.crm_verified is False
+
+
+def test_crm_capability_request_is_read_only_and_targets_skill(monkeypatch):
+    import app.agent.openclaw as module
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "AGENT_ID", "openhouse-crm")
+    driver = OpenClawDriver(client_factory=lambda **_: fake)
+
+    asyncio.run(driver.request_crm_capability("crm-check-123"))
+
+    payload = fake.last_post_json
+    assert payload["user"] == "crm-check-123"
+    assert "crm-db-operations" in payload["messages"][0]["content"]
+    assert "generate_dashboard_insights" in payload["messages"][0]["content"]
+    assert "Do not modify CRM data" in payload["messages"][0]["content"]
+
+
+def _capability_probe() -> agent_status.AgentProbe:
+    chat_ok, _ = agent_status.last_chat()
+    crm_ok, crm_detail = agent_status.last_crm_capability()
+    return agent_status.AgentProbe(
+        status=agent_status.resolved_status(gateway_reachable=True, endpoint_enabled=True),
+        gateway_reachable=True,
+        endpoint_enabled=True,
+        last_chat_ok=chat_ok,
+        crm_verified=crm_ok is True,
+        agent_id="openhouse-crm",
+        fallbacks={},
+        detail=crm_detail,
+    )
+
+
+def test_crm_check_requires_new_matching_audit(client, monkeypatch):
+    class FakeDriver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id):
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "agent",
+                    "generate_dashboard_insights",
+                    {},
+                    {"active_leads": 0},
+                )
+
+        async def probe(self):
+            return _capability_probe()
+
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: FakeDriver())
+
+    response = client.post("/api/health/crm-check")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "crm_verified"
+    assert body["crm_verified"] is True
+    assert body["agent_id"] == "openhouse-crm"
+
+
+def test_crm_check_does_not_trust_generic_reply_or_old_audit(client, monkeypatch):
+    with get_conn() as conn:
+        audit(
+            conn,
+            "agent",
+            "generate_dashboard_insights",
+            {},
+            {"active_leads": 99},
+        )
+
+    class GenericDriver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id):
+            return None
+
+        async def probe(self):
+            return _capability_probe()
+
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: GenericDriver())
+
+    response = client.post("/api/health/crm-check")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "chat_verified"
+    assert body["crm_verified"] is False
+    assert body["detail"] == "no audited CRM call"
+
+
+def test_metrics_audits_only_agent_tagged_reads(client):
+    dashboard_result = client.get("/api/metrics")
+    assert dashboard_result.status_code == 200
+    assert client.get("/api/audit").json() == []
+
+    agent_result = client.get("/api/metrics", headers={"X-Actor": "agent"})
+
+    assert agent_result.status_code == 200
+    rows = client.get("/api/audit").json()
+    assert len(rows) == 1
+    assert rows[0]["actor"] == "agent"
+    assert rows[0]["tool"] == "generate_dashboard_insights"
+    assert json.loads(rows[0]["output"]) == agent_result.json()
 
 
 def test_send_targets_configured_crm_agent(monkeypatch):

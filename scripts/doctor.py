@@ -34,7 +34,11 @@ def _request_json(url: str, method: str = "GET") -> dict:
         return json.load(response)
 
 
-def run_checks(base_url: str, live_agent: bool) -> list[Check]:
+def run_checks(
+    base_url: str,
+    live_agent: bool = False,
+    live_crm: bool = False,
+) -> list[Check]:
     checks = [
         Check(
             "PASS" if sys.version_info >= (3, 11) else "FAIL",
@@ -76,7 +80,9 @@ def run_checks(base_url: str, live_agent: bool) -> list[Check]:
     try:
         health = _request_json(health_url)
         status = (health.get("agent_status") or {}).get("status", "unknown")
-        level = "PASS" if status in {"mock", "endpoint_enabled", "verified"} else "FAIL"
+        level = "PASS" if status in {
+            "mock", "endpoint_enabled", "chat_verified", "crm_verified", "degraded"
+        } else "FAIL"
         checks.append(Check(level, "Agent endpoint", status))
     except (OSError, ValueError, urllib.error.URLError) as exc:
         checks.append(Check("FAIL", "Application API", f"{health_url}: {exc.__class__.__name__}"))
@@ -91,13 +97,29 @@ def run_checks(base_url: str, live_agent: bool) -> list[Check]:
             status = result.get("status", "unknown")
             checks.append(
                 Check(
-                    "PASS" if status == "verified" else "FAIL",
-                    "Live agent completion",
+                    "PASS" if status == "crm_verified" else "WARN" if status == "chat_verified" else "FAIL",
+                    "Live chat completion",
                     status,
                 )
             )
         except (OSError, ValueError, urllib.error.URLError) as exc:
-            checks.append(Check("FAIL", "Live agent completion", exc.__class__.__name__))
+            checks.append(Check("FAIL", "Live chat completion", exc.__class__.__name__))
+    if live_crm:
+        try:
+            result = _request_json(
+                base_url.rstrip("/") + "/health/crm-check",
+                method="POST",
+            )
+            status = result.get("status", "unknown")
+            checks.append(
+                Check(
+                    "PASS" if status == "crm_verified" else "FAIL",
+                    "CRM capability",
+                    status,
+                )
+            )
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            checks.append(Check("FAIL", "CRM capability", exc.__class__.__name__))
     return checks
 
 
@@ -115,9 +137,14 @@ def main() -> int:
         action="store_true",
         help="send one harmless completion to verify the configured OpenClaw chat endpoint",
     )
+    parser.add_argument(
+        "--live-crm",
+        action="store_true",
+        help="ask OpenClaw to make one audited, read-only CRM capability call",
+    )
     args = parser.parse_args()
 
-    checks = run_checks(args.base_url, args.live_agent)
+    checks = run_checks(args.base_url, args.live_agent, args.live_crm)
     for check in checks:
         print(f"{check.level:4}  {check.name}: {check.detail}")
     return 1 if any(check.level == "FAIL" for check in checks) else 0

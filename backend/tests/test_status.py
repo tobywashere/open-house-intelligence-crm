@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.agent import status as agent_status
 from app.integrations import composio_client as cc
 
 
@@ -9,6 +10,30 @@ from app.integrations import composio_client as cc
 def clear_integration_status(monkeypatch):
     monkeypatch.setattr(cc, "_LAST_OPERATION", None, raising=False)
     monkeypatch.setattr(cc, "_LAST_DETAIL", None, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_CHAT_OK", None, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_DETAIL", None, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_OK", None, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_DETAIL", None, raising=False)
+
+
+def test_chat_success_does_not_mean_crm_verified():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(False, "no audited CRM call")
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "chat_verified"
+
+
+def test_crm_success_is_distinct():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "crm_verified"
 
 
 def test_configured_integration_is_not_reported_as_verified(client, monkeypatch):

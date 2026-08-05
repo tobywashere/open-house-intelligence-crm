@@ -1,10 +1,13 @@
 import os
+import uuid
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
+from ..agent.status import record_crm_capability
+from ..approvals import is_agent_write
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
 from ..integrations import hooks
@@ -122,7 +125,7 @@ def audit_log(limit: int = Query(50, ge=1, le=500)):
 
 
 @router.get("/metrics")
-def metrics():
+def metrics(request: Request):
     with get_conn() as conn:
         leads = [row_to_dict(r) for r in conn.execute(
             "SELECT * FROM leads WHERE status != 'closed'")]
@@ -141,18 +144,21 @@ def metrics():
         # julianday() arithmetic isn't bit-exact (e.g. 10.000000409781933 for
         # an intended 10.0) — round to a sane display precision.
         avg_response_minutes = round(raw_avg, 1) if raw_avg is not None else None
-    return {
-        "active_leads": len(leads),
-        "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
-        "followups_due": sum(1 for l in leads if l["is_neglected"]),
-        "appointments_booked": appts,
-        "avg_response_minutes": avg_response_minutes,
-        "agent_mode": os.environ.get("AGENT_MODE", "mock"),
-        # Composio tool calls (Gmail/Calendar) on the live path — NOT
-        # local-LLM inference requests. The openclaw driver's calls are
-        # deliberately excluded: they never leave the box.
-        "cloud_llm_requests": composio_client.request_count(),
-    }
+        result = {
+            "active_leads": len(leads),
+            "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
+            "followups_due": sum(1 for l in leads if l["is_neglected"]),
+            "appointments_booked": appts,
+            "avg_response_minutes": avg_response_minutes,
+            "agent_mode": os.environ.get("AGENT_MODE", "mock"),
+            # Composio tool calls (Gmail/Calendar) on the live path — NOT
+            # local-LLM inference requests. The openclaw driver's calls are
+            # deliberately excluded: they never leave the box.
+            "cloud_llm_requests": composio_client.request_count(),
+        }
+        if is_agent_write(request):
+            audit(conn, "agent", "generate_dashboard_insights", {}, result)
+    return result
 
 
 @router.get("/health")
@@ -162,7 +168,7 @@ async def health():
     return {
         "ok": True,
         "agent_mode": driver.name,
-        "agent_connected": probe.status in {"mock", "endpoint_enabled", "verified"},
+        "agent_connected": probe.gateway_reachable,
         "agent_status": asdict(probe),
     }
 
@@ -171,3 +177,32 @@ async def health():
 async def agent_check():
     driver = get_driver()
     return asdict(await driver.live_check())
+
+
+@router.post("/health/crm-check")
+async def crm_check():
+    driver = get_driver()
+    if driver.name == "mock":
+        raise HTTPException(409, "CRM capability check requires the OpenClaw agent")
+
+    with get_conn() as conn:
+        before = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS id FROM audit_log"
+        ).fetchone()["id"]
+
+    try:
+        await driver.request_crm_capability(f"crm-check-{uuid.uuid4().hex}")
+    except Exception:
+        record_crm_capability(False, "capability request failed")
+        return asdict(await driver.probe())
+
+    with get_conn() as conn:
+        found = conn.execute(
+            "SELECT 1 FROM audit_log "
+            "WHERE id > ? AND actor = 'agent' "
+            "AND tool = 'generate_dashboard_insights' LIMIT 1",
+            (before,),
+        ).fetchone() is not None
+
+    record_crm_capability(found, None if found else "no audited CRM call")
+    return asdict(await driver.probe())

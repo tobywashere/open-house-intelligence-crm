@@ -15,7 +15,13 @@ import uuid
 import httpx
 
 from .base import AgentDriver
-from .status import AgentProbe, last_chat, record_chat
+from .status import (
+    AgentProbe,
+    last_chat,
+    last_crm_capability,
+    record_chat,
+    resolved_status,
+)
 
 GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://gb10:18789")
 CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
@@ -98,6 +104,13 @@ class OpenClawDriver(AgentDriver):
             return ("⚠ The local agent is unavailable or returned an invalid response. "
                     "Your message is saved — check agent readiness and try again.")
 
+    async def request_crm_capability(self, session_id: str) -> None:
+        await self._send(
+            "Use the crm-db-operations skill to call generate_dashboard_insights. "
+            "Do not modify CRM data. After the call, reply with only CHECKED.",
+            session_id,
+        )
+
     async def extract(self, raw_text: str) -> dict:
         try:
             reply = await self._send(session_id=f"extract-{uuid.uuid4().hex[:8]}", message=
@@ -145,10 +158,16 @@ class OpenClawDriver(AgentDriver):
 
     async def connected(self) -> bool:
         probe = await self.probe()
-        return probe.status in {"endpoint_enabled", "verified"}
+        return probe.gateway_reachable and probe.endpoint_enabled
 
     async def probe(self) -> AgentProbe:
         headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+        crm_ok, crm_detail = last_crm_capability()
+        probe_fields = {
+            "crm_verified": crm_ok is True,
+            "agent_id": AGENT_ID or None,
+            "fallbacks": {},
+        }
         try:
             async with self._client_factory(timeout=3) as client:
                 resp = await client.options(
@@ -162,6 +181,7 @@ class OpenClawDriver(AgentDriver):
                 endpoint_enabled=False,
                 last_chat_ok=last_chat()[0],
                 detail=_safe_error(exc),
+                **probe_fields,
             )
 
         last_ok, last_detail = last_chat()
@@ -172,6 +192,7 @@ class OpenClawDriver(AgentDriver):
                 endpoint_enabled=False,
                 last_chat_ok=last_ok,
                 detail=f"HTTP {resp.status_code}",
+                **probe_fields,
             )
         if resp.status_code == 404:
             return AgentProbe(
@@ -180,15 +201,23 @@ class OpenClawDriver(AgentDriver):
                 endpoint_enabled=False,
                 last_chat_ok=last_ok,
                 detail="Chat Completions endpoint returned HTTP 404",
+                **probe_fields,
             )
         if 200 <= resp.status_code < 400 or resp.status_code == 405:
-            status = "verified" if last_ok is True else "failed" if last_ok is False else "endpoint_enabled"
             return AgentProbe(
-                status=status,
+                status=resolved_status(
+                    gateway_reachable=True,
+                    endpoint_enabled=True,
+                ),
                 gateway_reachable=True,
                 endpoint_enabled=True,
                 last_chat_ok=last_ok,
-                detail=last_detail,
+                detail=(
+                    last_detail
+                    if last_ok is False
+                    else crm_detail if crm_ok is False else last_detail
+                ),
+                **probe_fields,
             )
         return AgentProbe(
             status="failed",
@@ -196,6 +225,7 @@ class OpenClawDriver(AgentDriver):
             endpoint_enabled=False,
             last_chat_ok=last_ok,
             detail=f"Unexpected probe response HTTP {resp.status_code}",
+            **probe_fields,
         )
 
     async def live_check(self) -> AgentProbe:

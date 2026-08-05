@@ -94,10 +94,13 @@ export interface IntegrationsStatus {
 }
 
 export interface AgentStatus {
-  status: 'mock' | 'unreachable' | 'unauthorized' | 'endpoint_disabled' | 'endpoint_enabled' | 'verified' | 'failed'
+  status: 'mock' | 'unreachable' | 'unauthorized' | 'endpoint_disabled' | 'endpoint_enabled' | 'chat_verified' | 'crm_verified' | 'degraded' | 'failed'
   gateway_reachable: boolean
   endpoint_enabled: boolean
   last_chat_ok: boolean | null
+  crm_verified: boolean
+  agent_id: string | null
+  fallbacks: Record<string, number>
   detail: string | null
 }
 
