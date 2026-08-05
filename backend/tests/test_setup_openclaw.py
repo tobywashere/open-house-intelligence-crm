@@ -93,10 +93,15 @@ class FakeCLI:
         if args[-1:] == ["--help"]:
             return CommandResult(
                 0,
-                "agents add list bind config get set validate skills check approvals "
-                "allowlist exec-policy show sandbox explain gateway restart "
-                "--workspace --non-interactive --json --agent --bind --strict-json "
-                "--gateway",
+                "Commands:\n"
+                "  agents\n  add\n  list\n  bind\n  config\n  get\n  set\n"
+                "  validate\n  skills\n  check\n  approvals\n  allowlist\n"
+                "  exec-policy\n  show\n  sandbox\n  explain\n  gateway\n"
+                "  restart\n"
+                "Options:\n"
+                "  --workspace PATH\n  --non-interactive\n  --json\n"
+                "  --agent ID\n  --bind TARGET\n  --strict-json VALUE\n"
+                "  --gateway",
                 "",
             )
         if args == ["openclaw", "agents", "list", "--json"]:
@@ -241,6 +246,15 @@ def test_sync_skills_copies_canonical_directories_and_sets_entrypoints_executabl
     assert (targets[3] / "scripts" / "run_daily_brief.py").stat().st_mode & 0o111
 
 
+def test_sync_skills_creates_a_missing_custom_workspace_parent(tmp_path):
+    workspace = tmp_path / "custom" / "nested" / "workspace"
+
+    targets = sync_skills(REPO_ROOT, workspace, dry_run=False)
+
+    assert all(target.is_dir() for target in targets)
+    assert (workspace / "skills" / "crm-db-operations" / "cli.py").is_file()
+
+
 def test_sync_skills_rejects_destination_symlinks(tmp_path):
     workspace = tmp_path / "workspace"
     skills = workspace / "skills"
@@ -270,7 +284,7 @@ def test_sync_skills_preflights_every_source_before_mutating(tmp_path):
 
 
 def test_sync_skills_copy_failure_leaves_destination_unmodified(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"
+    workspace = tmp_path / "custom" / "nested" / "workspace"
     real_copytree = setup_openclaw.shutil.copytree
     calls = 0
 
@@ -287,6 +301,7 @@ def test_sync_skills_copy_failure_leaves_destination_unmodified(tmp_path, monkey
         sync_skills(REPO_ROOT, workspace, dry_run=False)
 
     assert not workspace.exists()
+    assert not (tmp_path / "custom").exists()
 
 
 def test_sync_skills_directory_failure_rolls_back_created_workspace(
@@ -402,10 +417,38 @@ def test_preflight_rejects_successful_help_missing_required_surfaces(
     assert not options.workspace.exists()
 
 
+@pytest.mark.parametrize(
+    ("help_command", "help_text", "missing"),
+    [
+        (
+            ("openclaw", "config", "get", "--help"),
+            "Options:\n  --json-output PATH",
+            "--json",
+        ),
+        (
+            ("openclaw", "agents", "--help"),
+            "Commands:\n  add-more\n  list-all\n\nDescription: supports add and list workflows",
+            "add",
+        ),
+    ],
+)
+def test_preflight_rejects_deceptive_help_superstrings(
+    tmp_path, help_command, help_text, missing
+):
+    cli = FakeCLI({help_command: CommandResult(0, help_text, "")})
+
+    result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=cli)
+
+    assert not result.ok
+    assert missing in result.render()
+    assert cli.mutating_calls == []
+
+
 def test_agents_bind_capability_is_required_only_when_requested(tmp_path):
     missing_bind_help = CommandResult(
         0,
-        "agents add list --workspace --non-interactive --json --agent --strict-json",
+        "Commands:\n  add\n  list\nOptions:\n  --workspace\n"
+        "  --non-interactive\n  --json\n  --agent\n  --strict-json",
         "",
     )
     without_binding = FakeCLI(

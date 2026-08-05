@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -209,10 +210,42 @@ def _remove_installed_tree(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _create_directory_chain(path: Path, label: str) -> list[Path]:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        if current.is_symlink():
+            raise SetupConflict(f"{label} must not contain a symlink: {current}")
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            raise SetupConflict(f"{label} has no usable existing ancestor: {path}")
+        current = parent
+    _validate_directory_node(current, f"{label} ancestor")
+    created: list[Path] = []
+    try:
+        for directory in reversed(missing):
+            directory.mkdir(parents=False)
+            created.append(directory)
+    except OSError:
+        for directory in reversed(created):
+            if directory.exists() and not any(directory.iterdir()):
+                directory.rmdir()
+        raise
+    return created
+
+
+def _remove_empty_directories(paths: list[Path]) -> None:
+    for path in reversed(paths):
+        if path.exists() and path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+
+
 def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
     sources = [repo / "skills" / name for name in SKILL_NAMES]
     skills_root = workspace / "skills"
     targets = [skills_root / name for name in SKILL_NAMES]
+    created_parent_dirs: list[Path] = []
     try:
         for source in sources:
             if not source.exists():
@@ -226,9 +259,9 @@ def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
             return targets
 
         parent = workspace.parent
-        _validate_directory_node(parent, "OpenClaw workspace parent")
-        if not parent.is_dir():
-            raise SetupConflict(f"OpenClaw workspace parent is missing: {parent}")
+        created_parent_dirs = _create_directory_chain(
+            parent, "OpenClaw workspace parent"
+        )
 
         with tempfile.TemporaryDirectory(
             prefix=".openhouse-skills-", dir=parent, ignore_cleanup_errors=True
@@ -276,8 +309,10 @@ def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
                 raise
         return targets
     except SetupConflict:
+        _remove_empty_directories(created_parent_dirs)
         raise
     except OSError as exc:
+        _remove_empty_directories(created_parent_dirs)
         raise SetupConflict(f"skill synchronization failed: {exc}") from exc
 
 
@@ -506,7 +541,31 @@ def _require_help(
 ) -> None:
     result = _run_required(cli, argv, label)
     output = f"{result.stdout}\n{result.stderr}"
-    missing = [token for token in required if token not in output]
+    option_tokens = set(
+        re.findall(
+            r"(?<![A-Za-z0-9_-])--[A-Za-z0-9][A-Za-z0-9-]*(?![A-Za-z0-9_-])",
+            output,
+        )
+    )
+    command_entries: set[str] = set()
+    in_commands = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if re.fullmatch(r"(?:available\s+)?commands?\s*:", stripped, re.I):
+            in_commands = True
+            continue
+        if in_commands and re.fullmatch(r"[A-Za-z][A-Za-z ]*\s*:", stripped):
+            in_commands = False
+            continue
+        if in_commands and stripped:
+            entry = stripped.split(maxsplit=1)[0]
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", entry):
+                command_entries.add(entry)
+    missing = [
+        token
+        for token in required
+        if token not in (option_tokens if token.startswith("--") else command_entries)
+    ]
     if missing:
         raise SetupConflict(
             f"unsupported OpenClaw installation: {label} help is missing "
