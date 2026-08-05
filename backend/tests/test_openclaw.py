@@ -16,6 +16,7 @@ class FakeClient:
         self.post_json = post_json or {
             "choices": [{"message": {"content": "READY"}}]
         }
+        self.last_post_json = None
 
     async def __aenter__(self):
         return self
@@ -30,6 +31,7 @@ class FakeClient:
         )
 
     async def post(self, url, **kwargs):
+        self.last_post_json = kwargs["json"]
         return httpx.Response(
             self.post_status,
             request=httpx.Request("POST", url),
@@ -90,6 +92,29 @@ def test_valid_completion_marks_chat_verified():
     assert reply == "READY"
     assert probe.status == "verified"
     assert probe.last_chat_ok is True
+
+
+def test_send_targets_configured_crm_agent(monkeypatch):
+    import app.agent.openclaw as module
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "AGENT_ID", "openhouse-crm")
+    driver = OpenClawDriver(client_factory=lambda **_: fake)
+
+    assert asyncio.run(driver.chat("List leads", "dash-fresh")) == "READY"
+    assert fake.last_post_json["model"] == "openclaw/openhouse-crm"
+    assert fake.last_post_json["user"] == "dash-fresh"
+
+
+def test_blank_agent_id_keeps_openclaw_default_compatibility(monkeypatch):
+    import app.agent.openclaw as module
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "AGENT_ID", "")
+    driver = OpenClawDriver(client_factory=lambda **_: fake)
+
+    asyncio.run(driver.chat("hello", "compat"))
+    assert fake.last_post_json["model"] == "openclaw"
 
 
 def test_mock_follow_up_prompt_accepts_hyphenated_wording():

@@ -1,12 +1,10 @@
-"""Relay to the OpenClaw gateway running on the GB10.
+"""Relay to a local OpenClaw Gateway.
 
 The gateway exposes an HTTP API (default port 18789) authenticated with a Bearer
 token. Chat goes through its OpenAI-compatible chat endpoint by default; override
 AGENT_CHAT_PATH if the installed OpenClaw version mounts it elsewhere.
 
-Extraction/drafting also route through chat with instruction prompts — the agent's
-system prompt + skill (see agent/prompts and agent/skills) make it answer with
-bare JSON / bare text. K owns prompt quality here.
+Extraction and drafting also route through chat with instruction prompts.
 """
 import json
 import logging
@@ -23,6 +21,13 @@ GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://gb10:18789")
 CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
 TOKEN = os.environ.get("AGENT_GATEWAY_TOKEN", "")
 TIMEOUT = float(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))
+AGENT_ID = os.environ.get("AGENT_ID", "openhouse-crm").strip()
+
+
+def openclaw_model(agent_id: str | None = None) -> str:
+    """Return the OpenAI-compatible model selector for an OpenClaw agent."""
+    selected = AGENT_ID if agent_id is None else agent_id.strip()
+    return f"openclaw/{selected}" if selected else "openclaw"
 
 
 def _parse_json_reply(reply: str) -> dict:
@@ -67,7 +72,7 @@ class OpenClawDriver(AgentDriver):
                     GATEWAY_URL.rstrip("/") + CHAT_PATH,
                     headers=headers,
                     json={
-                        "model": "openclaw",
+                        "model": openclaw_model(),
                         "user": session_id,
                         "messages": [{"role": "user", "content": message}],
                     },
