@@ -34,6 +34,43 @@ def make_options(tmp_path, *, dry_run=False, bind_discord=None):
     )
 
 
+def gateway_approval_payload(
+    *,
+    agent_id="openhouse-crm",
+    entries=None,
+    defaults=None,
+    inherited=None,
+    agent_policy=None,
+    effective=None,
+):
+    agent = {"autoAllowSkills": False, "allowlist": entries or []}
+    agent.update(agent_policy or {})
+    agents = {agent_id: agent}
+    if inherited is not None:
+        agents["*"] = inherited
+    scope = {
+        "scopeLabel": f"agent:{agent_id}",
+        "agentId": agent_id,
+        "host": {"requested": "gateway"},
+        "mode": {"effective": "allowlist"},
+        "security": {"effective": "allowlist"},
+        "ask": {"effective": "off"},
+        "askFallback": {"effective": "deny"},
+    }
+    scope.update(effective or {})
+    return {
+        "path": "~/.openclaw/state/openclaw.sqlite#exec_approvals_config",
+        "exists": True,
+        "hash": "test-hash",
+        "file": {
+            "version": 1,
+            "defaults": {"autoAllowSkills": False, **(defaults or {})},
+            "agents": agents,
+        },
+        "effectivePolicy": {"scopes": [scope]},
+    }
+
+
 class FakeCLI:
     def __init__(self, responses=None):
         self.calls = []
@@ -54,7 +91,14 @@ class FakeCLI:
         if key in self.responses:
             return self.responses[key]
         if args[-1:] == ["--help"]:
-            return CommandResult(0, "available", "")
+            return CommandResult(
+                0,
+                "agents add list bind config get set validate skills check approvals "
+                "allowlist exec-policy show sandbox explain gateway restart "
+                "--workspace --non-interactive --json --agent --bind --strict-json "
+                "--gateway",
+                "",
+            )
         if args == ["openclaw", "agents", "list", "--json"]:
             return CommandResult(
                 0, json.dumps({"agents": [self.created_agent] if self.created_agent else []}), ""
@@ -90,14 +134,12 @@ class FakeCLI:
                 ),
                 "",
             )
-            payload = {
-                "agents": {
-                    "openhouse-crm": {
-                        "security": "allowlist",
-                        "allowlist": [{"pattern": wrapper}, {"pattern": daily}],
-                    }
-                }
-            }
+            entries = [
+                {"pattern": pattern, "lastUsedAt": 1}
+                for pattern in (wrapper, daily)
+                if pattern
+            ]
+            payload = gateway_approval_payload(entries=entries)
             return CommandResult(0, json.dumps(payload), "")
         return CommandResult(0, "{}", "")
 
@@ -199,6 +241,99 @@ def test_sync_skills_copies_canonical_directories_and_sets_entrypoints_executabl
     assert (targets[3] / "scripts" / "run_daily_brief.py").stat().st_mode & 0o111
 
 
+def test_sync_skills_rejects_destination_symlinks(tmp_path):
+    workspace = tmp_path / "workspace"
+    skills = workspace / "skills"
+    skills.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (skills / "crm-db-operations").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SetupConflict, match="symlink"):
+        sync_skills(REPO_ROOT, workspace, dry_run=False)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_sync_skills_preflights_every_source_before_mutating(tmp_path):
+    repo = tmp_path / "repo"
+    for name in setup_openclaw.SKILL_NAMES[:-1]:
+        source = repo / "skills" / name
+        source.mkdir(parents=True)
+        (source / "content.txt").write_text(name)
+    workspace = tmp_path / "workspace"
+
+    with pytest.raises(SetupConflict, match="missing"):
+        sync_skills(repo, workspace, dry_run=False)
+
+    assert not workspace.exists()
+
+
+def test_sync_skills_copy_failure_leaves_destination_unmodified(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    real_copytree = setup_openclaw.shutil.copytree
+    calls = 0
+
+    def fail_second_copy(source, target, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated copy failure")
+        return real_copytree(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(setup_openclaw.shutil, "copytree", fail_second_copy)
+
+    with pytest.raises(SetupConflict, match="simulated copy failure"):
+        sync_skills(REPO_ROOT, workspace, dry_run=False)
+
+    assert not workspace.exists()
+
+
+def test_sync_skills_directory_failure_rolls_back_created_workspace(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    skills_root = workspace / "skills"
+    real_mkdir = Path.mkdir
+
+    def fail_skills_root(path, *args, **kwargs):
+        if path == skills_root:
+            raise OSError("simulated directory failure")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_skills_root)
+
+    with pytest.raises(SetupConflict, match="simulated directory failure"):
+        sync_skills(REPO_ROOT, workspace, dry_run=False)
+
+    assert not workspace.exists()
+
+
+def test_sync_skills_swap_failure_restores_every_existing_skill(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    skills_root = workspace / "skills"
+    for name in setup_openclaw.SKILL_NAMES:
+        target = skills_root / name
+        target.mkdir(parents=True)
+        (target / "existing.txt").write_text(f"existing {name}")
+    real_rename = Path.rename
+
+    def fail_second_staged_install(path, target):
+        if path.parent.name == "staged" and path.name == "business-card-scanner":
+            raise OSError("simulated swap failure")
+        return real_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_second_staged_install)
+
+    with pytest.raises(SetupConflict, match="simulated swap failure"):
+        sync_skills(REPO_ROOT, workspace, dry_run=False)
+
+    for name in setup_openclaw.SKILL_NAMES:
+        assert (skills_root / name / "existing.txt").read_text() == f"existing {name}"
+
+
 def test_dry_run_never_executes_mutating_commands(fake_cli, tmp_path):
     result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=fake_cli)
 
@@ -215,6 +350,22 @@ def test_output_redacts_api_token(fake_cli, tmp_path, monkeypatch):
     assert "<redacted>" in result.render()
 
 
+@pytest.mark.parametrize("token", ['quote"value', r"slash\\value", "line\nvalue\tend"])
+def test_output_redacts_raw_and_json_escaped_api_tokens(
+    fake_cli, tmp_path, monkeypatch, token
+):
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+
+    result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=fake_cli)
+    rendered = result.render()
+
+    assert result.ok
+    assert token not in rendered
+    assert json.dumps(token) not in rendered
+    assert json.dumps(token)[1:-1] not in rendered
+    assert "<redacted>" in rendered
+
+
 def test_failed_preflight_stops_before_sync_or_mutation(tmp_path):
     cli = FakeCLI(
         {
@@ -228,6 +379,52 @@ def test_failed_preflight_stops_before_sync_or_mutation(tmp_path):
     assert not result.ok
     assert cli.mutating_calls == []
     assert not options.workspace.exists()
+
+
+@pytest.mark.parametrize(
+    ("help_command", "help_text"),
+    [
+        (("openclaw", "agents", "--help"), "Usage: openclaw agents list"),
+        (("openclaw", "config", "set", "--help"), "Usage: openclaw config set"),
+    ],
+)
+def test_preflight_rejects_successful_help_missing_required_surfaces(
+    tmp_path, help_command, help_text
+):
+    cli = FakeCLI({help_command: CommandResult(0, help_text, "")})
+    options = make_options(tmp_path, dry_run=True)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "unsupported OpenClaw installation" in result.render()
+    assert cli.mutating_calls == []
+    assert not options.workspace.exists()
+
+
+def test_agents_bind_capability_is_required_only_when_requested(tmp_path):
+    missing_bind_help = CommandResult(
+        0,
+        "agents add list --workspace --non-interactive --json --agent --strict-json",
+        "",
+    )
+    without_binding = FakeCLI(
+        {("openclaw", "agents", "--help"): missing_bind_help}
+    )
+    with_binding = FakeCLI(
+        {("openclaw", "agents", "--help"): missing_bind_help}
+    )
+
+    result_without = configure_openclaw(
+        make_options(tmp_path, dry_run=True), cli=without_binding
+    )
+    result_with = configure_openclaw(
+        make_options(tmp_path, dry_run=True, bind_discord="primary"), cli=with_binding
+    )
+
+    assert result_without.ok
+    assert not result_with.ok
+    assert "bind" in result_with.render()
 
 
 def test_inconsistent_agent_indexes_fail_before_sync_or_mutation(tmp_path):
@@ -260,30 +457,46 @@ def test_inconsistent_agent_indexes_fail_before_sync_or_mutation(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "agent_policy",
+    "payload_factory",
     [
-        {"autoAllowSkills": True, "allowlist": []},
-        {
-            "autoAllowSkills": False,
-            "allowlist": [
+        lambda options: {
+            **gateway_approval_payload(),
+            "file": {**gateway_approval_payload()["file"], "version": 2},
+        },
+        lambda options: gateway_approval_payload(defaults={"autoAllowSkills": True}),
+        lambda options: gateway_approval_payload(
+            inherited={"autoAllowSkills": True, "allowlist": []}
+        ),
+        lambda options: gateway_approval_payload(
+            entries=[str(options.workspace / "skills/crm-db-operations/cli.py")]
+        ),
+        lambda options: gateway_approval_payload(
+            entries=[
                 {
-                    "pattern": "WORKSPACE/skills/crm-db-operations/cli.py",
+                    "pattern": str(
+                        options.workspace / "skills/crm-db-operations/cli.py"
+                    ),
                     "argPattern": "^list_leads.*$",
                 }
-            ],
-        },
+            ]
+        ),
+        lambda options: gateway_approval_payload(
+            entries=[{"pattern": "allowed", "unexpected": True}]
+        ),
+        lambda options: gateway_approval_payload(
+            agent_policy={"unexpectedPolicyField": True}
+        ),
     ],
 )
-def test_incompatible_gateway_approval_policy_fails_before_mutation(
-    tmp_path, agent_policy
+def test_incompatible_gateway_approval_document_fails_before_mutation(
+    tmp_path, payload_factory
 ):
     options = make_options(tmp_path, dry_run=True)
-    serialized = json.dumps(agent_policy).replace("WORKSPACE", str(options.workspace))
     cli = FakeCLI(
         {
             ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
                 0,
-                '{"agents":{"openhouse-crm":' + serialized + "}}",
+                json.dumps(payload_factory(options)),
                 "",
             )
         }
@@ -294,6 +507,68 @@ def test_incompatible_gateway_approval_policy_fails_before_mutation(
     assert not result.ok
     assert "approval policy" in result.render()
     assert cli.mutating_calls == []
+
+
+@pytest.mark.parametrize(
+    "effective",
+    [
+        {"security": {"effective": "full"}},
+        {"mode": {"effective": "full"}},
+        {"askFallback": {"effective": "full"}},
+        {"host": {"requested": "auto"}},
+    ],
+)
+def test_unsafe_effective_gateway_policy_fails_before_existing_agent_mutation(
+    tmp_path, effective
+):
+    options = make_options(tmp_path, dry_run=True)
+    agent = {"id": "openhouse-crm", "workspace": str(options.workspace)}
+    payload = gateway_approval_payload(effective=effective)
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
+                0, json.dumps([agent]), ""
+            ),
+            ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
+                0, json.dumps(payload), ""
+            ),
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "effective" in result.render()
+    assert cli.mutating_calls == []
+
+
+def test_mismatched_effective_scope_identity_is_rejected(tmp_path):
+    options = make_options(tmp_path, dry_run=True)
+    agent = {"id": "openhouse-crm", "workspace": str(options.workspace)}
+    payload = gateway_approval_payload()
+    scope = payload["effectivePolicy"]["scopes"][0]
+    scope["agentId"] = "another-agent"
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
+                0, json.dumps([agent]), ""
+            ),
+            ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
+                0, json.dumps(payload), ""
+            ),
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "effective" in result.render()
 
 
 def test_configuration_updates_only_dedicated_agent_fields(tmp_path, monkeypatch):
@@ -339,6 +614,48 @@ def test_mutation_failure_stops_before_later_changes(tmp_path):
 
     assert not result.ok
     assert cli.mutating_calls == [list(failing)]
+
+
+@pytest.mark.parametrize(
+    "skills_payload",
+    [
+        {"eligible": ["not-crm-db-operations-extra"]},
+        {"error": "crm-db-operations unavailable"},
+        {"eligible": [{"name": "crm-db-operations"}]},
+    ],
+)
+def test_skill_check_requires_exact_eligible_membership(tmp_path, skills_payload):
+    cli = FakeCLI(
+        {
+            (
+                "openclaw",
+                "skills",
+                "check",
+                "--agent",
+                "openhouse-crm",
+                "--json",
+            ): CommandResult(0, json.dumps(skills_payload), "")
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "eligible" in result.render()
+
+
+def test_filesystem_conflict_is_returned_as_setup_result(tmp_path):
+    options = make_options(tmp_path)
+    skills_path = options.workspace / "skills"
+    skills_path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    skills_path.symlink_to(outside, target_is_directory=True)
+
+    result = configure_openclaw(options, cli=FakeCLI())
+
+    assert not result.ok
+    assert "symlink" in result.render()
 
 
 def test_openclaw_cli_never_invokes_a_shell(monkeypatch):
