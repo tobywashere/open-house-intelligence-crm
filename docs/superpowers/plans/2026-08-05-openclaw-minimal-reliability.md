@@ -513,9 +513,10 @@ Use separate `openclaw config set 'agents.list[index].skills' ... --strict-json`
 
 6. Set `skills.entries["crm-db-operations"].env.CRM_API_URL` and, only when nonempty, `OHI_API_TOKEN`. Never print the token or include it in a dry-run command rendering; display `<redacted>`. Sandbox mode is explicitly off for this dedicated agent because OpenClaw does not inject skill environment variables into sandbox processes; the per-agent executable allowlist is the command boundary.
 7. If `--bind-discord ACCOUNT` is supplied, use `openclaw agents bind --agent openhouse-crm --bind discord:ACCOUNT --json`; otherwise print the exact optional binding command without changing Discord routing.
-8. Run `openclaw config validate --json`, then `openclaw skills check --agent openhouse-crm --json` and verify the output contains `crm-db-operations`.
-9. Run `openclaw sandbox explain --agent openhouse-crm --json` and `openclaw exec-policy show`; require gateway-host `exec`, `allowlist` mode, and exactly the CRM wrapper and daily-brief runner paths for `openhouse-crm`. If the installed version lacks these inspection surfaces, fail with an actionable unsupported-version message instead of guessing.
-10. Restart the Gateway only after at least one mutation and successful validation.
+8. After setting the agent policy, read `agents.list[index].tools` back with `openclaw config get ... --json`. Require its authoritative allowed-tool list to equal exactly `["exec"]`, all known general web/browser/filesystem tools to remain denied, and gateway execution to remain allowlist-only. Missing or ambiguous JSON is an unsupported installation and must never produce a ready message.
+9. Run `openclaw config validate --json`, then `openclaw skills check --agent openhouse-crm --json` and verify the output contains `crm-db-operations`.
+10. Run `openclaw sandbox explain --agent openhouse-crm --json` and `openclaw exec-policy show`; require gateway-host `exec`, `allowlist` mode, and exactly the CRM wrapper and daily-brief runner paths for `openhouse-crm`. If the installed version lacks these inspection surfaces, fail with an actionable unsupported-version message instead of guessing.
+11. Restart the Gateway only after at least one mutation and successful validation.
 
 - [ ] **Step 5: Replace hardcoded skill paths with installed-location paths**
 

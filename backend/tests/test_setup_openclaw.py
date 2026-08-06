@@ -114,6 +114,13 @@ class FakeCLI:
             )
         if args == ["openclaw", "config", "get", "agents.list", "--json"]:
             return CommandResult(0, json.dumps([self.created_agent] if self.created_agent else []), "")
+        if (
+            args[1:3] == ["config", "get"]
+            and args[3].startswith("agents.list[")
+            and args[3].endswith("].tools")
+            and args[-1] == "--json"
+        ):
+            return CommandResult(0, json.dumps(setup_openclaw.DESIRED_TOOLS), "")
         if args == ["openclaw", "skills", "check", "--agent", "openhouse-crm", "--json"]:
             return CommandResult(0, '{"eligible": ["crm-db-operations"]}', "")
         if args == ["openclaw", "sandbox", "explain", "--agent", "openhouse-crm", "--json"]:
@@ -230,6 +237,59 @@ def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
         "apply_patch",
     } <= set(policy["deny"])
     assert policy["exec"] == {"mode": "allowlist", "host": "gateway"}
+
+
+@pytest.mark.parametrize(
+    "authoritative_tools",
+    [
+        {
+            "allow": ["exec", "web_fetch"],
+            "deny": ["write", "edit", "browser"],
+            "exec": {"mode": "allowlist", "host": "gateway"},
+        },
+        {},
+    ],
+)
+def test_setup_rejects_non_authoritative_or_broad_effective_tools(
+    tmp_path, authoritative_tools
+):
+    command = (
+        "openclaw",
+        "config",
+        "get",
+        "agents.list[0].tools",
+        "--json",
+    )
+    cli = FakeCLI(
+        {command: CommandResult(0, json.dumps(authoritative_tools), "")}
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "authoritative" in result.render().lower()
+    assert "Validated the restricted agent" not in result.render()
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_setup_reads_back_exact_exec_tools_and_is_idempotent(tmp_path):
+    cli = FakeCLI()
+    options = make_options(tmp_path)
+
+    first = configure_openclaw(options, cli=cli)
+    second = configure_openclaw(options, cli=cli)
+
+    assert first.ok, first.render()
+    assert second.ok, second.render()
+    readbacks = [
+        call
+        for call in cli.calls
+        if call[1:3] == ["config", "get"]
+        and call[3].startswith("agents.list[")
+        and call[3].endswith("].tools")
+    ]
+    assert len(readbacks) == 2
+    assert "Validated the restricted agent" in second.render()
 
 
 def test_dashboard_refresh_uses_the_installed_allowlisted_daily_runner(tmp_path):

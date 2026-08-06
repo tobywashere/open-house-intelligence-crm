@@ -704,6 +704,40 @@ def _detect_version(cli: OpenClawCLI) -> str:
     return version[:200]
 
 
+def _validate_authoritative_tools(payload: Any) -> None:
+    """Require the post-write agent tool policy to be observably exec-only."""
+    if not isinstance(payload, dict):
+        raise SetupConflict(
+            "unsupported OpenClaw installation: authoritative agent tools "
+            "were not exposed as a JSON object"
+        )
+    allow = payload.get("allow")
+    deny = payload.get("deny")
+    exec_policy = payload.get("exec")
+    if (
+        not isinstance(allow, list)
+        or not isinstance(deny, list)
+        or not all(isinstance(item, str) for item in allow + deny)
+    ):
+        raise SetupConflict(
+            "unsupported OpenClaw installation: authoritative agent tools "
+            "did not expose allow and deny lists"
+        )
+    if allow != ["exec"]:
+        raise SetupConflict(
+            "dedicated CRM agent authoritative tool policy is not exactly exec-only"
+        )
+    if not set(DESIRED_TOOLS["deny"]).issubset(set(deny)):
+        raise SetupConflict(
+            "dedicated CRM agent authoritative tool policy does not deny all "
+            "general web, browser, and filesystem tools"
+        )
+    if exec_policy != DESIRED_TOOLS["exec"]:
+        raise SetupConflict(
+            "dedicated CRM agent authoritative exec policy is not gateway allowlist-only"
+        )
+
+
 def _config_actions(options: SetupOptions, index: int) -> list[Action]:
     token = os.environ.get("OHI_API_TOKEN", "")
     prefix = f"agents.list[{index}]"
@@ -931,6 +965,21 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 detail = (result.stderr or result.stdout).strip()
                 raise SetupConflict(f"{action.description} failed: {detail}")
             messages.append(action.description)
+
+        authoritative_tools = _run_required(
+            cli,
+            [
+                "openclaw",
+                "config",
+                "get",
+                f"agents.list[{index}].tools",
+                "--json",
+            ],
+            "authoritative dedicated-agent tools",
+        )
+        _validate_authoritative_tools(
+            _json(authoritative_tools, "authoritative dedicated-agent tools")
+        )
 
         validate = _run_required(
             cli,

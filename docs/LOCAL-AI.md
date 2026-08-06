@@ -72,10 +72,11 @@ runner, rather than allowing a general shell command.
 The helper prints `openclaw --version` in both success and failure diagnostics.
 Compatibility is capability-based because this repository has no evidence for
 a safe numeric version range. Before changing files or configuration, the
-helper requires the documented CLI commands, options, JSON shapes, agent-policy
-inspection, and effective allowlist surfaces. A missing surface stops setup
-with an unsupported-installation message instead of guessing or widening
-permissions.
+helper requires the documented CLI commands, options, and prerequisite JSON
+and policy-inspection surfaces. After configuration, it reads the dedicated
+agent's authoritative tool policy back and requires the allowed-tool list to be
+exactly `exec`, with general web, browser, and file tools denied. A missing or
+ambiguous surface stops setup instead of guessing or widening permissions.
 
 ## Configuration details
 

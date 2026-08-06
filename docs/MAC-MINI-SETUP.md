@@ -73,7 +73,8 @@ restricted command access. The configuration in `.env` is
 `AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
 required capabilities before changing anything, and allows only `exec` with
 the CRM wrapper and daily-brief runner on its executable allowlist. General
-web, browser, and file tools are denied.
+web, browser, and file tools are denied. It then reads that tool policy back
+from OpenClaw and will not report success if broader tools remain available.
 
 The doctor command should finish with **CRM capability: crm_verified**. A chat
 answer alone is not enough because it could come from a generic agent without

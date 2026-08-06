@@ -74,9 +74,11 @@ uses `AGENT_ID=openhouse-crm`.
 
 The helper prints the installed OpenClaw version for troubleshooting. Support
 is capability-based, not tied to a guessed version number: setup checks the
-documented commands, JSON output, agent policy, and effective allowlists before
-it changes anything. If a required surface is missing, setup stops and explains
-what OpenClaw capability needs updating.
+documented commands and prerequisite policy surfaces before it changes
+anything. After configuration, it reads the dedicated agent's tool policy back
+from OpenClaw and reports success only when `exec` is the sole allowed tool. If
+a required surface is missing, setup stops and explains what capability needs
+updating.
 
 For a Mac mini, start with [the Mac mini guide](docs/MAC-MINI-SETUP.md). An
 Apple-silicon Mac mini with **16 GB** unified memory is the minimum supported

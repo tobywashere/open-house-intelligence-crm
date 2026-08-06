@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 NOW = "strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
 STATUSES = ["new", "contacted", "meeting_booked", "closed"]
 DETERMINISTIC_FALLBACK_PREFIX = "[deterministic fallback] "
+PROCESS_FIELDS = ("phone", "email", "budget", "area", "timeline", "intent")
 
 # forward-only lifecycle; any state may close. Backward moves need a human
 # with DB access — the agent must never un-close a lead.
@@ -136,6 +138,58 @@ def _summarize_update_fields(old: dict, fields: dict) -> str:
                for k, v in fields.items() if old.get(k) != v]
     detail = "; ".join(changes) if changes else "no field changes"
     return f"Update lead #{old['id']} ({old.get('name')}): {detail}"
+
+
+def _normalize_process_value(key: str, value):
+    """Return a reviewable value, or None when extraction supplied no value."""
+    if value is None or isinstance(value, bool):
+        return None
+    if key == "budget":
+        cleaned = re.sub(r"[$,\s]", "", str(value))
+        if not cleaned:
+            return None
+        try:
+            return int(float(cleaned))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    if key == "phone":
+        digits = re.sub(r"\D", "", text)
+        if not digits:
+            return None
+        return ("+" if text.startswith("+") else "") + digits
+    if key in {"email", "intent"}:
+        text = text.casefold()
+    if key == "intent" and text == "unknown":
+        return None
+    return text
+
+
+def _process_comparison_value(key: str, value):
+    normalized = _normalize_process_value(key, value)
+    if normalized is None:
+        return None
+    if key == "phone":
+        return re.sub(r"\D", "", normalized)
+    if key in {"area", "timeline"}:
+        return normalized.casefold()
+    return normalized
+
+
+def _changed_process_fields(lead: dict, extracted: dict) -> dict:
+    changes = {}
+    for key in PROCESS_FIELDS:
+        value = _normalize_process_value(key, extracted.get(key))
+        if value is None:
+            continue
+        if _process_comparison_value(key, value) != _process_comparison_value(
+            key, lead.get(key)
+        ):
+            changes[key] = value
+    return changes
 
 
 def summarize_close_lead(lead_id: int, body: "CloseLeadIn") -> str:
@@ -495,7 +549,7 @@ def _apply_merge_leads(body: MergeIn, *, conn=None):
 
 
 @router.post("/{lead_id}/process")
-async def process_lead(lead_id: int):
+async def process_lead(lead_id: int, source_event_id: int | None = None):
     """Extract (if raw events exist) → score → draft. The core pipeline.
 
     Never hold a connection across the driver awaits: in openclaw mode each can
@@ -506,20 +560,29 @@ async def process_lead(lead_id: int):
         lead = fetch_lead(conn, lead_id)
         event_count = conn.execute(
             "SELECT COUNT(*) c FROM events WHERE lead_id = ?", (lead_id,)).fetchone()["c"]
-        latest = None
-        if not lead.get("budget") or not lead.get("timeline"):
-            latest = conn.execute(
+        if source_event_id is None:
+            source_event = conn.execute(
                 "SELECT id, content FROM events WHERE lead_id = ? "
                 "AND type IN ('note','form','text','email') "
                 "ORDER BY created_at DESC, id DESC LIMIT 1", (lead_id,)).fetchone()
+        else:
+            source_event = conn.execute(
+                "SELECT id, content FROM events WHERE id = ? AND lead_id = ? "
+                "AND type IN ('note','form','text','email')",
+                (source_event_id, lead_id),
+            ).fetchone()
+            if not source_event:
+                raise HTTPException(
+                    404, f"source event {source_event_id} not found for lead {lead_id}"
+                )
 
-    # Re-extract from the latest raw note if fields are missing. Keep all
-    # candidate changes in memory until every agent response is confirmed to
-    # be real agent output: this route is also called by the Gmail poller, so
-    # a deterministic fallback must never auto-apply CRM fields or a score.
+    # Extract from the selected source even when CRM fields are populated: a
+    # reply can replace old contact or qualification facts. Keep all candidate
+    # changes in memory until every agent response is confirmed to be real
+    # agent output. A fallback must never auto-apply CRM fields or a score.
     fills: dict = {}
-    if latest:
-        extracted = await driver.extract(latest["content"])
+    if source_event:
+        extracted = await driver.extract(source_event["content"])
         fallback = extracted.pop("_fallback_used", None)
         if fallback:
             raise HTTPException(
@@ -527,19 +590,7 @@ async def process_lead(lead_id: int):
                 "The local agent used its backup parser. No CRM fields were changed. "
                 "Try again after OpenClaw is ready, then review the result.",
             )
-        fills = {k: extracted[k] for k in
-                 ("phone", "email", "budget", "area", "timeline", "intent")
-                 if (
-                     (not lead.get(k) or (k == "intent" and lead.get(k) == "unknown"))
-                     and extracted.get(k) is not None
-                 )}
-        # the model may answer "1.1M" — a non-numeric budget breaks score_lead
-        # for this lead forever, so drop it rather than store it
-        if "budget" in fills and not isinstance(fills["budget"], (int, float)):
-            try:
-                fills["budget"] = int(float(str(fills["budget"]).replace(",", "").strip()))
-            except ValueError:
-                del fills["budget"]
+        fills = _changed_process_fields(lead, extracted)
 
     candidate = {**lead, **fills}
     score = score_lead(candidate, event_count)
@@ -570,7 +621,7 @@ async def process_lead(lead_id: int):
                 lead_id,
                 fills,
                 _summarize_update_fields(lead, fills),
-                dedupe_key=f"lead-process:{lead_id}:event:{latest['id']}",
+                dedupe_key=f"lead-process:{lead_id}:event:{source_event['id']}",
             )
         lead = fetch_lead(conn, lead_id)
     return {"lead": lead, "followup_draft": draft, "pending_change": proposal}

@@ -113,8 +113,10 @@ tool policy that still permits the repository's CRM skill to run.
 Compatibility is capability-based. Repository evidence does not establish a
 safe numeric OpenClaw version range, so the helper must not guess one. It records
 `openclaw --version`, then requires the documented command help, JSON shapes,
-configuration validation, agent policy, and effective execution-policy surfaces
-before mutation. The dedicated agent allows only `exec`; general web, network,
+and prerequisite policy surfaces before mutation. After mutation it reads the
+dedicated agent's authoritative tools field back from OpenClaw and requires the
+allowed-tool set to equal exactly `exec`; a missing or ambiguous readback is an
+unsupported installation, not a successful setup. General web, network,
 browser, and filesystem tools are denied. Gateway execution remains restricted
 to the CRM wrapper and deterministic daily-brief runner.
 
@@ -191,11 +193,14 @@ derived score fields. If its current processing path can change operator-entered
 lead fields, that field-changing portion must either be separated or queued.
 
 The lead-processing path therefore computes extraction, score, explanation, and
-draft in memory. It persists only the derived score, explanation, and audits,
-while changed contact and qualification fields enter an editable `update_lead`
-proposal. A stable source-event key prevents retries or concurrent Gmail workers
-from creating duplicate proposals for the same input. A fallback aborts the
-whole processing attempt before either derived fields or a proposal are written.
+draft in memory. Extraction runs for the exact selected event even when current
+fields are populated. It persists only the derived score, explanation, and
+audits, while normalized, nonblank changes to contact and qualification fields
+enter an editable `update_lead` proposal. Gmail passes the exact inserted or
+existing event ID into processing. A stable source-event key prevents retries
+or concurrent workers from creating duplicate proposals for the same event,
+while different events retain separate proposals. A fallback aborts the whole
+processing attempt before either derived fields or a proposal are written.
 
 Post-approval integration intents distinguish transient delivery failures from
 objects made permanently obsolete by deletion or merge. Missing objects become

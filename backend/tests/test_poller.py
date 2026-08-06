@@ -80,7 +80,7 @@ def test_concurrent_reply_logging_inserts_one_event_and_updates_activity(client,
         )
         conn.commit()
 
-    async def no_process(_lead_id):
+    async def no_process(_lead_id, source_event_id=None):
         return {}
 
     monkeypatch.setattr(leads_router, "process_lead", no_process)
@@ -111,7 +111,9 @@ def test_concurrent_reply_logging_inserts_one_event_and_updates_activity(client,
         futures = [executor.submit(log_reply), executor.submit(log_reply)]
         results = [future.result(timeout=10) for future in futures]
 
-    assert sorted(results) == [0, 1]
+    event_ids = {result[0] for result in results}
+    assert len(event_ids) == 1
+    assert sorted(result[1] for result in results) == [False, True]
     profile = client.get(f"/api/leads/{lead['id']}").json()
     reply_events = [
         event for event in profile["events"]
@@ -144,7 +146,7 @@ def test_reply_audit_failure_rolls_back_event_and_allows_retry(client, monkeypat
         )
         conn.commit()
 
-    async def no_process(_lead_id):
+    async def no_process(_lead_id, source_event_id=None):
         return {}
 
     monkeypatch.setattr(leads_router, "process_lead", no_process)
@@ -176,7 +178,9 @@ def test_reply_audit_failure_rolls_back_event_and_allows_retry(client, monkeypat
         for row in client.get("/api/audit?limit=30").json()
     )
 
-    assert poller._log_reply(*args) == 1
+    event_id, inserted = poller._log_reply(*args)
+    assert event_id > 0
+    assert inserted is True
     profile = client.get(f"/api/leads/{lead['id']}").json()
     assert len([
         event for event in profile["events"]
@@ -452,6 +456,144 @@ class _ReviewableExtractionDriver:
         return "Hi Test, would you like to discuss Kirkland homes this week?"
 
 
+def test_reply_processing_uses_exact_inserted_or_existing_event_id(client, monkeypatch):
+    lead = make_lead(client)
+    processed = []
+
+    async def capture_process(lead_id, source_event_id=None):
+        processed.append((lead_id, source_event_id))
+        return {}
+
+    monkeypatch.setattr(leads_router, "process_lead", capture_process)
+
+    first_event_id, first_inserted = poller._log_reply(
+        lead, "exact-reply-1", "First processing attempt"
+    )
+    retry_event_id, retry_inserted = poller._log_reply(
+        lead, "exact-reply-1", "A changed preview must not change the source"
+    )
+
+    assert first_event_id > 0
+    assert retry_event_id == first_event_id
+    assert first_inserted is True
+    assert retry_inserted is False
+    assert processed == [
+        (lead["id"], first_event_id),
+        (lead["id"], first_event_id),
+    ]
+
+
+def test_process_proposes_changes_to_every_populated_business_field(client, monkeypatch):
+    lead = make_lead(
+        client,
+        phone="+1 (425) 555-0100",
+        email="old@example.com",
+        budget=800_000,
+        area="Seattle",
+        timeline="6 months",
+        intent="browse",
+    )
+    event = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "My plans and contact details changed."},
+    ).json()
+
+    class ChangedFieldsDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            return {
+                "phone": "+1 425 555 0199",
+                "email": " NEW@EXAMPLE.COM ",
+                "budget": "$925,000",
+                "area": " Kirkland ",
+                "timeline": " 2 months ",
+                "intent": " BUY ",
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: ChangedFieldsDriver())
+
+    response = client.post(
+        f"/api/leads/{lead['id']}/process?source_event_id={event['id']}"
+    )
+
+    assert response.status_code == 200, response.text
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["phone"] == "+1 (425) 555-0100"
+    assert current["email"] == "old@example.com"
+    assert current["budget"] == 800_000
+    assert current["area"] == "Seattle"
+    assert current["timeline"] == "6 months"
+    assert current["intent"] == "browse"
+    assert current["score"] is not None
+
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"] == {
+        "phone": "+14255550199",
+        "email": "new@example.com",
+        "budget": 925_000,
+        "area": "Kirkland",
+        "timeline": "2 months",
+        "intent": "buy",
+    }
+
+    approved = client.post(
+        f"/api/pending-changes/{pending[0]['id']}/approve",
+        json={"fields": {"email": "reviewed@example.com", "budget": 950_000}},
+    )
+    assert approved.status_code == 200, approved.text
+    applied = approved.json()
+    assert applied["phone"] == "+14255550199"
+    assert applied["email"] == "reviewed@example.com"
+    assert applied["budget"] == 950_000
+    assert applied["area"] == "Kirkland"
+    assert applied["timeline"] == "2 months"
+    assert applied["intent"] == "buy"
+
+
+def test_process_omits_normalized_unchanged_and_blank_extraction(client, monkeypatch):
+    lead = make_lead(
+        client,
+        phone="+1 (425) 555-0100",
+        email="lead@example.com",
+        budget=900_000,
+        area="Bellevue",
+        timeline="6 weeks",
+        intent="buy",
+    )
+    event = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Only the preferred area changed."},
+    ).json()
+
+    class SparseChangedFieldsDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            return {
+                "phone": " +1 425-555-0100 ",
+                "email": " LEAD@EXAMPLE.COM ",
+                "budget": "900,000",
+                "area": " Redmond ",
+                "timeline": "   ",
+                "intent": " ",
+            }
+
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: SparseChangedFieldsDriver()
+    )
+
+    response = client.post(
+        f"/api/leads/{lead['id']}/process?source_event_id={event['id']}"
+    )
+
+    assert response.status_code == 200, response.text
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"] == {"area": "Redmond"}
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["area"] == "Bellevue"
+    assert current["timeline"] == "6 weeks"
+    assert current["intent"] == "buy"
+
+
 def test_process_queues_extracted_fields_but_persists_derived_score(client, monkeypatch):
     lead = make_lead(
         client,
@@ -551,6 +693,25 @@ def test_process_uses_highest_event_id_when_timestamps_tie(client, monkeypatch):
     assert pending[0]["payload"]["area"] == "Kirkland"
 
 
+def test_process_rejects_source_event_owned_by_another_lead(client):
+    lead = make_lead(client, email="one@example.com")
+    other = make_lead(client, email="two@example.com")
+    foreign_event = client.post(
+        f"/api/leads/{other['id']}/events",
+        json={"type": "note", "content": "This belongs to the other lead."},
+    ).json()
+
+    response = client.post(
+        f"/api/leads/{lead['id']}/process?source_event_id={foreign_event['id']}"
+    )
+
+    assert response.status_code == 404
+    assert "source event" in response.json()["detail"].lower()
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["score"] is None
+    assert client.get("/api/pending-changes").json() == []
+
+
 def test_known_lead_reply_queues_fields_once_and_updates_score_now(client, monkeypatch):
     lead = make_lead(
         client,
@@ -602,10 +763,10 @@ def test_concurrent_processing_deduplicates_same_source_proposal(client, monkeyp
         timeline=None,
         intent="unknown",
     )
-    client.post(
+    event = client.post(
         f"/api/leads/{lead['id']}/events",
         json={"type": "note", "content": "Kirkland, $925k, moving in two months."},
-    )
+    ).json()
     extraction_barrier = threading.Barrier(2)
 
     class CoordinatedDriver(_ReviewableExtractionDriver):
@@ -616,7 +777,9 @@ def test_concurrent_processing_deduplicates_same_source_proposal(client, monkeyp
     monkeypatch.setattr(leads_router, "get_driver", lambda: CoordinatedDriver())
 
     def process():
-        return asyncio.run(leads_router.process_lead(lead["id"]))
+        return asyncio.run(
+            leads_router.process_lead(lead["id"], source_event_id=event["id"])
+        )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = [
@@ -632,6 +795,48 @@ def test_concurrent_processing_deduplicates_same_source_proposal(client, monkeyp
     assert current["budget"] is None
     assert current["timeline"] is None
     assert current["score"] is not None
+
+
+def test_concurrent_distinct_source_events_create_distinct_proposals(client, monkeypatch):
+    lead = make_lead(client, area="Bellevue")
+    first = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "First reply prefers Redmond."},
+    ).json()
+    second = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "Second reply prefers Kirkland."},
+    ).json()
+    extraction_barrier = threading.Barrier(2)
+
+    class EventSpecificDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            extraction_barrier.wait(timeout=5)
+            return {
+                "area": "Redmond" if raw_text.startswith("First") else "Kirkland"
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: EventSpecificDriver())
+
+    def process(event_id):
+        return asyncio.run(
+            leads_router.process_lead(lead["id"], source_event_id=event_id)
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [
+            future.result(timeout=10)
+            for future in (
+                executor.submit(process, first["id"]),
+                executor.submit(process, second["id"]),
+            )
+        ]
+
+    assert len(results) == 2
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 2
+    assert {row["payload"]["area"] for row in pending} == {"Redmond", "Kirkland"}
+    assert all(row["operation"] == "update_lead" for row in pending)
 
 
 def test_process_deterministic_draft_does_not_write_score_or_reason(client, monkeypatch):

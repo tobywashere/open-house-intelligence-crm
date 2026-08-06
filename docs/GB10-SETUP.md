@@ -48,7 +48,8 @@ dedicated `openhouse-crm` agent with the `crm-db-operations` skill and uses
 agent only `exec`; the executable allowlist contains the CRM wrapper and daily
 brief runner, while general web, browser, and file tools are denied. It records
 the installed OpenClaw version and checks required CLI and policy capabilities
-before changing configuration.
+before changing configuration, then reads the tool policy back and refuses to
+report success unless `exec` is the only allowed tool.
 
 The expected live result is **CRM capability: crm_verified**. If the result is
 only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the
