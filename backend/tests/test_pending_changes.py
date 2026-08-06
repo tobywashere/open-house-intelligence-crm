@@ -316,6 +316,65 @@ def test_approve_with_edited_fields_overrides_the_queued_payload(client):
     assert approved.json()["name"] == "Jordan Ellis", "unedited fields must pass through unchanged"
 
 
+def test_approve_create_lead_persists_operator_edited_preferences(client, monkeypatch):
+    """Preferences shown in the dialog must round-trip from the edited fields,
+    rather than silently preserving the agent's hidden original value."""
+    from app.routers import leads as leads_router
+
+    class PreferencesDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Jordan Ellis",
+                "preferences": ["pool", "large yard"],
+                "missing_fields": [],
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: PreferencesDriver())
+    queued = client.post(
+        "/api/leads",
+        json={"raw_text": "Met Jordan Ellis at an open house", "source": "note"},
+        headers=AGENT,
+    )
+    pending_id = queued.json()["id"]
+
+    approved = client.post(
+        f"/api/pending-changes/{pending_id}/approve",
+        json={"fields": {"preferences": ["quiet street", "home office"]}},
+    )
+
+    assert approved.status_code == 200
+    assert approved.json()["preferences"] == ["quiet street", "home office"]
+    stored = client.get(f"/api/leads/{approved.json()['id']}").json()
+    assert stored["preferences"] == ["quiet street", "home office"]
+
+
+def test_approve_create_lead_can_explicitly_clear_preferences(client, monkeypatch):
+    from app.routers import leads as leads_router
+
+    class PreferencesDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Jordan Ellis",
+                "preferences": ["pool"],
+                "missing_fields": [],
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: PreferencesDriver())
+    queued = client.post(
+        "/api/leads",
+        json={"raw_text": "Met Jordan Ellis", "source": "note"},
+        headers=AGENT,
+    )
+
+    approved = client.post(
+        f"/api/pending-changes/{queued.json()['id']}/approve",
+        json={"fields": {"preferences": []}},
+    )
+
+    assert approved.status_code == 200
+    assert approved.json()["preferences"] == []
+
+
 def test_approve_update_lead_with_edited_fields(client):
     lead = make_lead(client, budget=900_000, area="Bellevue")
     res = client.patch(f"/api/leads/{lead['id']}", json={"budget": 1_100_000}, headers=AGENT)

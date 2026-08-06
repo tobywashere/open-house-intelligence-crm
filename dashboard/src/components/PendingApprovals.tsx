@@ -17,6 +17,7 @@ const LABELS: Record<string, string> = {
   reason: 'Reason', outcome: 'Outcome',
   content: 'Note', start_ts: 'Start', end_ts: 'End', location: 'Location',
   due_ts: 'Due', note: 'Reminder note',
+  preferences: 'Preferences',
 }
 
 const inputCls =
@@ -36,6 +37,9 @@ function editableFieldsFor(item: PendingChange): Record<string, FieldValue> {
         area: (p.area as string) ?? '',
         timeline: (p.timeline as string) ?? '',
         intent: (p.intent as string) ?? '',
+        preferences: Array.isArray(p.preferences)
+          ? p.preferences.filter((value): value is string => typeof value === 'string').join('\n')
+          : '',
       }
     case 'update_lead': {
       const out: Record<string, FieldValue> = {}
@@ -73,7 +77,13 @@ function leadIdsToFetch(item: PendingChange): number[] {
 function coerceForSubmit(values: Record<string, FieldValue>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(values)) {
-    if (k === 'budget') {
+    if (k === 'preferences') {
+      // An empty textarea intentionally clears the queued preferences instead
+      // of omitting the field and silently retaining the agent's original list.
+      out[k] = typeof v === 'string'
+        ? v.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+        : []
+    } else if (k === 'budget') {
       out[k] = v === '' || v === null || v === undefined ? null : Number(v)
     } else if (typeof v === 'string') {
       out[k] = v.trim()
@@ -259,6 +269,23 @@ function TextField({
   )
 }
 
+function PreferencesField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block text-xs text-sub">
+      <span>Preferences</span>
+      <textarea
+        rows={3}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`mt-1 resize-y ${inputCls}`}
+      />
+      <span className="mt-1 block text-[11px] text-sub/70">
+        Put each preference on its own line. Leave this blank to clear them.
+      </span>
+    </label>
+  )
+}
+
 function FieldsFor({
   item, values, setField, lead, duplicateLead,
 }: {
@@ -282,6 +309,13 @@ function FieldsFor({
           <TextField label="Timeline" value={str('timeline')} onChange={(v) => setField('timeline', v)} />
         </div>
         <TextField label="Intent" value={str('intent')} onChange={(v) => setField('intent', v)} />
+        <PreferencesField
+          value={str('preferences')}
+          onChange={(v) => setField('preferences', v)}
+        />
+        {/* raw_text is evidence shown below; source and missing_fields are
+            provenance/derived metadata. All persisted business values are
+            visible and editable above. */}
         {typeof item.payload.raw_text === 'string' && item.payload.raw_text && (
           <div className="text-[11px] text-sub/70 italic border-l-2 border-tile pl-2">
             "{item.payload.raw_text as string}"

@@ -76,8 +76,10 @@ The helper prints the installed OpenClaw version for troubleshooting. Support
 is capability-based, not tied to a guessed version number: setup checks the
 documented commands and prerequisite policy surfaces before it changes
 anything. After configuration, it reads the dedicated agent's tool policy back
-from OpenClaw and reports success only when `exec` is the sole allowed tool. If
-a required surface is missing, setup stops and explains what capability needs
+from OpenClaw and reports success only when `exec` is the sole allowed tool and
+its effective execution prompt is off. This lets dashboard and Discord requests
+run unattended, but only through the two allowlisted CRM entry points. If a
+required surface is missing, setup stops and explains what capability needs
 updating.
 
 For a Mac mini, start with [the Mac mini guide](docs/MAC-MINI-SETUP.md). An
@@ -112,8 +114,9 @@ Ask naturally, for example:
 
 The agent proposes the lead, note, reminder, booking, update, merge, close,
 or deletion. It does not apply that proposal until you approve it. You can
-edit a proposal before approval or deny it. If a booking slot is no longer
-free at approval time, it is not booked.
+edit a proposal before approval or deny it. For a new lead, this includes the
+person's preferences; leave that box blank if you want to clear them. If a
+booking slot is no longer free at approval time, it is not booked.
 
 Voice notes follow the same rule: record or upload audio, review the
 transcript and extracted details, then choose whether to add or update a lead.

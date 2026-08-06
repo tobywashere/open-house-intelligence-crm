@@ -37,7 +37,7 @@ DESIRED_TOOL_DENY = (
 DESIRED_TOOLS = {
     "allow": ["exec"],
     "deny": list(DESIRED_TOOL_DENY),
-    "exec": {"mode": "allowlist", "host": "gateway"},
+    "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
 }
 DESIRED_SANDBOX = {"mode": "off"}
 
@@ -503,6 +503,7 @@ def _validate_effective_gateway_policy(
     host = _require_mapping(scope.get("host"), "effective host")
     mode = _require_mapping(scope.get("mode"), "effective mode")
     security = _require_mapping(scope.get("security"), "effective security")
+    ask = _require_mapping(scope.get("ask"), "effective ask")
     fallback = _require_mapping(scope.get("askFallback"), "effective askFallback")
     if host.get("requested") != "gateway":
         raise SetupConflict(
@@ -515,6 +516,15 @@ def _validate_effective_gateway_policy(
     if security.get("effective") != "allowlist":
         raise SetupConflict(
             "gateway effective approval policy security is not allowlist-only"
+        )
+    if ask.get("effective") != "off":
+        raise SetupConflict(
+            "gateway effective approval policy ask mode is not unambiguously off"
+        )
+    if ask.get("requested") not in (None, "off"):
+        raise SetupConflict(
+            "gateway effective approval policy has contradictory requested and "
+            "effective ask modes"
         )
     if fallback.get("effective") not in {"deny", "allowlist"}:
         raise SetupConflict(

@@ -236,7 +236,11 @@ def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
         "edit",
         "apply_patch",
     } <= set(policy["deny"])
-    assert policy["exec"] == {"mode": "allowlist", "host": "gateway"}
+    assert policy["exec"] == {
+        "mode": "allowlist",
+        "host": "gateway",
+        "ask": "off",
+    }
 
 
 @pytest.mark.parametrize(
@@ -245,7 +249,7 @@ def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
         {
             "allow": ["exec", "web_fetch"],
             "deny": ["write", "edit", "browser"],
-            "exec": {"mode": "allowlist", "host": "gateway"},
+            "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
         },
         {},
     ],
@@ -306,7 +310,7 @@ def test_setup_rejects_any_authoritative_deny_set_mismatch(tmp_path, deny):
     tools = {
         "allow": ["exec"],
         "deny": deny,
-        "exec": {"mode": "allowlist", "host": "gateway"},
+        "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
     }
     cli = FakeCLI({command: CommandResult(0, json.dumps(tools), "")})
 
@@ -329,7 +333,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
     tools = {
         "allow": ["exec"],
         "deny": list(reversed(_EXPECTED_TOOL_DENY)),
-        "exec": {"mode": "allowlist", "host": "gateway"},
+        "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
     }
     cli = FakeCLI({command: CommandResult(0, json.dumps(tools), "")})
 
@@ -339,7 +343,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
     assert "Validated the restricted agent" in result.render()
 
 
-def test_setup_reads_back_exact_exec_tools_and_is_idempotent(tmp_path):
+def test_setup_reads_back_exact_exec_tools_with_ask_off_and_is_idempotent(tmp_path):
     cli = FakeCLI()
     options = make_options(tmp_path)
 
@@ -357,6 +361,56 @@ def test_setup_reads_back_exact_exec_tools_and_is_idempotent(tmp_path):
     ]
     assert len(readbacks) == 2
     assert "Validated the restricted agent" in second.render()
+
+
+@pytest.mark.parametrize(
+    "ask_state",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param({"effective": "on-miss"}, id="on-miss"),
+        pytest.param({"effective": "always"}, id="always"),
+        pytest.param("off", id="malformed-scalar"),
+        pytest.param({}, id="malformed-missing-effective"),
+        pytest.param(
+            {"requested": "off", "effective": "always"},
+            id="contradictory-requested-effective",
+        ),
+        pytest.param(
+            {"requested": "always", "effective": "off"},
+            id="contradictory-effective-requested",
+        ),
+    ],
+)
+def test_setup_never_reports_ready_without_unambiguous_effective_ask_off(
+    tmp_path, ask_state
+):
+    options = make_options(tmp_path, dry_run=True)
+    agent = {"id": "openhouse-crm", "workspace": str(options.workspace)}
+    payload = gateway_approval_payload()
+    scope = payload["effectivePolicy"]["scopes"][0]
+    if ask_state is None:
+        scope.pop("ask")
+    else:
+        scope["ask"] = ask_state
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
+                0, json.dumps([agent]), ""
+            ),
+            ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
+                0, json.dumps(payload), ""
+            ),
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "ask" in result.render()
+    assert "Validated the restricted agent" not in result.render()
 
 
 def test_dashboard_refresh_uses_the_installed_allowlisted_daily_runner(tmp_path):

@@ -75,8 +75,11 @@ a safe numeric version range. Before changing files or configuration, the
 helper requires the documented CLI commands, options, and prerequisite JSON
 and policy-inspection surfaces. After configuration, it reads the dedicated
 agent's authoritative tool policy back and requires the allowed-tool list to be
-exactly `exec`, with general web, browser, and file tools denied. A missing or
-ambiguous surface stops setup instead of guessing or widening permissions.
+exactly `exec`, with general web, browser, and file tools denied. It also
+requires OpenClaw's effective execution prompt mode to be exactly `off`; a
+missing, interactive, or contradictory value is not treated as ready. A
+missing or ambiguous surface stops setup instead of guessing or widening
+permissions.
 
 ## Configuration details
 
@@ -103,8 +106,10 @@ The helper uses the following agent policy on purpose:
   skills.
 - `exec` is the only allowed OpenClaw tool. General web fetch/search, browser,
   and filesystem tools are explicitly denied.
-- `exec` runs on the gateway in allowlist mode. The only permitted executable
-  entry points are the CRM wrapper and deterministic daily-brief runner.
+- `exec` runs on the gateway in allowlist mode with its OpenClaw prompt set to
+  `off`. The only permitted executable entry points are the CRM wrapper and
+  deterministic daily-brief runner, so unattended dashboard and Discord chat
+  cannot turn into general shell access.
 - The daily-brief runner performs its own fixed-source retrieval and validation;
   the agent cannot replace it with a general web tool or hand-built payload.
 
@@ -142,7 +147,12 @@ Status meanings:
 Natural-language CRM operations do not apply directly. New leads, updates,
 notes, reminders, bookings, closes, merges, and deletes enter **Pending approvals**
 first. The operator can edit, approve, or deny each item. Booking
-availability is checked again when approval happens.
+availability is checked again when approval happens. New-lead preferences are
+shown as one item per line; editing them changes what is saved, and clearing
+the box saves an empty preference list.
+
+OpenClaw's `ask: off` setting only disables a second command-execution prompt
+inside the restricted agent. It does not bypass this CRM review screen.
 
 This is also true for the optional Discord binding:
 
