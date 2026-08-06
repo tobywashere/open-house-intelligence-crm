@@ -3,6 +3,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -82,19 +83,23 @@ def test_concurrent_reply_logging_inserts_one_event_and_updates_activity(client,
         return {}
 
     monkeypatch.setattr(leads_router, "process_lead", no_process)
-    original_seen = poller._seen
-    seen_barrier = threading.Barrier(2)
+    real_get_conn = poller.get_conn
+    transaction_entry_barrier = threading.Barrier(2)
 
-    def coordinated_seen(msg_id):
-        result = original_seen(msg_id)
-        seen_barrier.wait(timeout=5)
-        return result
+    @contextmanager
+    def coordinated_get_conn():
+        # Both workers must reach the transaction boundary before either can
+        # proceed. In the old check-then-insert code this barrier ran once for
+        # both seen-check transactions and again for both insert transactions,
+        # deterministically allowing duplicate events. The fixed path reaches
+        # it once, then BEGIN IMMEDIATE serializes the in-transaction recheck.
+        transaction_entry_barrier.wait(timeout=5)
+        with real_get_conn() as conn:
+            yield conn
 
-    monkeypatch.setattr(poller, "_seen", coordinated_seen)
-    start_barrier = threading.Barrier(2)
+    monkeypatch.setattr(poller, "get_conn", coordinated_get_conn)
 
     def log_reply():
-        start_barrier.wait(timeout=5)
         return poller._log_reply(
             lead,
             "concurrent-reply-1",
