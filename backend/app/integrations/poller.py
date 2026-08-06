@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 
+from ..approvals import insert_pending_change
 from ..db import audit, get_conn
 from . import composio_client as cc
 
@@ -82,18 +83,22 @@ def check_inbox() -> dict:
     return counts
 
 
+def _seen_in_conn(conn, msg_id: str) -> bool:
+    marker = f"%[gmail:{msg_id}]%"
+    if conn.execute(
+        "SELECT 1 FROM events WHERE content LIKE ?", (marker,)
+    ).fetchone():
+        return True
+    return conn.execute(
+        "SELECT 1 FROM pending_changes "
+        "WHERE operation = 'create_lead' AND payload LIKE ?",
+        (marker,),
+    ).fetchone() is not None
+
+
 def _seen(msg_id: str) -> bool:
     with get_conn() as conn:
-        marker = f"%[gmail:{msg_id}]%"
-        if conn.execute(
-            "SELECT 1 FROM events WHERE content LIKE ?", (marker,)
-        ).fetchone():
-            return True
-        return conn.execute(
-            "SELECT 1 FROM pending_changes "
-            "WHERE operation = 'create_lead' AND payload LIKE ?",
-            (marker,),
-        ).fetchone() is not None
+        return _seen_in_conn(conn, msg_id)
 
 
 def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
@@ -145,28 +150,38 @@ def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
     # literal tag.
     raw = _wrap_untrusted(addr, subject, body[:1000], msg_id)
     try:
-        from ..routers.leads import LeadIn, _queue_resolved_create, _resolve_create_fields
+        from ..routers.leads import (
+            LeadIn,
+            _resolve_create_fields,
+            _resolved_create_proposal,
+        )
 
         resolution = asyncio.run(
             _resolve_create_fields(LeadIn(raw_text=raw, source="email", email=addr))
         )
-        _queue_resolved_create(resolution)
+        payload, summary = _resolved_create_proposal(resolution)
+        # Extraction may take minutes and therefore stays above the transaction.
+        # BEGIN IMMEDIATE serializes this final re-check, proposal insert, and
+        # audit so concurrent pollers cannot both claim the same Gmail message.
+        with get_conn() as conn:
+            if _seen_in_conn(conn, msg_id):
+                return 0
+            insert_pending_change(conn, "create_lead", None, payload, summary)
+            audit(
+                conn,
+                "cron",
+                "email_intake_review_required",
+                {"from": addr, "subject": subject},
+                {
+                    "message_id": msg_id,
+                    "reason": "backup_parser" if resolution.fallback else "automatic_intake",
+                },
+            )
     except Exception as e:
         with get_conn() as conn:
             audit(conn, "cron", "email_intake_failed",
                   {"from": addr, "subject": subject}, {"error": str(e)})
         return 0
-    with get_conn() as conn:
-        audit(
-            conn,
-            "cron",
-            "email_intake_review_required",
-            {"from": addr, "subject": subject},
-            {
-                "message_id": msg_id,
-                "reason": "backup_parser" if resolution.fallback else "automatic_intake",
-            },
-        )
     return 1
 
 

@@ -19,22 +19,32 @@ def is_agent_write(request: Request | None) -> bool:
     return request is not None and request.headers.get("X-Actor") == "agent"
 
 
-def queue_pending_change(operation: str, lead_id: int | None, payload: dict, summary: str) -> JSONResponse:
-    """Records the proposed write and returns the 202 the agent's tool call sees
-    instead of the lead — the caller must NOT also apply the mutation."""
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO pending_changes (operation, lead_id, payload, summary) VALUES (?,?,?,?)",
-            (operation, lead_id, json.dumps(payload, default=str), summary),
-        )
-        pending_id = cur.lastrowid
-    return JSONResponse(
-        status_code=202,
-        content={
-            "pending": True,
-            "id": pending_id,
-            "operation": operation,
-            "summary": summary,
-            "status": "pending",
-        },
+def insert_pending_change(
+    conn, operation: str, lead_id: int | None, payload: dict, summary: str
+) -> dict:
+    """Insert a proposal using the caller's transaction.
+
+    The caller owns commit/rollback. This lets automation atomically pair a
+    proposal with its audit row without holding the database lock during slow
+    extraction.
+    """
+    cur = conn.execute(
+        "INSERT INTO pending_changes (operation, lead_id, payload, summary) VALUES (?,?,?,?)",
+        (operation, lead_id, json.dumps(payload, default=str), summary),
     )
+    return {
+        "pending": True,
+        "id": cur.lastrowid,
+        "operation": operation,
+        "summary": summary,
+        "status": "pending",
+    }
+
+
+def queue_pending_change(
+    operation: str, lead_id: int | None, payload: dict, summary: str
+) -> JSONResponse:
+    """Record a proposed write and return the agent-facing 202 response."""
+    with get_conn() as conn:
+        content = insert_pending_change(conn, operation, lead_id, payload, summary)
+    return JSONResponse(status_code=202, content=content)

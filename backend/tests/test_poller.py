@@ -1,5 +1,7 @@
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .conftest import TEST_DB, make_lead
 from app.integrations import poller
@@ -137,6 +139,86 @@ def test_unknown_sender_fallback_is_reviewable_and_leaks_no_internal_marker(clie
     assert "email_lead_intake" not in tools
     assert "email_intake_review_required" in tools
     assert "_fallback_used" not in json.dumps({"pending": pending, "audit": audit})
+
+
+def test_concurrent_unknown_sender_intake_queues_and_audits_once(client, monkeypatch):
+    extraction_barrier = threading.Barrier(2)
+
+    class CoordinatedDriver:
+        async def extract(self, raw_text):
+            extraction_barrier.wait(timeout=5)
+            return {
+                "name": "Maria Lopez",
+                "budget": 800_000,
+                "preferences": [],
+                "missing_fields": ["phone"],
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: CoordinatedDriver())
+
+    def intake():
+        return poller._intake_lead(
+            "maria@example.net",
+            "Looking for a home",
+            "My budget is $800k.",
+            "concurrent-new-1",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [future.result(timeout=10) for future in [
+            executor.submit(intake),
+            executor.submit(intake),
+        ]]
+
+    assert sorted(results) == [0, 1]
+    assert client.get("/api/leads").json() == []
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert "[gmail:concurrent-new-1]" in pending[0]["payload"]["raw_text"]
+    review_audits = [
+        row for row in client.get("/api/audit?limit=30").json()
+        if row["tool"] == "email_intake_review_required"
+    ]
+    assert len(review_audits) == 1
+
+
+def test_intake_audit_failure_rolls_back_proposal_and_allows_retry(client, monkeypatch):
+    real_audit = poller.audit
+    fail_review_audit = True
+
+    def flaky_audit(conn, actor, tool, inputs, result, lead_id=None):
+        nonlocal fail_review_audit
+        if tool == "email_intake_review_required" and fail_review_audit:
+            fail_review_audit = False
+            raise RuntimeError("audit unavailable")
+        return real_audit(conn, actor, tool, inputs, result, lead_id)
+
+    monkeypatch.setattr(poller, "audit", flaky_audit)
+    args = (
+        "maria@example.net",
+        "Looking for a home",
+        "My budget is $800k.",
+        "retry-new-1",
+    )
+
+    assert poller._intake_lead(*args) == 0
+    assert client.get("/api/leads").json() == []
+    assert client.get("/api/pending-changes").json() == []
+    review_audits = [
+        row for row in client.get("/api/audit?limit=30").json()
+        if row["tool"] == "email_intake_review_required"
+    ]
+    assert review_audits == []
+
+    assert poller._intake_lead(*args) == 1
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert "[gmail:retry-new-1]" in pending[0]["payload"]["raw_text"]
+    review_audits = [
+        row for row in client.get("/api/audit?limit=30").json()
+        if row["tool"] == "email_intake_review_required"
+    ]
+    assert len(review_audits) == 1
 
 
 def test_noise_senders_ignored(client, monkeypatch):

@@ -204,21 +204,22 @@ async def _resolve_create_fields(body: LeadIn) -> LeadCreateResolution:
 
 
 def _queue_resolved_create(resolution: LeadCreateResolution):
+    payload, summary = _resolved_create_proposal(resolution)
+    return queue_pending_change("create_lead", None, payload, summary)
+
+
+def _resolved_create_proposal(resolution: LeadCreateResolution) -> tuple[dict, str]:
     payload = {
         "name": resolution.name,
         "raw_text": resolution.raw_text,
         **resolution.fields,
     }
-    return queue_pending_change(
-        "create_lead",
-        None,
-        payload,
-        summarize_create_lead(
-            resolution.name,
-            resolution.fields,
-            fallback=resolution.fallback,
-        ),
+    summary = summarize_create_lead(
+        resolution.name,
+        resolution.fields,
+        fallback=resolution.fallback,
     )
+    return payload, summary
 
 
 def _insert_lead(name: str, fields: dict, raw_text: str | None) -> dict:

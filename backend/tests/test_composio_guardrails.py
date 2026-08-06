@@ -382,11 +382,7 @@ def _fake_intake(monkeypatch, client):
             raw_text=lead_in.raw_text,
         )
 
-    def fake_queue(resolution):
-        captured["queued"] = True
-
     monkeypatch.setattr("app.routers.leads._resolve_create_fields", fake_resolve)
-    monkeypatch.setattr("app.routers.leads._queue_resolved_create", fake_queue)
     return captured
 
 
