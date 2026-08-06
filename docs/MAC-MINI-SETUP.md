@@ -57,8 +57,7 @@ python3 scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
-Keep that Terminal open. Open a second Terminal, return to the project folder,
-and run:
+Keep that Terminal open. Open a second Terminal and run:
 
 ```bash
 cd ~/Documents/open-intelligence-crm

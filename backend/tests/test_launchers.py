@@ -14,21 +14,25 @@ GUIDE_SETUP_REGIONS = {
         "## Set up real local AI",
         "## What the status means",
         "cd open-intelligence-crm",
+        "start in the directory where you cloned the project",
     ),
     REPO / "docs/LOCAL-AI.md": (
         "## Basic setup",
         "## Configuration details",
         "cd open-intelligence-crm",
+        "start in the directory where you cloned the project",
     ),
     REPO / "docs/MAC-MINI-SETUP.md": (
         "## 2. Enable OpenClaw chat access",
         "## 4. Check the visible behavior",
         "cd ~/Documents/open-intelligence-crm",
+        "Open a second Terminal and run:",
     ),
     REPO / "docs/GB10-SETUP.md": (
         "## Before you start",
         "## Optional Discord",
         "cd open-intelligence-crm",
+        "start in the directory where you cloned the project",
     ),
 }
 
@@ -44,7 +48,7 @@ def _bash_blocks(text: str) -> list[str]:
 
 
 def test_primary_setup_regions_have_a_safe_runnable_sequence():
-    for path, (start, end, doctor_cd) in GUIDE_SETUP_REGIONS.items():
+    for path, (start, end, doctor_cd, _) in GUIDE_SETUP_REGIONS.items():
         primary = _section_between(path.read_text(), start, end)
         blocks = _bash_blocks(primary)
 
@@ -98,23 +102,21 @@ def test_readme_uses_setup_helper_and_real_capability_check():
 
 
 def test_setup_docs_do_not_make_manual_skill_copy_the_primary_path():
-    for path, (start, end, _) in GUIDE_SETUP_REGIONS.items():
+    for path, (start, end, _, _) in GUIDE_SETUP_REGIONS.items():
         primary = _section_between(path.read_text(), start, end)
         assert "cp -R skills/" not in primary, path
 
 
 def test_all_doctor_commands_are_copy_pasteable_from_a_second_terminal():
-    for path, (start, end, doctor_cd) in GUIDE_SETUP_REGIONS.items():
+    for path, (start, end, doctor_cd, starting_assumption) in GUIDE_SETUP_REGIONS.items():
         primary = _section_between(path.read_text(), start, end)
         doctor_block = next(
             block
             for block in _bash_blocks(primary)
             if "python3 scripts/doctor.py --live-agent --live-crm" in block
         )
-        assert "second Terminal" in primary, path
-        assert primary.index("second Terminal") < primary.index(
-            "python3 scripts/doctor.py --live-agent --live-crm"
-        ), path
+        doctor_at = primary.index("python3 scripts/doctor.py --live-agent --live-crm")
+        assert starting_assumption in " ".join(primary[:doctor_at].split()), path
         assert doctor_cd in doctor_block, path
 
 

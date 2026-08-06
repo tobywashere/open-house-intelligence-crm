@@ -34,7 +34,8 @@ python3 scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
-In a second Terminal, from the project folder, run:
+In a second Terminal, start in the directory where you cloned the project,
+then run:
 
 ```bash
 cd open-intelligence-crm
