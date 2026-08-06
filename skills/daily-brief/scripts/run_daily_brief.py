@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Fetch the three daily-brief sources, publish the report, and verify it.
 
-Stdlib-only so OpenClaw can run it as one terminal tool call:
-
-    python3 skills/daily-brief/scripts/run_daily_brief.py
+Stdlib-only so OpenClaw can run the installed script as one terminal tool call.
 """
 from __future__ import annotations
 
@@ -230,8 +228,10 @@ def validate_payload(payload: object, *, require_all_sources: bool = False) -> d
         raise ValueError("greeting must be a non-empty string")
 
     market_watch = payload["market_watch"]
-    if not isinstance(market_watch, list) or not market_watch:
-        raise ValueError("market_watch must contain at least one configured source")
+    if not isinstance(market_watch, list):
+        raise ValueError("market_watch must be a list")
+    if require_all_sources and not market_watch:
+        raise ValueError("market_watch must contain every configured source")
     if len(market_watch) > len(SOURCE_URLS):
         raise ValueError("market_watch contains more items than configured sources")
     if require_all_sources and len(market_watch) != len(SOURCE_URLS):
@@ -286,23 +286,12 @@ def build_payload() -> dict:
             items.append(parser(_fetch_html(url)))
         except Exception as exc:
             failures.append(f"{label}: {exc}")
-    insights = [
-        {
-            "title": "Local economic snapshot",
-            "body": (
-                "Interpretation: read the Seattle labor trend together with the current "
-                "Federal Reserve stance when discussing local demand and financing."
-            ),
-        }
-    ]
-    if any(item["source"] == "Seattle Department of Neighborhoods" for item in items):
+    insights: list[dict] = []
+    if items:
         insights.append(
             {
-                "title": "Community opportunity",
-                "body": (
-                    "Seattle neighborhood groups have a near-term opportunity to fund "
-                    "visible local projects, with applications due September 8."
-                ),
+                "title": "Sources checked",
+                "body": "This brief shows only the source-backed items listed above.",
             }
         )
     if failures:
@@ -310,7 +299,11 @@ def build_payload() -> dict:
     payload = {
         "date": now.date().isoformat(),
         "generated_at": now.isoformat(timespec="seconds"),
-        "greeting": "Your Seattle daily brief is ready.",
+        "greeting": (
+            "Your Seattle daily brief is ready."
+            if items
+            else "Daily brief sources are unavailable."
+        ),
         "market_watch": items,
         "ai_insights": insights,
     }

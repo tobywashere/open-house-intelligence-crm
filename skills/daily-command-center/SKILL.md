@@ -45,6 +45,8 @@ suggestions and a recommendation for a real appointment.
 
 When there are no appointments today, post an empty `meeting_briefs` array.
 The backend will display the honest empty schedule.
+If either CRM read fails or returns malformed data, do not publish a briefing.
+Report the failure instead of guessing about appointments or leads.
 
 ## What the backend displays
 

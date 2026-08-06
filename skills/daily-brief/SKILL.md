@@ -31,6 +31,12 @@ Do not fetch or publish manually in this mode. The script fetches, extracts,
 validates, publishes with the guarded CRM client, and reads the saved report
 back for verification.
 
+Only successfully parsed source items may appear in the saved brief. If a
+source is unavailable, the script records a visible `Sources unavailable`
+notice instead of guessing. If every source is unavailable, it saves an empty
+market list with that notice. Never replace unavailable information with sample
+content or a plausible market update.
+
 ### Mode 2 — AI WebFetch and summary (opt-in)
 
 Use only when the request explicitly selects this mode:

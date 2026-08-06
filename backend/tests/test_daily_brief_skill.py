@@ -96,7 +96,28 @@ def test_installed_skill_commands_are_location_independent():
 
     assert "{baseDir}/scripts/run_daily_brief.py" in daily
     assert "python3 {baseDir}" not in daily
+    assert "python3 skills/daily-brief" not in daily
     assert "~/.openclaw/skills/crm-db-operations" not in card
     assert "python3 -c" not in crm
     assert "{baseDir}/cli.py" in crm
     assert "{baseDir}/../crm-db-operations/cli.py list_appointments" in command_center
+    assert "sample-crm.json" not in command_center
+    assert "do not publish" in command_center.lower()
+
+
+def test_deterministic_failure_is_disclosed_without_inventing_item(monkeypatch):
+    def offline(*_args, **_kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(daily_brief, "_fetch_html", offline)
+    monkeypatch.setattr(daily_brief, "_job_item_api", offline)
+
+    payload = daily_brief.build_payload()
+
+    assert payload["market_watch"] == []
+    assert payload["greeting"] == "Daily brief sources are unavailable."
+    failures = [
+        item for item in payload["ai_insights"] if item["title"] == "Sources unavailable"
+    ]
+    assert len(failures) == 1
+    assert "offline" in failures[0]["body"]
