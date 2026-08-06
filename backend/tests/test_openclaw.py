@@ -18,7 +18,12 @@ from app.routers import misc
 def test_default_gateway_url_is_localhost():
     import app.agent.openclaw as module
 
-    assert module.GATEWAY_URL == "http://localhost:18789"
+    resolver = getattr(module, "resolve_gateway_url", None)
+    assert callable(resolver)
+    assert resolver({}) == "http://localhost:18789"
+    assert resolver({"AGENT_GATEWAY_URL": "http://agent-box:18789"}) == (
+        "http://agent-box:18789"
+    )
 
 
 class FakeClient:

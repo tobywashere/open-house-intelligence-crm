@@ -1,10 +1,13 @@
 """Every public skill tool must be callable and raise only CRMError on failure.
 Would have caught delete_lead's NameError (dead since birth)."""
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import inspect
 import json
 import sys
 from pathlib import Path
+import threading
 from unittest.mock import patch
 
 import httpx
@@ -59,9 +62,8 @@ def test_every_tool_raises_only_crmerror_when_backend_down(fn):
 
 
 def test_read_timeout_is_crmerror():
-    """urlopen read-timeouts escape as TimeoutError unless _request catches them."""
-    import urllib.request
-    with patch.object(urllib.request, "urlopen", side_effect=TimeoutError("read timed out")):
+    """Read timeouts escape as TimeoutError unless _request catches them."""
+    with patch.object(crm, "_open_request", side_effect=TimeoutError("read timed out")):
         with pytest.raises(crm.CRMError):
             crm.list_leads()
 
@@ -77,11 +79,87 @@ class _FakeResponse:
         return b"{}"
 
 
+@contextmanager
+def _local_http_server(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
+def test_authenticated_crm_client_hard_fails_redirect_without_remote_hit(
+    redirect_status,
+):
+    origin_tokens = []
+    remote_hits = []
+
+    class RemoteHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            remote_hits.append(dict(self.headers.items()))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_POST = do_GET
+
+        def log_message(self, *_args):
+            pass
+
+    with _local_http_server(RemoteHandler) as remote_url:
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                origin_tokens.append(self.headers.get("X-API-Token"))
+                self.send_response(redirect_status)
+                self.send_header("Location", remote_url + "/capture")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        with _local_http_server(RedirectHandler) as origin_url:
+            with patch.object(crm, "BASE_URL", origin_url + "/api"):
+                with patch.object(crm, "API_TOKEN", "redirect-secret"):
+                    with pytest.raises(crm.CRMError) as exc:
+                        crm.post_summary({"date": "2026-08-06"})
+
+    assert exc.value.status == redirect_status
+    assert origin_tokens == ["redirect-secret"]
+    assert remote_hits == []
+
+
+def test_authenticated_crm_client_preserves_normal_local_calls():
+    received_tokens = []
+
+    class TrustedHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received_tokens.append(self.headers.get("X-API-Token"))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def log_message(self, *_args):
+            pass
+
+    with _local_http_server(TrustedHandler) as trusted_url:
+        with patch.object(crm, "BASE_URL", trusted_url + "/api"):
+            with patch.object(crm, "API_TOKEN", "trusted-secret"):
+                assert crm.list_leads() == []
+
+    assert received_tokens == ["trusted-secret"]
+
+
 def test_x_api_token_header_sent_when_configured():
     """.env.example and docs/LOCAL-AI.md tell operators to set OHI_API_TOKEN once
     the backend binds beyond localhost — every skill call must actually send it,
     or the guarded backend just 401s the whole product."""
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -89,13 +167,12 @@ def test_x_api_token_header_sent_when_configured():
         return _FakeResponse()
 
     with patch.object(crm, "API_TOKEN", "s3cret"):
-        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(crm, "_open_request", side_effect=fake_urlopen):
             crm.list_leads()
     assert captured["headers"].get("X-api-token") == "s3cret"
 
 
 def test_x_api_token_header_absent_when_unset():
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -103,41 +180,38 @@ def test_x_api_token_header_absent_when_unset():
         return _FakeResponse()
 
     with patch.object(crm, "API_TOKEN", ""):
-        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(crm, "_open_request", side_effect=fake_urlopen):
             crm.list_leads()
     assert "X-api-token" not in captured["headers"]
 
 
 def test_dashboard_insights_passes_optional_probe_nonce():
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
         captured["url"] = req.full_url
         return _FakeResponse()
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(crm, "_open_request", side_effect=fake_urlopen):
         crm.generate_dashboard_insights("c" * 32)
 
     assert captured["url"].endswith("/metrics?probe_nonce=" + "c" * 32)
 
 
 def test_dashboard_insights_remains_no_argument_compatible():
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
         captured["url"] = req.full_url
         return _FakeResponse()
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(crm, "_open_request", side_effect=fake_urlopen):
         crm.generate_dashboard_insights()
 
     assert captured["url"].endswith("/metrics")
 
 
 def test_add_note_uses_reviewed_event_endpoint():
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -147,7 +221,7 @@ def test_add_note_uses_reviewed_event_endpoint():
         captured["body"] = json.loads(req.data)
         return _FakeResponse()
 
-    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(crm, "_open_request", side_effect=fake_urlopen):
         crm.add_note(7, "  Requested a Saturday tour  ")
 
     assert captured["url"].endswith("/leads/7/events")

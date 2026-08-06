@@ -9,11 +9,10 @@ The model must never see or write raw SQL; every DB read/write goes through one
 of these functions, which call the FastAPI backend (Toby's layer) over HTTP.
 
 Configure the backend location with the CRM_API_URL env var
-(default: http://localhost:8080/api — same host as the backend when both run on
-the GB10 for the demo).
+(default: http://localhost:8080/api on the same local machine as the backend).
 
-Copy this whole directory (tools.py + SKILL.md) to ~/.openclaw/skills/crm-db-operations
-on the GB10 instance.
+The repository setup helper installs this directory into the dedicated
+OpenClaw agent workspace.
 """
 from __future__ import annotations
 
@@ -26,6 +25,20 @@ import urllib.request
 BASE_URL = os.environ.get("CRM_API_URL", "http://localhost:8080/api").rstrip("/")
 TIMEOUT = float(os.environ.get("CRM_API_TIMEOUT_SECONDS", "120"))
 API_TOKEN = os.environ.get("OHI_API_TOKEN", "")
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Turn every HTTP redirect into an HTTPError at the original origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_RejectRedirects())
+
+
+def _open_request(req: urllib.request.Request, *, timeout: float):
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
 
 
 class CRMError(Exception):
@@ -53,15 +66,20 @@ def _request(method: str, path: str, *, params: dict | None = None,
         headers["X-API-Token"] = API_TOKEN
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with _open_request(req, timeout=TIMEOUT) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
+        try:
+            detail = e.read().decode(errors="replace")
+        except (TimeoutError, OSError):
+            detail = ""
         try:
             detail = json.loads(detail).get("detail", detail)
         except json.JSONDecodeError:
             pass
+        if not detail:
+            detail = str(e.reason)
         raise CRMError(e.code, str(detail)) from None
     except urllib.error.URLError as e:
         raise CRMError(0, f"could not reach CRM backend at {BASE_URL}: {e.reason}") from None

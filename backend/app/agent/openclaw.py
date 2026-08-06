@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
 
 import httpx
 
@@ -25,7 +26,14 @@ from .status import (
     resolved_status,
 )
 
-GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+
+def resolve_gateway_url(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the Gateway URL while keeping environment overrides intact."""
+    values = os.environ if environ is None else environ
+    return values.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+
+
+GATEWAY_URL = resolve_gateway_url()
 CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
 TOKEN = os.environ.get("AGENT_GATEWAY_TOKEN", "")
 TIMEOUT = float(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))
