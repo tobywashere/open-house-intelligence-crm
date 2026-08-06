@@ -35,6 +35,12 @@ _FAILURE_TOOL = {
     "reminder_created": "gcal_create_event (failed)",
 }
 
+_CANCELLATION_TOOL = {
+    "lead_created": "lead_created_hook (cancelled)",
+    "tour_booked": "gcal_create_event (cancelled)",
+    "reminder_created": "gcal_create_event (cancelled)",
+}
+
 _WORKER_LOCK = threading.Lock()
 _worker_thread: threading.Thread | None = None
 _worker_stop_event: threading.Event | None = None
@@ -43,6 +49,10 @@ _worker_wake_event: threading.Event | None = None
 
 class HookDeliveryError(RuntimeError):
     pass
+
+
+class ObsoleteHookError(HookDeliveryError):
+    """The approved object no longer exists, so delivery cannot become valid."""
 
 
 def enqueue_approval_hook(
@@ -134,28 +144,49 @@ def _load_hook_arguments(row: dict) -> tuple:
                 "SELECT * FROM leads WHERE id = ?", (row["object_id"],)
             ).fetchone()
             if not lead:
-                raise HookDeliveryError("lead no longer exists")
+                raise ObsoleteHookError("lead no longer exists")
             return (row_to_dict(lead),)
         if row["hook_type"] == "tour_booked":
             appt = conn.execute(
                 "SELECT * FROM appointments WHERE id = ?", (row["object_id"],)
             ).fetchone()
             if not appt:
-                raise HookDeliveryError("appointment no longer exists")
+                raise ObsoleteHookError("appointment no longer exists")
             lead = conn.execute(
                 "SELECT * FROM leads WHERE id = ?", (appt["lead_id"],)
             ).fetchone()
             if not lead:
-                raise HookDeliveryError("appointment lead no longer exists")
+                raise ObsoleteHookError("appointment lead no longer exists")
+            _reconcile_lead_reference(conn, row, int(appt["lead_id"]))
             return row_to_dict(lead), dict(appt)
         if row["hook_type"] == "reminder_created":
             reminder = conn.execute(
                 "SELECT * FROM reminders WHERE id = ?", (row["object_id"],)
             ).fetchone()
             if not reminder:
-                raise HookDeliveryError("reminder no longer exists")
+                raise ObsoleteHookError("reminder no longer exists")
+            lead = conn.execute(
+                "SELECT 1 FROM leads WHERE id = ?", (reminder["lead_id"],)
+            ).fetchone()
+            if not lead:
+                raise ObsoleteHookError("reminder lead no longer exists")
+            _reconcile_lead_reference(conn, row, int(reminder["lead_id"]))
             return (dict(reminder),)
     raise HookDeliveryError(f"unknown hook type {row['hook_type']}")
+
+
+def _reconcile_lead_reference(conn, row: dict, lead_id: int) -> None:
+    """Track merge reassignment while the claim is still locally owned."""
+    if row.get("lead_id") == lead_id:
+        return
+    updated = conn.execute(
+        f"UPDATE hook_outbox SET lead_id = ?, updated_at = ({NOW}) "
+        "WHERE id = ? AND status = 'processing' AND claim_token = ?",
+        (lead_id, row["id"], row["claim_token"]),
+    )
+    if updated.rowcount != 1:
+        raise HookDeliveryError("hook claim was lost during merge reconciliation")
+    row["lead_id"] = lead_id
 
 
 def _invoke_hook(row: dict, args: tuple) -> None:
@@ -263,6 +294,37 @@ def _mark_failed(
     return True
 
 
+def _mark_cancelled(row: dict, exc: Exception) -> bool:
+    """Atomically record one terminal cancellation and its audit evidence."""
+    reason = _sanitized_error(exc)
+    with get_conn() as conn:
+        updated = conn.execute(
+            f"UPDATE hook_outbox SET status = 'cancelled', last_error = ?, "
+            f"claim_token = NULL, claimed_at = NULL, next_attempt_at = NULL, "
+            f"updated_at = ({NOW}) "
+            "WHERE id = ? AND status = 'processing' AND claim_token = ?",
+            (reason, row["id"], row["claim_token"]),
+        )
+        if updated.rowcount != 1:
+            return False
+        lead_exists = conn.execute(
+            "SELECT 1 FROM leads WHERE id = ?", (row["lead_id"],)
+        ).fetchone()
+        audit(
+            conn,
+            "user",
+            _CANCELLATION_TOOL[row["hook_type"]],
+            {
+                "pending_id": row["pending_change_id"],
+                "outbox_id": row["id"],
+                "idempotency_key": row["idempotency_key"],
+            },
+            {"reason": reason, "retryable": False, "status": "cancelled"},
+            row["lead_id"] if lead_exists else None,
+        )
+    return True
+
+
 def _mark_delivered(row: dict) -> bool:
     with get_conn() as conn:
         updated = conn.execute(
@@ -290,6 +352,17 @@ def dispatch_hook(
     try:
         args = _load_hook_arguments(row)
         _invoke_hook(row, args)
+    except ObsoleteHookError as exc:
+        try:
+            _mark_cancelled(row, exc)
+        except Exception:
+            # Keep the claim recoverable if either the terminal state or its
+            # audit cannot be committed atomically.
+            logging.exception(
+                "could not persist cancelled state for hook outbox row %s",
+                row["id"],
+            )
+        return False
     except Exception as exc:
         try:
             _mark_failed(

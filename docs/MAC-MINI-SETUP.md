@@ -70,7 +70,10 @@ Open [http://localhost:8080](http://localhost:8080). Keep the Terminal running
 The setup helper creates `openhouse-crm`, copies the shipped skills to its own
 workspace, enables the `crm-db-operations` skill for that agent, and sets its
 restricted command access. The configuration in `.env` is
-`AGENT_ID=openhouse-crm`.
+`AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
+required capabilities before changing anything, and allows only `exec` with
+the CRM wrapper and daily-brief runner on its executable allowlist. General
+web, browser, and file tools are denied.
 
 The doctor command should finish with **CRM capability: crm_verified**. A chat
 answer alone is not enough because it could come from a generic agent without

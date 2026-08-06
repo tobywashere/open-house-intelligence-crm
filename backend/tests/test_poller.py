@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 import threading
@@ -432,6 +433,205 @@ def test_reply_poller_does_not_auto_apply_deterministic_fallback_fields(client, 
     assert "score_lead" not in [entry["tool"] for entry in audit]
     assert "_fallback_used" not in json.dumps(audit)
     assert "agent_processing_deferred" in [entry["tool"] for entry in audit]
+
+
+class _ReviewableExtractionDriver:
+    async def extract(self, raw_text):
+        return {
+            "phone": "+14255550199",
+            "budget": 925_000,
+            "area": "Kirkland",
+            "timeline": "2 months",
+            "intent": "buy",
+        }
+
+    async def explain_score(self, lead, score):
+        return f"Derived score {score} from the proposed details."
+
+    async def draft_followup(self, lead):
+        return "Hi Test, would you like to discuss Kirkland homes this week?"
+
+
+def test_process_queues_extracted_fields_but_persists_derived_score(client, monkeypatch):
+    lead = make_lead(
+        client,
+        phone=None,
+        budget=None,
+        area=None,
+        timeline=None,
+        intent="unknown",
+    )
+    client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={
+            "type": "note",
+            "content": "Budget is $925k, Kirkland, moving in two months.",
+        },
+    )
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: _ReviewableExtractionDriver()
+    )
+
+    response = client.post(f"/api/leads/{lead['id']}/process")
+
+    assert response.status_code == 200, response.text
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["phone"] is None
+    assert current["budget"] is None
+    assert current["area"] is None
+    assert current["timeline"] is None
+    assert current["intent"] == "unknown"
+    assert current["score"] is not None
+    assert current["score_reason"].startswith("Derived score")
+    assert response.json()["followup_draft"].startswith("Hi Test")
+
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["operation"] == "update_lead"
+    assert pending[0]["lead_id"] == lead["id"]
+    assert "dedupe_key" not in pending[0]
+    assert pending[0]["payload"] == {
+        "phone": "+14255550199",
+        "budget": 925_000,
+        "area": "Kirkland",
+        "timeline": "2 months",
+        "intent": "buy",
+    }
+
+    approved = client.post(
+        f"/api/pending-changes/{pending[0]['id']}/approve",
+        json={"fields": {"budget": 950_000, "area": "Redmond"}},
+    )
+    assert approved.status_code == 200, approved.text
+    applied = approved.json()
+    assert applied["phone"] == "+14255550199"
+    assert applied["budget"] == 950_000
+    assert applied["area"] == "Redmond"
+    assert applied["timeline"] == "2 months"
+    assert applied["intent"] == "buy"
+
+
+def test_process_uses_highest_event_id_when_timestamps_tie(client, monkeypatch):
+    lead = make_lead(client, budget=None, area=None, timeline=None)
+    older = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Older qualification details."},
+    ).json()
+    newer = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Newer qualification details."},
+    ).json()
+    with sqlite3.connect(TEST_DB) as conn:
+        conn.execute(
+            "UPDATE events SET created_at = '2026-08-06T12:00:00' "
+            "WHERE id IN (?, ?)",
+            (older["id"], newer["id"]),
+        )
+        conn.commit()
+
+    seen = []
+
+    class EventSelectingDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            seen.append(raw_text)
+            return {
+                "budget": 925_000,
+                "timeline": "2 months",
+                "area": "Kirkland" if raw_text.startswith("Newer") else "Old area",
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: EventSelectingDriver())
+
+    response = client.post(f"/api/leads/{lead['id']}/process")
+
+    assert response.status_code == 200, response.text
+    assert seen == ["Newer qualification details."]
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"]["area"] == "Kirkland"
+
+
+def test_known_lead_reply_queues_fields_once_and_updates_score_now(client, monkeypatch):
+    lead = make_lead(
+        client,
+        phone=None,
+        budget=None,
+        area=None,
+        timeline=None,
+        intent="unknown",
+    )
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: _ReviewableExtractionDriver()
+    )
+    fetch = _fake_fetch(
+        [{
+            "messageId": "review-reply-1",
+            "sender": "Test Lead <lead@example.com>",
+            "preview": {
+                "body": "I can spend $925k in Kirkland and move in two months."
+            },
+        }]
+    )
+    monkeypatch.setattr("app.integrations.poller.cc.execute", fetch)
+
+    assert poller.check_inbox() == {"replies": 1, "intake": 0}
+    assert poller.check_inbox() == {"replies": 0, "intake": 0}
+
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["phone"] is None
+    assert current["budget"] is None
+    assert current["area"] is None
+    assert current["timeline"] is None
+    assert current["intent"] == "unknown"
+    assert current["score"] is not None
+    assert current["score_reason"].startswith("Derived score")
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["operation"] == "update_lead"
+    tools = [row["tool"] for row in client.get("/api/audit?limit=50").json()]
+    assert "score_lead" in tools
+    assert "draft_followup" in tools
+
+
+def test_concurrent_processing_deduplicates_same_source_proposal(client, monkeypatch):
+    lead = make_lead(
+        client,
+        phone=None,
+        budget=None,
+        area=None,
+        timeline=None,
+        intent="unknown",
+    )
+    client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Kirkland, $925k, moving in two months."},
+    )
+    extraction_barrier = threading.Barrier(2)
+
+    class CoordinatedDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            extraction_barrier.wait(timeout=5)
+            return await super().extract(raw_text)
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: CoordinatedDriver())
+
+    def process():
+        return asyncio.run(leads_router.process_lead(lead["id"]))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [
+            future.result(timeout=10)
+            for future in (executor.submit(process), executor.submit(process))
+        ]
+
+    assert len(results) == 2
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["operation"] == "update_lead"
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["budget"] is None
+    assert current["timeline"] is None
+    assert current["score"] is not None
 
 
 def test_process_deterministic_draft_does_not_write_score_or_reason(client, monkeypatch):

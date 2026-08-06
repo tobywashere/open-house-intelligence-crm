@@ -17,8 +17,9 @@ An Apple-silicon Mac mini with **16 GB** is the supported minimum. A modest
 quantized model is appropriate at that size. Linux is supported; a GB10 is an
 optional host, not a dependency.
 
-Optional services that use the internet are Gmail, Google Calendar, public web
-research, and remote model providers. They stay off unless you configure them.
+Optional services that use the internet are Gmail, Google Calendar, the
+fixed-source daily-brief runner, and remote model providers. They stay off
+unless you configure them.
 
 ## Basic setup
 
@@ -68,6 +69,14 @@ the shipped skills in that agent's workspace, configures
 It restricts command execution to the shipped CRM wrapper and daily-brief
 runner, rather than allowing a general shell command.
 
+The helper prints `openclaw --version` in both success and failure diagnostics.
+Compatibility is capability-based because this repository has no evidence for
+a safe numeric version range. Before changing files or configuration, the
+helper requires the documented CLI commands, options, JSON shapes, agent-policy
+inspection, and effective allowlist surfaces. A missing surface stops setup
+with an unsupported-installation message instead of guessing or widening
+permissions.
+
 ## Configuration details
 
 The project reads `.env` automatically. These are the normal same-machine
@@ -91,10 +100,12 @@ The helper uses the following agent policy on purpose:
 
 - Allowed skills include `crm-db-operations` plus the shipped card and briefing
   skills.
+- `exec` is the only allowed OpenClaw tool. General web fetch/search, browser,
+  and filesystem tools are explicitly denied.
 - `exec` runs on the gateway in allowlist mode. The only permitted executable
   entry points are the CRM wrapper and deterministic daily-brief runner.
-- The dedicated agent has no broad file-editing, browser, canvas, node, or cron
-  tool access.
+- The daily-brief runner performs its own fixed-source retrieval and validation;
+  the agent cannot replace it with a general web tool or hand-built payload.
 
 OpenClaw's skill and configuration interfaces change over time. If the helper
 reports an unsupported command or configuration shape, update OpenClaw and

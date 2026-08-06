@@ -2,7 +2,8 @@
 
 Date: 2026-08-05
 
-Status: Approved for implementation planning
+Status: Approved for implementation planning; compatibility and security
+amendments recorded 2026-08-06
 
 ## 1. Purpose
 
@@ -65,9 +66,9 @@ but currently covers only create, update, close, delete, and merge lead actions.
 - Automatically enabling cloud providers or external integrations.
 - Silently granting broad host command access to an existing OpenClaw agent.
 
-If the verified dedicated-agent approach still fails on supported OpenClaw
-versions and hardware, a native tool plugin or backend tool loop can be proposed
-as a separate, evidence-driven project.
+If the verified dedicated-agent approach still fails on a capability-compatible
+OpenClaw installation and supported hardware, a native tool plugin or backend
+tool loop can be proposed as a separate, evidence-driven project.
 
 ## 5. Chosen Architecture
 
@@ -91,8 +92,8 @@ CLI rather than editing undocumented configuration files directly.
 
 The helper will:
 
-1. detect the OpenClaw version and reject unsupported versions with a clear
-   upgrade or compatibility message;
+1. record the OpenClaw version for diagnostics, then reject installations that
+   lack any required CLI, JSON, configuration, or policy-inspection capability;
 2. copy the required skills with their canonical directory names;
 3. create the dedicated agent when absent or update only the CRM-owned parts of
    an existing dedicated agent;
@@ -108,6 +109,14 @@ The helper must support a dry-run mode and must not overwrite unrelated agents,
 providers, channels, models, or credentials. Enabling execution must be explicit
 in its output. The dedicated agent should use the narrowest OpenClaw sandbox and
 tool policy that still permits the repository's CRM skill to run.
+
+Compatibility is capability-based. Repository evidence does not establish a
+safe numeric OpenClaw version range, so the helper must not guess one. It records
+`openclaw --version`, then requires the documented command help, JSON shapes,
+configuration validation, agent policy, and effective execution-policy surfaces
+before mutation. The dedicated agent allows only `exec`; general web, network,
+browser, and filesystem tools are denied. Gateway execution remains restricted
+to the CRM wrapper and deterministic daily-brief runner.
 
 ### 5.3 Skill paths and sessions
 
@@ -181,6 +190,19 @@ require approval. Deterministic scoring may remain immediate when it changes onl
 derived score fields. If its current processing path can change operator-entered
 lead fields, that field-changing portion must either be separated or queued.
 
+The lead-processing path therefore computes extraction, score, explanation, and
+draft in memory. It persists only the derived score, explanation, and audits,
+while changed contact and qualification fields enter an editable `update_lead`
+proposal. A stable source-event key prevents retries or concurrent Gmail workers
+from creating duplicate proposals for the same input. A fallback aborts the
+whole processing attempt before either derived fields or a proposal are written.
+
+Post-approval integration intents distinguish transient delivery failures from
+objects made permanently obsolete by deletion or merge. Missing objects become
+terminal `cancelled` rows with one sanitized cancellation audit and no retry.
+Appointments and reminders reassigned by a merge are reconstructed using their
+surviving object and target lead before provider delivery.
+
 Agent attribution must be preserved through the shared backend route. Manual
 dashboard edits continue to apply through their current direct path.
 
@@ -234,7 +256,7 @@ language.
 
 The project will document:
 
-- the supported OpenClaw version range;
+- the capability-based OpenClaw compatibility contract and recorded version;
 - what the setup helper changes;
 - the security implications of agent execution permission;
 - how to undo or re-run setup;
@@ -246,7 +268,8 @@ The project will document:
 
 ## 10. Error Handling
 
-- Missing or unsupported OpenClaw: stop setup and provide the supported action.
+- Missing OpenClaw or a required capability: record the reported version, stop
+  before mutation, and identify the missing surface.
 - Existing conflicting CRM agent: show the conflict and require an explicit
   repair option rather than overwriting it.
 - Missing skill or ineligible skill: identify the exact name and location.
@@ -267,7 +290,7 @@ The project will document:
 
 - Agent model selection with and without `AGENT_ID`.
 - Setup helper dry-run, repeat run, partial configuration, conflicting agent,
-  unsupported version, and secret redaction.
+  version diagnostics, missing capability, and secret redaction.
 - Skill path resolution from managed and agent-specific installations.
 - Fresh-session capability probe and audit proof.
 - Negative capability cases for generic replies, missing `exec`, missing skill,
@@ -276,6 +299,10 @@ The project will document:
 - Approval, editing, denial, and replay for notes, appointments, and reminders.
 - No external hook before approval.
 - Scoring does not bypass approval for operator-entered field changes.
+- Automated extraction proposals deduplicate by stable source under retries and
+  concurrent processing.
+- Obsolete external-hook intents cancel terminally while merge-reassigned
+  appointments and reminders still deliver for the surviving lead.
 - Fallback status propagation for extraction and drafting.
 - Briefing grounding and honest empty states.
 - Documentation command smoke checks where practical.

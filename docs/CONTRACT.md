@@ -59,13 +59,17 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 `id, ts, actor (agent|user|cron), tool, input JSON, output JSON, lead_id nullable`
 
 ### `pending_changes` — agent-initiated CRM writes awaiting operator approval
-`id, operation (create_lead|update_lead|add_event|book_appointment|schedule_followup|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, status (pending|applying|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`.
+`id, operation (create_lead|update_lead|add_event|book_appointment|schedule_followup|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, dedupe_key TEXT nullable, status (pending|applying|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`.
 
 An agent proposal for a lead create or update, note, booking, reminder, close,
 merge, or deletion is a proposal, not a write. `applying` is an internal
 atomic-claim state that prevents two approval workers from replaying the same
 proposal. If validation or a conflict check fails before mutation, the row
 returns to `pending` for correction, retry, or denial.
+
+`dedupe_key` is internal and omitted from API responses. Automated extraction
+uses a stable lead-and-source-event key so retries and concurrent processing
+cannot create two update proposals for the same raw input.
 
 Rows are created only when one of the reviewed CRM write endpoints is called
 with header `X-Actor: agent`, sent by `skills/crm-db-operations/tools.py`.
@@ -75,7 +79,7 @@ Dashboard actions without that header continue to apply immediately. See §2,
 ### `hook_outbox` — durable post-approval integration delivery
 `id, pending_change_id UNIQUE, idempotency_key UNIQUE, hook_type
 (lead_created|tour_booked|reminder_created), object_id, lead_id, status
-(pending|processing|failed|delivered), attempts, last_error, claim_token,
+(pending|processing|failed|delivered|cancelled), attempts, last_error, claim_token,
 claimed_at, delivery_mode (live|simulated), next_attempt_at, created_at,
 updated_at, delivered_at`.
 
@@ -98,6 +102,12 @@ five seconds up to five minutes, and processing claims older than five minutes
 can be recovered. A live row is terminally delivered only when the hook reports
 an explicit real provider success. Disabled or misconfigured integrations and
 simulated, failed, or unknown hook outcomes remain observable and retryable.
+If the referenced lead, appointment, or reminder has been irreversibly removed,
+the row becomes terminally `cancelled`, clears its lease and retry time, keeps a
+sanitized reason, and records one non-retryable cancellation audit. A worker
+never selects cancelled rows. After a merge, appointment and reminder delivery
+is reconstructed from the surviving reassigned object and its current lead;
+a lead-created intent for a merged-away lead is obsolete and is cancelled.
 
 Delivery is **at least once**. The stable `pending-change:<id>` key prevents two
 live workers from owning the same current claim and appears in failure audits,
@@ -140,7 +150,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 7 operations' `payload` is their normal request body |
 | `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any live external-hook intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. The managed outbox worker wakes after commit and continuously retries pending, failed, or stale live delivery. Off-mode approvals remain forced simulations and are never queued for later live delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim |
 | `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
-| `POST /leads/{id}/process` | `{}` → `{lead, followup_draft}` | extract → score → draft (mock or agent) |
+| `POST /leads/{id}/process` | `{}` → `{lead, followup_draft, pending_change}` | extraction, score, explanation, and draft are computed in memory; only derived score/reason and audits apply immediately. Changed phone/email/budget/area/timeline/intent fields are queued once per source event as an editable `update_lead` proposal. A labeled fallback returns 409 with no mutation or proposal |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |
 | `POST /appointments` ⏸ | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; agent-tagged calls queue, then re-check the slot on approval before setting status `meeting_booked` |
 | `GET /appointments` | → `[appt]` | |
@@ -249,6 +259,11 @@ passes do not queue it again, and the poller audits
 parser, the proposal summary says so; the internal fallback marker is never part
 of the editable fields. Only approval creates the lead and runs its external
 hook.
+
+Replies from known leads are logged automatically, then processed. Any newly
+extracted contact or qualification fields follow the same editable
+`update_lead` approval boundary; only the derived score/reason and draft audit
+are immediate. Reprocessing the same Gmail event reuses the stable proposal key.
 
 | Tool | Endpoint |
 |---|---|

@@ -13,7 +13,8 @@ suggestions and a recommendation for a real appointment.
 
 ## Non-negotiable trust rules
 
-1. Use only `crm-db-operations` tools. Never read or write SQL.
+1. Use only the allowlisted `crm-db-operations` wrapper. Never read or write
+   SQL, and do not use general web, network, browser, or filesystem tools.
 2. Never invent a lead, appointment, time, location, score, preference,
    relationship fact, travel time, market fact, or outstanding response.
 3. Never add a plausible appointment or schedule block when the calendar is

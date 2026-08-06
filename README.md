@@ -68,8 +68,15 @@ one safe, read-only CRM tool call.
 
 The setup helper creates the dedicated `openhouse-crm` agent, installs the
 `crm-db-operations` skill into that agent's workspace, and limits its command
-access to the CRM wrapper and daily-brief runner. Its configuration uses
-`AGENT_ID=openhouse-crm`.
+access to the CRM wrapper and daily-brief runner. `exec` is the agent's only
+allowed tool; general web, browser, and file tools are denied. Its configuration
+uses `AGENT_ID=openhouse-crm`.
+
+The helper prints the installed OpenClaw version for troubleshooting. Support
+is capability-based, not tied to a guessed version number: setup checks the
+documented commands, JSON output, agent policy, and effective allowlists before
+it changes anything. If a required surface is missing, setup stops and explains
+what OpenClaw capability needs updating.
 
 For a Mac mini, start with [the Mac mini guide](docs/MAC-MINI-SETUP.md). An
 Apple-silicon Mac mini with **16 GB** unified memory is the minimum supported
@@ -124,9 +131,9 @@ recommendations with plausible samples.
 Market summaries are optional. A real summary only appears after a workflow
 stores source-backed items with a publication date, a short summary, and a
 geographic area. If that information is missing, the dashboard says it is
-unavailable. Gmail, Google Calendar, public web research, and remote model
-providers are optional internet services and remain off unless you configure
-them.
+unavailable. Gmail, Google Calendar, the fixed-source daily-brief runner, and
+remote model providers are optional internet services and remain off unless
+you configure them.
 
 ## Optional Discord
 
@@ -161,9 +168,9 @@ agent configuration and the same review-before-apply CRM rules.
 
 SQLite data, local-model inference, local transcription, and the bundled
 knowledge index stay on the host. Data may leave it only when you configure a
-remote model provider, Composio Gmail/Calendar, or web research. Keep
-OpenClaw and the CRM on a private interface. Never commit `.env`, gateway
-tokens, client data, recordings, or `backend/data/crm.db`.
+remote model provider, Composio Gmail/Calendar, or the fixed-source daily-brief
+runner. Keep OpenClaw and the CRM on a private interface. Never commit `.env`,
+gateway tokens, client data, recordings, or `backend/data/crm.db`.
 
 To back up, stop the app and copy the database:
 

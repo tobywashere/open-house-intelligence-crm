@@ -106,6 +106,8 @@ class FakeCLI:
                 "  --gateway",
                 "",
             )
+        if args == ["openclaw", "--version"]:
+            return CommandResult(0, "OpenClaw 2026.8.1\n", "")
         if args == ["openclaw", "agents", "list", "--json"]:
             return CommandResult(
                 0, json.dumps({"agents": [self.created_agent] if self.created_agent else []}), ""
@@ -208,6 +210,26 @@ def test_setup_allowlists_only_shipped_skill_entrypoints(tmp_path):
     assert any("approvals allowlist add" in command and daily in command for command in rendered)
     assert all("--gateway" in command for command in rendered if "approvals allowlist add" in command)
     assert not any(command.endswith(" python3") for command in rendered)
+
+
+def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
+    actions = setup_openclaw._config_actions(make_options(tmp_path), 0)
+    tools_action = next(
+        action for action in actions if action.argv[3] == "agents.list[0].tools"
+    )
+    policy = json.loads(tools_action.argv[-2])
+
+    assert policy["allow"] == ["exec"]
+    assert {
+        "web_fetch",
+        "web_search",
+        "browser",
+        "read",
+        "write",
+        "edit",
+        "apply_patch",
+    } <= set(policy["deny"])
+    assert policy["exec"] == {"mode": "allowlist", "host": "gateway"}
 
 
 def test_dashboard_refresh_uses_the_installed_allowlisted_daily_runner(tmp_path):
@@ -507,6 +529,28 @@ def test_failed_preflight_stops_before_sync_or_mutation(tmp_path):
     result = configure_openclaw(options, cli=cli)
 
     assert not result.ok
+    assert cli.mutating_calls == []
+    assert not options.workspace.exists()
+
+
+def test_capability_failure_reports_openclaw_version_before_mutation(tmp_path):
+    cli = FakeCLI(
+        {
+            ("openclaw", "--version"): CommandResult(
+                0, "OpenClaw 2026.8.1 (build abc123)\n", ""
+            ),
+            ("openclaw", "agents", "--help"): CommandResult(
+                0, "Commands:\n  list\n", ""
+            ),
+        }
+    )
+    options = make_options(tmp_path)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "OpenClaw version: OpenClaw 2026.8.1 (build abc123)" in result.render()
+    assert "agents help is missing add" in result.render()
     assert cli.mutating_calls == []
     assert not options.workspace.exists()
 

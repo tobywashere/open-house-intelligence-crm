@@ -119,6 +119,105 @@ def test_hook_outbox_schema_is_additive_and_idempotent(tmp_path, monkeypatch):
     assert legacy == ("simulated", None)
 
 
+def test_hook_outbox_status_migration_preserves_rows_and_allows_cancellation(
+    tmp_path, monkeypatch
+):
+    import app.db as db
+
+    db_path = tmp_path / "pre-cancelled-status.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE hook_outbox ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "pending_change_id INTEGER NOT NULL UNIQUE,"
+        "idempotency_key TEXT NOT NULL UNIQUE,"
+        "hook_type TEXT NOT NULL CHECK (hook_type IN "
+        "('lead_created','tour_booked','reminder_created')),"
+        "object_id INTEGER NOT NULL, lead_id INTEGER,"
+        "delivery_mode TEXT NOT NULL DEFAULT 'simulated' CHECK (delivery_mode IN "
+        "('live','simulated')),"
+        "status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN "
+        "('pending','processing','failed','delivered')),"
+        "attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT,"
+        "claimed_at TEXT, next_attempt_at TEXT,"
+        "created_at TEXT NOT NULL DEFAULT '2026-08-01T00:00:00',"
+        "updated_at TEXT NOT NULL DEFAULT '2026-08-01T00:00:00', delivered_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO hook_outbox "
+        "(id, pending_change_id, idempotency_key, hook_type, object_id, "
+        "delivery_mode, status, attempts, last_error) "
+        "VALUES (7, 11, 'pending-change:11', 'reminder_created', 42, "
+        "'live', 'failed', 3, 'temporary failure')"
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    preserved = conn.execute(
+        "SELECT id, pending_change_id, status, attempts, last_error "
+        "FROM hook_outbox WHERE id = 7"
+    ).fetchone()
+    conn.execute("UPDATE hook_outbox SET status = 'cancelled' WHERE id = 7")
+    conn.commit()
+    migrated = conn.execute(
+        "SELECT status FROM hook_outbox WHERE id = 7"
+    ).fetchone()[0]
+    conn.close()
+
+    assert preserved == (7, 11, "failed", 3, "temporary failure")
+    assert migrated == "cancelled"
+
+
+def test_pending_change_dedupe_key_migration_is_additive(tmp_path, monkeypatch):
+    import app.db as db
+
+    db_path = tmp_path / "pre-pending-dedupe.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE pending_changes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT NOT NULL, lead_id INTEGER,"
+        "payload TEXT NOT NULL, summary TEXT NOT NULL,"
+        "status TEXT NOT NULL DEFAULT 'pending', result TEXT, deny_reason TEXT,"
+        "created_at TEXT NOT NULL DEFAULT '2026-08-01T00:00:00', decided_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO pending_changes (operation, lead_id, payload, summary) "
+        "VALUES ('update_lead', 3, '{}', 'Existing proposal')"
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_changes)")}
+    existing = conn.execute(
+        "SELECT operation, summary, dedupe_key FROM pending_changes WHERE id = 1"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO pending_changes "
+        "(operation, lead_id, payload, summary, dedupe_key) VALUES (?,?,?,?,?)",
+        ("update_lead", 3, "{}", "First", "lead-process:3:event:9"),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO pending_changes "
+            "(operation, lead_id, payload, summary, dedupe_key) VALUES (?,?,?,?,?)",
+            ("update_lead", 3, "{}", "Duplicate", "lead-process:3:event:9"),
+        )
+    conn.close()
+
+    assert "dedupe_key" in columns
+    assert existing == ("update_lead", "Existing proposal", None)
+
+
 def test_legacy_leads_table_gains_outcome_columns(tmp_path, monkeypatch):
     import app.db as db
 

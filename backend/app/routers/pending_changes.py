@@ -69,6 +69,7 @@ def _fetch(conn, pending_id: int) -> dict:
 
 def _parsed(row: dict) -> dict:
     row = dict(row)
+    row.pop("dedupe_key", None)
     row["payload"] = json.loads(row["payload"])
     if row.get("result"):
         row["result"] = json.loads(row["result"])

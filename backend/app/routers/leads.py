@@ -7,7 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
-from ..approvals import is_agent_write, queue_pending_change
+from ..approvals import insert_pending_change, is_agent_write, queue_pending_change
 from ..db import audit, get_conn, row_to_dict
 from ..duplicates import PLACEHOLDER_NAME, find_duplicate_candidates
 from ..integrations import hooks
@@ -128,10 +128,14 @@ def summarize_update_lead(lead_id: int, body: "LeadPatch") -> str:
     fields = body.model_dump(exclude_none=True)
     with get_conn() as conn:
         old = fetch_lead(conn, lead_id)
+    return _summarize_update_fields(old, fields)
+
+
+def _summarize_update_fields(old: dict, fields: dict) -> str:
     changes = [f"{k} {_fmt_val(k, old.get(k))} → {_fmt_val(k, v)}"
                for k, v in fields.items() if old.get(k) != v]
     detail = "; ".join(changes) if changes else "no field changes"
-    return f"Update lead #{lead_id} ({old.get('name')}): {detail}"
+    return f"Update lead #{old['id']} ({old.get('name')}): {detail}"
 
 
 def summarize_close_lead(lead_id: int, body: "CloseLeadIn") -> str:
@@ -505,8 +509,9 @@ async def process_lead(lead_id: int):
         latest = None
         if not lead.get("budget") or not lead.get("timeline"):
             latest = conn.execute(
-                "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text','email') "
-                "ORDER BY created_at DESC LIMIT 1", (lead_id,)).fetchone()
+                "SELECT id, content FROM events WHERE lead_id = ? "
+                "AND type IN ('note','form','text','email') "
+                "ORDER BY created_at DESC, id DESC LIMIT 1", (lead_id,)).fetchone()
 
     # Re-extract from the latest raw note if fields are missing. Keep all
     # candidate changes in memory until every agent response is confirmed to
@@ -524,7 +529,10 @@ async def process_lead(lead_id: int):
             )
         fills = {k: extracted[k] for k in
                  ("phone", "email", "budget", "area", "timeline", "intent")
-                 if not lead.get(k) and extracted.get(k) is not None}
+                 if (
+                     (not lead.get(k) or (k == "intent" and lead.get(k) == "unknown"))
+                     and extracted.get(k) is not None
+                 )}
         # the model may answer "1.1M" — a non-numeric budget breaks score_lead
         # for this lead forever, so drop it rather than store it
         if "budget" in fills and not isinstance(fills["budget"], (int, float)):
@@ -548,18 +556,24 @@ async def process_lead(lead_id: int):
         )
 
     with get_conn() as conn:
-        if fills:
-            sets = ", ".join(f"{k} = ?" for k in fills)
-            conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
-                         [*fills.values(), lead_id])
         conn.execute("UPDATE leads SET score = ?, score_reason = ? WHERE id = ?",
                      (score, reason, lead_id))
         audit(conn, "agent", "score_lead", {"lead_id": lead_id},
               {"score": score, "reason": reason}, lead_id)
         audit(conn, "agent", "draft_followup", {"lead_id": lead_id},
               {"draft": draft}, lead_id)
+        proposal = None
+        if fills:
+            proposal = insert_pending_change(
+                conn,
+                "update_lead",
+                lead_id,
+                fills,
+                _summarize_update_fields(lead, fills),
+                dedupe_key=f"lead-process:{lead_id}:event:{latest['id']}",
+            )
         lead = fetch_lead(conn, lead_id)
-    return {"lead": lead, "followup_draft": draft}
+    return {"lead": lead, "followup_draft": draft, "pending_change": proposal}
 
 
 @router.delete("/{lead_id}")

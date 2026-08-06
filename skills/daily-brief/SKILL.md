@@ -27,9 +27,11 @@ validates, publishes with the guarded CRM client, and reads the saved report
 back for verification.
 
 The command above is the only supported publication workflow for this agent.
+The dedicated agent has no general web, network, browser, or filesystem tools;
+this runner is one of its two explicitly allowlisted executable entry points.
 Do not invoke a general Python interpreter, use a repository-relative path,
-write a temporary payload, use WebFetch to compose a replacement payload, or
-call `/api/summary` directly.
+write a temporary payload, compose a replacement payload, or call
+`/api/summary` directly.
 
 Only successfully parsed source items may appear in the saved brief. If a
 source is unavailable, the script records a visible `Sources unavailable`

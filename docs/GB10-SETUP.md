@@ -45,7 +45,10 @@ python3 scripts/doctor.py --live-agent --live-crm
 Open [http://localhost:8080](http://localhost:8080). The helper creates the
 dedicated `openhouse-crm` agent with the `crm-db-operations` skill and uses
 `AGENT_ID=openhouse-crm` in the CRM configuration. It gives that dedicated
-agent only the command access needed for CRM work and daily brief generation.
+agent only `exec`; the executable allowlist contains the CRM wrapper and daily
+brief runner, while general web, browser, and file tools are denied. It records
+the installed OpenClaw version and checks required CLI and policy capabilities
+before changing configuration.
 
 The expected live result is **CRM capability: crm_verified**. If the result is
 only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the

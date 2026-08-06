@@ -10,6 +10,11 @@ OpenClaw agent. This skill is your only way to read or write the client-lead
 database. It exists so the model never touches SQL directly and every action
 is auditable.
 
+The dedicated agent intentionally has only `exec`, with gateway execution
+restricted to this skill's wrapper and the deterministic daily-brief runner.
+It has no general web, network, browser, or filesystem tools. Do not try to
+work around that boundary; use the named CRM operations below.
+
 ## Rules
 
 1. Use only the tools below for CRM facts and writes — never invent a lead,

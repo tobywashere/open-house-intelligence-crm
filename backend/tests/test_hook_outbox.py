@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 
@@ -271,3 +272,125 @@ def test_dispatch_does_not_report_delivery_after_claim_is_replaced(
     assert delivered is False
     assert row["status"] == "processing"
     assert row["claim_token"] == "replacement-worker"
+
+
+def test_deleted_reminder_hook_is_cancelled_once_and_never_retried(
+    client, monkeypatch
+):
+    from app.integrations import hook_outbox, hooks
+
+    lead, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
+    )
+
+    deleted = client.delete(f"/api/leads/{lead['id']}")
+    assert deleted.status_code == 200, deleted.text
+    outbox_id = _outbox_rows()[0]["id"]
+
+    assert hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0) is False
+
+    cancelled = _outbox_rows()[0]
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["claim_token"] is None
+    assert cancelled["claimed_at"] is None
+    assert cancelled["next_attempt_at"] is None
+    assert "reminder no longer exists" in cancelled["last_error"]
+    assert calls == []
+    assert hook_outbox.drain_hook_outbox(retry_base_seconds=0) == 0
+    assert hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0) is False
+    assert _outbox_rows()[0]["attempts"] == 1
+
+    matching = [
+        row
+        for row in client.get("/api/audit?limit=100").json()
+        if json.loads(row["input"]).get("outbox_id") == outbox_id
+    ]
+    assert [row["tool"] for row in matching] == ["gcal_create_event (cancelled)"]
+    output = json.loads(matching[0]["output"])
+    assert output["retryable"] is False
+    assert output["status"] == "cancelled"
+    assert "reminder no longer exists" in output["reason"]
+    assert matching[0]["lead_id"] is None
+
+
+def test_merged_appointment_hook_delivers_for_surviving_lead(client, monkeypatch):
+    from app.integrations import hook_outbox, hooks
+
+    primary = make_lead(client, name="Primary", email="primary@example.com")
+    duplicate = make_lead(client, name="Duplicate", email="duplicate@example.com")
+    queued = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": duplicate["id"],
+            "start_ts": "2026-08-22T10:00:00",
+            "end_ts": "2026-08-22T10:45:00",
+            "location": "Kirkland",
+        },
+        headers=AGENT,
+    )
+    assert queued.status_code == 202, queued.text
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued.json()["id"])
+
+    merged = client.post(
+        "/api/leads/merge",
+        json={"primary_id": primary["id"], "duplicate_id": duplicate["id"]},
+    )
+    assert merged.status_code == 200, merged.text
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_tour_booked",
+        lambda lead, appointment: calls.append((lead, appointment))
+        or hooks.HookOutcome.LIVE_DELIVERED,
+    )
+
+    outbox_id = _outbox_rows()[0]["id"]
+    assert hook_outbox.dispatch_hook(outbox_id) is True
+
+    delivered = _outbox_rows()[0]
+    assert delivered["status"] == "delivered"
+    assert delivered["lead_id"] == primary["id"]
+    assert len(calls) == 1
+    assert calls[0][0]["id"] == primary["id"]
+    assert calls[0][1]["lead_id"] == primary["id"]
+
+
+def test_merged_away_lead_created_hook_is_cancelled_not_retried(client, monkeypatch):
+    from app.integrations import hook_outbox, hooks
+
+    primary = make_lead(client, name="Primary", email="primary@example.com")
+    queued = client.post(
+        "/api/leads",
+        json={"name": "Duplicate", "email": "duplicate@example.com", "source": "form"},
+        headers=AGENT,
+    )
+    assert queued.status_code == 202, queued.text
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued.json()["id"])
+    approved = _approved(client, queued.json()["id"])[0]
+    duplicate_id = approved["result"]["id"]
+
+    merged = client.post(
+        "/api/leads/merge",
+        json={"primary_id": primary["id"], "duplicate_id": duplicate_id},
+    )
+    assert merged.status_code == 200, merged.text
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_lead_created",
+        lambda lead: calls.append(lead) or hooks.HookOutcome.LIVE_DELIVERED,
+    )
+
+    outbox_id = _outbox_rows()[0]["id"]
+    assert hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0) is False
+
+    cancelled = _outbox_rows()[0]
+    assert cancelled["status"] == "cancelled"
+    assert "lead no longer exists" in cancelled["last_error"]
+    assert calls == []
+    assert hook_outbox.drain_hook_outbox(retry_base_seconds=0) == 0

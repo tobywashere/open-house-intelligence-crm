@@ -23,8 +23,19 @@ SKILL_NAMES = (
     "daily-brief",
 )
 DESIRED_TOOLS = {
-    "allow": ["exec", "web_fetch"],
-    "deny": ["write", "edit", "apply_patch", "browser", "canvas", "nodes", "cron"],
+    "allow": ["exec"],
+    "deny": [
+        "web_fetch",
+        "web_search",
+        "browser",
+        "read",
+        "write",
+        "edit",
+        "apply_patch",
+        "canvas",
+        "nodes",
+        "cron",
+    ],
     "exec": {"mode": "allowlist", "host": "gateway"},
 }
 DESIRED_SANDBOX = {"mode": "off"}
@@ -605,7 +616,6 @@ def _require_help(
 
 
 def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
-    _run_required(cli, ["openclaw", "--version"], "openclaw --version")
     agents_commands = ("add", "list") + (("bind",) if options.bind_discord else ())
     checks = [
         (["openclaw", "agents", "--help"], "agents", agents_commands),
@@ -681,6 +691,17 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
         )
     for argv, label, required in checks:
         _require_help(cli, argv, label, required)
+
+
+def _detect_version(cli: OpenClawCLI) -> str:
+    result = _run_required(cli, ["openclaw", "--version"], "openclaw --version")
+    raw = result.stdout or result.stderr
+    version = next((line.strip() for line in raw.splitlines() if line.strip()), "")
+    if not version:
+        raise SetupConflict(
+            "unsupported OpenClaw installation: openclaw --version returned no version"
+        )
+    return version[:200]
 
 
 def _config_actions(options: SetupOptions, index: int) -> list[Action]:
@@ -760,6 +781,8 @@ def _run_action(cli: OpenClawCLI, action: Action) -> CommandResult:
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
     try:
+        version = _detect_version(cli)
+        messages.append(f"OpenClaw version: {version}")
         _preflight(cli, options)
         listed = _run_required(
             cli, ["openclaw", "agents", "list", "--json"], "agents list --json"

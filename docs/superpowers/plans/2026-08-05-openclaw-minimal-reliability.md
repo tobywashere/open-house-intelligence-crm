@@ -485,7 +485,7 @@ shell text from the model or provide an operation that accepts a command string.
 
 Implementation rules:
 
-1. Fail before mutation if `openclaw` is missing or if `agents add`, `skills check`, `config set`, `config validate`, `approvals allowlist`, or `exec-policy show` is absent from the relevant `--help` output.
+1. Record `openclaw --version`, then fail before mutation if `openclaw` is missing or if `agents add`, `skills check`, `config set`, `config validate`, `approvals allowlist`, or `exec-policy show` is absent from the relevant `--help` output. Compatibility is capability-based; do not guess a numeric range without repository evidence.
 2. Read agents through `openclaw agents list --json`.
 3. Create only `openhouse-crm` with workspace `~/.openclaw/workspace-openhouse-crm` by default.
 4. Copy these repository directories into `<workspace>/skills` using `shutil.copytree(..., dirs_exist_ok=True)`:
@@ -501,8 +501,8 @@ Implementation rules:
     "daily-brief"
   ],
   "tools": {
-    "allow": ["exec", "web_fetch"],
-    "deny": ["write", "edit", "apply_patch", "browser", "canvas", "nodes", "cron"],
+    "allow": ["exec"],
+    "deny": ["web_fetch", "web_search", "browser", "read", "write", "edit", "apply_patch", "canvas", "nodes", "cron"],
     "exec": {"mode": "allowlist", "host": "gateway"}
   },
   "sandbox": {"mode": "off"}

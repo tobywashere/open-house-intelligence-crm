@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS pending_changes (
   lead_id INTEGER,             -- target lead when known; NULL for create_lead
   payload TEXT NOT NULL,       -- JSON body as submitted, replayed verbatim on approve
   summary TEXT NOT NULL,       -- human-readable one-liner for the approval dialog
+  dedupe_key TEXT,             -- stable internal source marker for automated proposals
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | applying (internal) | approved | denied
   result TEXT,                 -- JSON of the applied result, filled on approve
   deny_reason TEXT,
@@ -151,7 +152,7 @@ CREATE TABLE IF NOT EXISTS hook_outbox (
   delivery_mode TEXT NOT NULL DEFAULT 'simulated'
     CHECK (delivery_mode IN ('live','simulated')),
   status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending','processing','failed','delivered')),
+    CHECK (status IN ('pending','processing','failed','delivered','cancelled')),
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   claim_token TEXT,
