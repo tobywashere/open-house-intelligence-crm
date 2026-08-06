@@ -121,3 +121,43 @@ def test_deterministic_failure_is_disclosed_without_inventing_item(monkeypatch):
     ]
     assert len(failures) == 1
     assert "offline" in failures[0]["body"]
+
+
+def test_deterministic_partial_failure_keeps_only_successful_source_items(monkeypatch):
+    def item(url, title):
+        return {
+            "title": title,
+            "source": "Verified source",
+            "takeaway": "Only this parsed source item may be displayed.",
+            "url": url,
+            "date": "2026-08-05",
+            "summary": "The source parser returned this item.",
+            "geo": "Seattle",
+        }
+
+    monkeypatch.setattr(daily_brief, "_fetch_html", lambda _url: "source page")
+    monkeypatch.setattr(
+        daily_brief, "_job_item", lambda _html: item(daily_brief.JOB_URL, "Jobs")
+    )
+
+    def unavailable(_html):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(daily_brief, "_fed_item", unavailable)
+    monkeypatch.setattr(
+        daily_brief,
+        "_community_item",
+        lambda _html: item(daily_brief.COMMUNITY_URL, "Community"),
+    )
+
+    payload = daily_brief.build_payload()
+
+    assert [item["url"] for item in payload["market_watch"]] == [
+        daily_brief.JOB_URL,
+        daily_brief.COMMUNITY_URL,
+    ]
+    failures = [
+        item for item in payload["ai_insights"] if item["title"] == "Sources unavailable"
+    ]
+    assert len(failures) == 1
+    assert "Federal Reserve: offline" in failures[0]["body"]

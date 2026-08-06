@@ -5,10 +5,14 @@ structurally valid and may only refer to CRM records that actually exist.
 """
 
 import json
+import sqlite3
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.db import get_conn
+from app.main import app
+from app.routers import reports
 from tests.conftest import make_lead
 
 
@@ -126,6 +130,50 @@ def test_summary_rejects_blank_required_market_source_fields(client, field):
     )
 
     assert response.status_code == 422
+
+
+def test_summary_storage_failure_returns_503_without_replacing_prior_report(
+    client, monkeypatch
+):
+    payload = {
+        "date": "2026-08-05",
+        "generated_at": "2026-08-05T07:00:00",
+        "greeting": "Daily brief",
+        "market_watch": [
+            {
+                "title": "Seattle employment",
+                "source": "U.S. Bureau of Labor Statistics",
+                "url": "https://www.bls.gov/eag/eag.wa_seattle_msa.htm",
+                "takeaway": "Review the published figures.",
+                "date": "2026-08-05",
+                "summary": "Source-backed summary.",
+                "geo": "Seattle",
+            }
+        ],
+        "ai_insights": [],
+    }
+    assert client.post("/api/summary", json=payload).status_code == 200
+    prior = client.get("/api/summary?date=2026-08-05").json()
+    with get_conn() as conn:
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE tool = 'post_daily_summary'"
+        ).fetchone()[0]
+
+    def unavailable_audit(*_args, **_kwargs):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(reports, "audit", unavailable_audit)
+    changed = {**payload, "greeting": "This must not replace the saved report"}
+    with TestClient(app, raise_server_exceptions=False) as nonthrowing_client:
+        response = nonthrowing_client.post("/api/summary", json=changed)
+
+    assert response.status_code == 503
+    assert "could not save" in response.json()["detail"].lower()
+    assert client.get("/api/summary?date=2026-08-05").json() == prior
+    with get_conn() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE tool = 'post_daily_summary'"
+        ).fetchone()[0] == audit_count
 
 
 def test_briefing_never_promotes_a_lead_to_a_fake_meeting(client):
