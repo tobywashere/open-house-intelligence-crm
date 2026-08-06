@@ -37,6 +37,7 @@ bash scripts/serve.sh
 In a second Terminal, from the project folder, run:
 
 ```bash
+cd open-intelligence-crm
 python3 scripts/doctor.py --live-agent --live-crm
 ```
 

@@ -37,9 +37,12 @@ curl -X POST http://localhost:18789/v1/chat/completions \
   -d '{"model":"openclaw","messages":[{"role":"user","content":"Reply with READY"}]}'
 ```
 
-Then set up the CRM from its repository folder:
+Then clone and set up the CRM. If you already cloned it, start at the `cd`
+line instead:
 
 ```bash
+git clone https://github.com/tobywashere/open-house-intelligence-crm.git open-intelligence-crm
+cd open-intelligence-crm
 cp .env.example .env
 ```
 
@@ -54,6 +57,7 @@ bash scripts/serve.sh
 Keep the server running. In a second Terminal in the same project folder, run:
 
 ```bash
+cd open-intelligence-crm
 python3 scripts/doctor.py --live-agent --live-crm
 ```
 
