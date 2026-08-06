@@ -132,6 +132,12 @@ def summarize_merge_leads(body: "MergeIn") -> str:
     return f"Merge #{body.duplicate_id} ({dup.get('name')}) into #{body.primary_id} ({primary.get('name')})"
 
 
+def summarize_add_event(lead_id: int, body: "EventIn") -> str:
+    with get_conn() as conn:
+        lead = fetch_lead(conn, lead_id)
+    return f"Add {body.type} to #{lead_id} ({lead.get('name')}): {body.content}"
+
+
 @router.post("")
 async def create_lead(body: LeadIn, request: Request = None):
     if is_agent_write(request):
@@ -334,7 +340,15 @@ def _apply_close_lead(lead_id: int, body: CloseLeadIn):
 
 
 @router.post("/{lead_id}/events")
-def add_event(lead_id: int, body: EventIn):
+def add_event(lead_id: int, body: EventIn, request: Request = None):
+    if is_agent_write(request):
+        return queue_pending_change(
+            "add_event", lead_id, body.model_dump(), summarize_add_event(lead_id, body)
+        )
+    return _apply_add_event(lead_id, body, actor="user")
+
+
+def _apply_add_event(lead_id: int, body: EventIn, actor: str = "agent") -> dict:
     with get_conn() as conn:
         fetch_lead(conn, lead_id)
         cur = conn.execute(
@@ -342,10 +356,7 @@ def add_event(lead_id: int, body: EventIn):
             (lead_id, body.type, body.content),
         )
         conn.execute(f"UPDATE leads SET last_activity_at = ({NOW}) WHERE id = ?", (lead_id,))
-        # no crm-db-operations tool wraps this endpoint (see docs/CONTRACT.md
-        # §3) — the dashboard is the only caller, logging a manual note/call
-        # a human made, so this is a "user" action, not an agent one.
-        audit(conn, "user", "add_event", {"type": body.type, "content": body.content},
+        audit(conn, actor, "add_event", {"type": body.type, "content": body.content},
               {"event_id": cur.lastrowid}, lead_id)
         return dict(conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone())
 

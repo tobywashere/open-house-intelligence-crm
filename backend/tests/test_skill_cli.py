@@ -33,6 +33,21 @@ def test_dispatch_calls_only_named_tool(monkeypatch):
     assert calls == [{"sort": "priority"}]
 
 
+def test_dispatch_exposes_add_note(monkeypatch):
+    assert "add_note" in skill_cli.OPERATIONS
+    calls = []
+    monkeypatch.setitem(
+        skill_cli.OPERATIONS,
+        "add_note",
+        lambda **kw: calls.append(kw) or {"pending": True},
+    )
+
+    result = skill_cli.dispatch("add_note", {"lead_id": 4, "content": "Called back"})
+
+    assert result == {"pending": True}
+    assert calls == [{"lead_id": 4, "content": "Called back"}]
+
+
 def test_dispatch_passes_probe_nonce_only_to_dashboard_insights(monkeypatch):
     calls = []
     monkeypatch.setitem(

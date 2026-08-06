@@ -1,6 +1,6 @@
-"""Approve/deny queue for agent-initiated lead writes (see ..approvals).
+"""Approve/deny queue for agent-initiated CRM writes (see ..approvals).
 
-Every row here was queued by one of the 5 gated leads.py endpoints when the
+Every row here was queued by one of the gated CRM mutation endpoints when the
 caller sent `X-Actor: agent` (only skills/crm-db-operations/tools.py does).
 Approving replays the original request through the same `_apply_*` function
 the direct (dashboard) path uses, so approved and directly-applied writes go
@@ -29,6 +29,21 @@ _OPS = {
     "delete_lead": (leads_router.LeadDelete, leads_router._apply_delete_lead, True),
     "merge_leads": (leads_router.MergeIn, leads_router._apply_merge_leads, False),
 }
+
+
+def _operation(operation: str):
+    if operation == "add_event":
+        return leads_router.EventIn, leads_router._apply_add_event, True
+    if operation == "book_appointment":
+        from . import calendar as calendar_router
+        return calendar_router.AppointmentIn, calendar_router._apply_book_appointment, False
+    if operation == "schedule_followup":
+        from . import misc as misc_router
+        return misc_router.ReminderIn, misc_router._apply_create_reminder, False
+    try:
+        return _OPS[operation]
+    except KeyError:
+        raise HTTPException(400, f"unknown pending operation {operation}") from None
 
 
 class DenyIn(BaseModel):
@@ -79,7 +94,7 @@ async def approve_pending(pending_id: int, body: ApproveIn = None):
     if row["operation"] == "create_lead":
         result = await leads_router._apply_resolved_create(payload)
     else:
-        model_cls, apply_fn, needs_lead_id = _OPS[row["operation"]]
+        model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
         parsed_body = model_cls(**payload)
         # apply_fn may be sync or async (only create's is) — handle both
         # without forcing every _apply_* signature to be async for uniformity.

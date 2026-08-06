@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 from datetime import date as _date
 
 from ..calendar_adapter import calendar
+from ..approvals import is_agent_write, queue_pending_change
 from ..db import audit, get_conn
 from ..integrations import composio_client as cc
 from ..integrations.poller import busy_blocks as integrations_busy
@@ -64,14 +65,40 @@ def list_appointments():
 
 
 @router.post("/appointments")
-def book_appointment(body: AppointmentIn):
+def book_appointment(body: AppointmentIn, request: Request = None):
+    if is_agent_write(request):
+        with get_conn() as conn:
+            lead = _validate_appointment(conn, body)
+        summary = (
+            f"Book appointment for #{body.lead_id} ({lead.get('name')}) "
+            f"from {body.start_ts} to {body.end_ts}"
+        )
+        if body.location:
+            summary += f" at {body.location}"
+        return queue_pending_change(
+            "book_appointment", body.lead_id, body.model_dump(), summary
+        )
+    return _apply_book_appointment(body, actor="user")
+
+
+def _validate_appointment(conn, body: AppointmentIn) -> dict:
+    lead = fetch_lead(conn, body.lead_id)
+    if calendar.has_conflict(conn, body.start_ts, body.end_ts):
+        raise HTTPException(409, "slot conflicts with an existing appointment")
+    if (
+        lead["status"] != "meeting_booked"
+        and "meeting_booked" not in ALLOWED_TRANSITIONS[lead["status"]]
+    ):
+        raise HTTPException(
+            400,
+            f"cannot book: invalid status transition {lead['status']} -> meeting_booked",
+        )
+    return lead
+
+
+def _apply_book_appointment(body: AppointmentIn, actor: str = "agent") -> dict:
     with get_conn() as conn:
-        lead = fetch_lead(conn, body.lead_id)
-        if calendar.has_conflict(conn, body.start_ts, body.end_ts):
-            raise HTTPException(409, "slot conflicts with an existing appointment")
-        # Validate status transition before creating appointment
-        if lead["status"] != "meeting_booked" and "meeting_booked" not in ALLOWED_TRANSITIONS[lead["status"]]:
-            raise HTTPException(400, f"cannot book: invalid status transition {lead['status']} -> meeting_booked")
+        lead = _validate_appointment(conn, body)
         cur = conn.execute(
             "INSERT INTO appointments (lead_id, start_ts, end_ts, location) VALUES (?,?,?,?)",
             (body.lead_id, body.start_ts, body.end_ts, body.location),
@@ -85,7 +112,7 @@ def book_appointment(body: AppointmentIn):
         )
         appt = dict(conn.execute(
             "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
-        audit(conn, "agent", "book_appointment", body.model_dump(),
+        audit(conn, actor, "book_appointment", body.model_dump(),
               {"appointment_id": appt["id"]}, body.lead_id)
     # book_appointment is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the

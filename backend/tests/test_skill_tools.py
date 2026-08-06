@@ -2,6 +2,7 @@
 Would have caught delete_lead's NameError (dead since birth)."""
 import importlib.util
 import inspect
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -30,6 +31,7 @@ PUBLIC = [f for n, f in inspect.getmembers(crm, inspect.isfunction) if not n.sta
 # not as a second positional arg (that raises TypeError, not CRMError).
 SAMPLE_ARGS = {
     "create_lead": (("note text", "note"), {}),
+    "add_note": ((1, "Requested a Saturday tour"), {}),
     "update_lead": ((1,), {"status": "contacted"}),
     "find_duplicate_leads": ((1,), {}), "get_lead_context": ((1,), {}), "list_leads": ((), {}),
     "score_lead": ((1,), {}), "draft_followup": ((1,), {}), "check_availability": (("2026-08-03",), {}),
@@ -134,6 +136,31 @@ def test_dashboard_insights_remains_no_argument_compatible():
     assert captured["url"].endswith("/metrics")
 
 
+def test_add_note_uses_reviewed_event_endpoint():
+    import urllib.request
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.method
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data)
+        return _FakeResponse()
+
+    with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        crm.add_note(7, "  Requested a Saturday tour  ")
+
+    assert captured["url"].endswith("/leads/7/events")
+    assert captured["method"] == "POST"
+    assert captured["headers"]["X-actor"] == "agent"
+    assert captured["body"] == {"type": "note", "content": "Requested a Saturday tour"}
+
+
+def test_add_note_rejects_blank_content_before_request():
+    with pytest.raises(ValueError, match="content must not be empty"):
+        crm.add_note(7, "   ")
+
+
 def test_search_knowledge_end_to_end(live_server):
     """search_knowledge is the agent-invoked path onto the real BM25 index
     over the shipped report (docs/knowledge/) — a domain question should hit,
@@ -171,18 +198,20 @@ def test_natural_language_crm_write_and_booking_contract_end_to_end(live_server)
     with patch.object(crm, "BASE_URL", f"{live_server}/api"):
         lead = _approve(live_server, crm.create_lead(name="Taylor Brooks", source="note", area="Bellevue"))
         updated = _approve(live_server, crm.update_lead(lead["id"], budget=900_000))
-        reminder = crm.schedule_followup(
+        note = _approve(live_server, crm.add_note(lead["id"], "Asked about Saturday tours"))
+        reminder = _approve(live_server, crm.schedule_followup(
             lead["id"], "2026-08-03T09:00:00", "Call Taylor"
-        )
+        ))
         slots = crm.check_availability("2026-08-03")
-        appointment = crm.book_appointment(
+        appointment = _approve(live_server, crm.book_appointment(
             lead["id"],
             slots[0]["start_ts"],
             slots[0]["end_ts"],
             "Bellevue",
-        )
+        ))
 
         assert updated["budget"] == 900_000
+        assert note["content"] == "Asked about Saturday tours"
         assert reminder["lead_id"] == lead["id"]
         assert appointment["lead_id"] == lead["id"]
         assert crm.get_lead_context(lead["id"])["status"] == "meeting_booked"

@@ -58,9 +58,9 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 ### `audit_log` — powers the dashboard's agent-activity stream
 `id, ts, actor (agent|user|cron), tool, input JSON, output JSON, lead_id nullable`
 
-### `pending_changes` — agent-initiated lead writes awaiting operator approval
-(additive, recorded 2026-07-28) `id, operation (create_lead|update_lead|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, status (pending|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`.
-Rows are created only when one of the 5 lead-lifecycle write endpoints is
+### `pending_changes` — agent-initiated CRM writes awaiting operator approval
+(additive, recorded 2026-07-28) `id, operation (create_lead|update_lead|add_event|book_appointment|schedule_followup|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, status (pending|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`.
+Rows are created only when one of the 8 reviewed CRM write endpoints is
 called with header `X-Actor: agent` (sent by `skills/crm-db-operations/tools.py`
 on every call — the only thing that executes those tools). Calls without that
 header (the dashboard) are unaffected and apply immediately, exactly as
@@ -79,8 +79,8 @@ and [`docs/INSIGHTS.md`](INSIGHTS.md).
 
 ## 2. REST API (base: `http://<host>:8000/api` dev / `:8080` single-port serve)
 
-**Pending-approval deviation (additive, recorded 2026-07-28):** on the 5
-lead-lifecycle write endpoints marked **⏸** below, a request carrying header
+**Pending-approval deviation (additive, recorded 2026-07-28):** on the 8
+CRM write endpoints marked **⏸** below, a request carrying header
 `X-Actor: agent` does NOT apply — it queues a `pending_changes` row and
 returns `202 {pending: true, id, operation, summary, status: "pending"}`
 instead of the documented lead/result shape. Requests without that header
@@ -95,15 +95,15 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `PATCH /leads/{id}` ⏸ | partial lead → lead | status transitions validated; cannot set `closed` directly |
 | `POST /leads/{id}/close` ⏸ | `{outcome: "won"|"lost", reason?}` → lead | forward-only close with an explicit business outcome |
 | `DELETE /leads/{id}` ⏸ | → `{deleted}` | additive, recorded 2026-07-27; clears the lead's `audit_log.lead_id` to NULL rather than deleting those rows |
-| `POST /leads/{id}/events` | `{type, content}` → event | bumps `last_activity_at` |
+| `POST /leads/{id}/events` ⏸ | `{type, content}` → event | bumps `last_activity_at`; agent-tagged calls queue for review |
 | `GET /leads/{id}/duplicates` | → `[{lead, match_on}]` | exact phone/email, fuzzy name |
 | `POST /leads/merge` ⏸ | `{primary_id, duplicate_id}` → merged lead | moves events, deletes duplicate |
-| `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 4 operations' `payload` is just their normal request body |
+| `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 7 operations' `payload` is their normal request body |
 | `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; replays the queued write through the same logic the direct path uses; **400** if not currently `pending`; on failure (e.g. the lead was deleted meanwhile) the row stays `pending` for retry or denial. Optional `fields` (additive, recorded 2026-07-29) is merged over (overriding) the stored `payload` before applying — lets the operator edit values in the approval dialog before they land; omit or send `{}` to approve the queued payload verbatim |
 | `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
 | `POST /leads/{id}/process` | `{}` → `{lead, followup_draft}` | extract → score → draft (mock or agent) |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |
-| `POST /appointments` | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; sets status `meeting_booked` |
+| `POST /appointments` ⏸ | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; agent-tagged calls queue, then re-check the slot on approval before setting status `meeting_booked` |
 | `GET /appointments` | → `[appt]` | |
 | `GET /appointments/{id}/ics` | → `.ics` file | additive (documented 2026-07-26); calendar-file download used by the booking card |
 | `POST /chat` | `{message, session_id}` → `{reply, session_id}` | relays to agent driver (mock/openclaw) |
@@ -112,7 +112,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `DELETE /chat/history?session_id=` | → `{deleted}` | additive 2026-07-26 (clear conversation) |
 | `POST /scan-card` | `{filename, data: base64}` → `{extracted, duplicates, filename}` | additive 2026-07-26; extraction ONLY (review-first) — agent reads the saved image via business-card-scanner; mock returns a canned card; **413** image > 8 MB, **400** invalid base64, **422** not a recognized image (unrecognized extension or content doesn't sniff as one), **502** agent couldn't extract |
 | `POST /voice-note/prepare` | `{filename, content_type, data: base64}` → `{transcript, draft, duplicates, warnings}` | local transcription and extraction only; validates audio signature/20 MB limit, deletes temporary audio, and never writes a lead |
-| `POST /reminders` | `{lead_id, due_ts, note}` → reminder | schedule a follow-up |
+| `POST /reminders` ⏸ | `{lead_id, due_ts, note}` → reminder | agent-tagged calls queue for review |
 | `GET /reminders?due=1` | → `[reminder + lead_name]` | dashboard polls this for the reminder banner |
 | `PATCH /reminders/{id}` | → reminder | marks done |
 | `GET /audit?limit=50` | → `[audit rows]` | newest first |
@@ -185,7 +185,8 @@ an `audit_log` row for outbound comms. Note for readers of the dashboard:
 really an **audit activity** stream covering all three, not agent-only.
 
 **Pending-approval gate (additive, recorded 2026-07-28):** `create_lead`,
-`update_lead`, `close_lead`, `delete_lead`, and `merge_leads` — the 5 tools
+`update_lead`, `add_note`, `book_appointment`, `schedule_followup`,
+`close_lead`, `delete_lead`, and `merge_leads` — the 8 tools
 below marked ⏸ — no longer write directly. Because `tools.py` sends
 `X-Actor: agent` on every call (see §2), calling one of these queues a
 `pending_changes` row (not itself audited — nothing was applied yet) and
@@ -204,6 +205,7 @@ before.
 |---|---|
 | `create_lead(raw_text, source)` ⏸ | `POST /leads` |
 | `update_lead(id, fields)` ⏸ | `PATCH /leads/{id}` |
+| `add_note(lead_id, content)` ⏸ | `POST /leads/{id}/events` with `type: note` |
 | `close_lead(id, outcome, reason)` ⏸ | `POST /leads/{id}/close` |
 | `find_duplicate_leads(id)` | `GET /leads/{id}/duplicates` |
 | `merge_leads(primary_id, duplicate_id)` ⏸ | `POST /leads/merge` (additive, recorded 2026-07-27) |
@@ -214,8 +216,8 @@ before.
 | `draft_followup(id)` | `POST /leads/{id}/process` (draft part) |
 | `check_availability(date)` | `GET /availability?date=` |
 | `list_appointments()` | `GET /appointments` — all appointments across all leads, ordered by `start_ts`, each row joined with `lead_name` (additive, recorded 2026-07-28); used by `daily-command-center` Step 0.2 to find today's schedule before pulling per-lead context |
-| `book_appointment(lead_id, start_ts, end_ts, location)` | `POST /appointments` |
-| `schedule_followup(lead_id, due_ts, note)` | `POST /reminders` |
+| `book_appointment(lead_id, start_ts, end_ts, location)` ⏸ | `POST /appointments` |
+| `schedule_followup(lead_id, due_ts, note)` ⏸ | `POST /reminders` |
 | `find_neglected_leads()` | `POST /demo/advance-time {days:0}` — runs the neglect check now and returns newly-flagged leads; use `list_leads(neglected=1)` to see all currently-neglected leads without re-running it |
 | `generate_dashboard_insights()` | `GET /metrics` + LLM summary |
 | `post_briefing(payload)` | `POST /briefing` — publishes bounded advice for real appointments; backend supplies all visible CRM facts |

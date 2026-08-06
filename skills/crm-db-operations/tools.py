@@ -98,6 +98,17 @@ def update_lead(lead_id: int, **fields) -> dict:
     return _request("PATCH", f"/leads/{lead_id}", body=fields)
 
 
+def add_note(lead_id: int, content: str) -> dict:
+    """Propose a note on an existing lead; operator approval is required."""
+    if not content.strip():
+        raise ValueError("content must not be empty")
+    return _request(
+        "POST",
+        f"/leads/{int(lead_id)}/events",
+        body={"type": "note", "content": content.strip()},
+    )
+
+
 def close_lead(
     lead_id: int, outcome: str, reason: str | None = None
 ) -> dict:
@@ -197,17 +208,17 @@ def list_appointments() -> list:
 
 def book_appointment(lead_id: int, start_ts: str, end_ts: str,
                       location: str | None = None) -> dict:
-    """Book a meeting. Raises CRMError(status=409) if the slot conflicts with
-    an existing appointment — check_availability first. On success the lead's
-    status flips to meeting_booked automatically.
+    """Propose a meeting for operator approval. Raises CRMError(status=409)
+    if the slot already conflicts — check_availability first. The lead changes
+    to meeting_booked only after approval.
     """
     return _request("POST", "/appointments", body={"lead_id": lead_id, "start_ts": start_ts,
                                                      "end_ts": end_ts, "location": location})
 
 
 def schedule_followup(lead_id: int, due_ts: str, note: str | None = None) -> dict:
-    """Schedule a reminder (e.g. after find_neglected_leads flags someone, or
-    after sending an initial follow-up) — the dashboard polls for due ones.
+    """Propose a reminder for operator approval (e.g. after
+    find_neglected_leads flags someone, or after sending an initial follow-up).
     """
     return _request("POST", "/reminders", body={"lead_id": lead_id, "due_ts": due_ts,
                                                    "note": note})

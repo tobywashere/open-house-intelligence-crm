@@ -13,6 +13,7 @@ OPERATIONS = {
     for name in (
         "create_lead",
         "update_lead",
+        "add_note",
         "close_lead",
         "find_duplicate_leads",
         "merge_leads",

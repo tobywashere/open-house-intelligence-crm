@@ -188,3 +188,89 @@ def test_direct_edits_still_apply_instantly_alongside_agent_writes(client):
     assert direct.status_code == 200
     assert direct.json()["area"] == "Redmond"
     assert direct.json()["budget"] == 500_000, "the agent's queued budget change must not have leaked in"
+
+
+def test_agent_note_queues_and_approval_applies(client):
+    lead = make_lead(client)
+    queued = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Requested Saturday tour"},
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    assert queued.json()["operation"] == "add_event"
+    assert client.get(f"/api/leads/{lead['id']}").json()["events"] == []
+
+    approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
+    assert approved.status_code == 200
+    assert approved.json()["content"] == "Requested Saturday tour"
+
+
+def test_agent_booking_does_not_run_hook_before_approval(client, monkeypatch):
+    from app.routers import calendar as calendar_router
+
+    lead = make_lead(client)
+    calls = []
+    monkeypatch.setattr(calendar_router.hooks, "on_tour_booked", lambda *args: calls.append(args))
+    queued = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-08-08T10:00:00",
+            "end_ts": "2026-08-08T10:45:00",
+        },
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    assert calls == []
+    assert client.get("/api/appointments").json() == []
+
+    approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
+    assert approved.status_code == 200
+    assert len(calls) == 1
+
+
+def test_agent_reminder_denial_has_no_local_or_external_effect(client, monkeypatch):
+    from app.routers import misc
+
+    lead = make_lead(client)
+    calls = []
+    monkeypatch.setattr(misc.hooks, "on_reminder_created", lambda value: calls.append(value))
+    queued = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-09T09:00:00", "note": "Call"},
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    denied = client.post(f"/api/pending-changes/{queued.json()['id']}/deny")
+    assert denied.status_code == 200
+    assert client.get("/api/reminders").json() == []
+    assert calls == []
+
+
+def test_booking_conflict_during_approval_leaves_change_pending(client):
+    first = make_lead(client, name="First Buyer")
+    second = make_lead(client, name="Second Buyer")
+    payload = {
+        "start_ts": "2026-08-10T10:00:00",
+        "end_ts": "2026-08-10T10:45:00",
+    }
+    queued = client.post(
+        "/api/appointments",
+        json={"lead_id": first["id"], **payload},
+        headers=AGENT,
+    )
+    assert queued.status_code == 202
+
+    direct = client.post(
+        "/api/appointments",
+        json={"lead_id": second["id"], **payload},
+    )
+    assert direct.status_code == 200
+
+    approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
+    assert approved.status_code == 409
+    assert [item["id"] for item in _pending(client)] == [queued.json()["id"]]

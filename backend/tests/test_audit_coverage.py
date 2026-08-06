@@ -4,6 +4,9 @@ endpoints silently skipped it). Pins the fix so it can't regress."""
 import json
 
 
+AGENT = {"X-Actor": "agent"}
+
+
 def _mk(client, **kw):
     body = {"name": "T", "source": "note", "status": "new"} | kw
     return client.post("/api/leads", json=body).json()
@@ -64,3 +67,68 @@ def test_advance_time_is_audited_even_without_neglect(client):
     row = _last_audit_row(client, "advance_time")
     assert row["actor"] == "user"
     assert json.loads(row["input"]) == {"days": 1}
+
+
+def test_direct_note_booking_and_reminder_are_user_audited(client):
+    lead = _mk(client)
+    note = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Direct note"},
+    )
+    booking = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-08-11T10:00:00",
+            "end_ts": "2026-08-11T10:45:00",
+        },
+    )
+    reminder = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-12T09:00:00", "note": "Call"},
+    )
+
+    assert note.status_code == booking.status_code == reminder.status_code == 200
+    assert _last_audit_row(client, "add_event")["actor"] == "user"
+    assert _last_audit_row(client, "book_appointment")["actor"] == "user"
+    assert _last_audit_row(client, "schedule_followup")["actor"] == "user"
+
+
+def test_approved_note_booking_and_reminder_have_agent_and_user_audits(client):
+    lead = _mk(client)
+    proposals = [
+        client.post(
+            f"/api/leads/{lead['id']}/events",
+            json={"type": "note", "content": "Agent note"},
+            headers=AGENT,
+        ),
+        client.post(
+            "/api/appointments",
+            json={
+                "lead_id": lead["id"],
+                "start_ts": "2026-08-13T10:00:00",
+                "end_ts": "2026-08-13T10:45:00",
+            },
+            headers=AGENT,
+        ),
+        client.post(
+            "/api/reminders",
+            json={"lead_id": lead["id"], "due_ts": "2026-08-14T09:00:00", "note": "Call"},
+            headers=AGENT,
+        ),
+    ]
+    assert [proposal.status_code for proposal in proposals] == [202, 202, 202]
+
+    for proposal in proposals:
+        approved = client.post(f"/api/pending-changes/{proposal.json()['id']}/approve")
+        assert approved.status_code == 200
+
+    assert _last_audit_row(client, "add_event")["actor"] == "agent"
+    assert _last_audit_row(client, "book_appointment")["actor"] == "agent"
+    assert _last_audit_row(client, "schedule_followup")["actor"] == "agent"
+    approvals = [
+        row for row in client.get("/api/audit?limit=50").json()
+        if row["tool"] == "approve_pending_change"
+    ]
+    assert len(approvals) == 3
+    assert {row["actor"] for row in approvals} == {"user"}

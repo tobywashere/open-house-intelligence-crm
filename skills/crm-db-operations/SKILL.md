@@ -37,7 +37,8 @@ is auditable.
    the user clearly says the opportunity was **won** or **lost**. If they only
    say "close it," ask which outcome applies; never guess. Do not set
    `status="closed"` through `update_lead`.
-9. `create_lead`, `update_lead`, `close_lead`, `delete_lead`, and `merge_leads`
+9. `create_lead`, `update_lead`, `add_note`, `book_appointment`,
+   `schedule_followup`, `close_lead`, `delete_lead`, and `merge_leads`
    are **queued for operator approval**, not applied immediately — the
    backend records your proposed change and a human approves or denies it
    from the dashboard. A successful call to one of these returns
@@ -80,22 +81,23 @@ Never expose a raw stack trace in chat.
 
 | Tool | Signature | Returns | Use it when... |
 |---|---|---|---|
-| `create_lead` | `(raw_text=None, source="note", *, name=, phone=, email=, budget=, area=, timeline=, intent=)` | created lead | A new person appears — a form fill, text, note, or referral. Pass `raw_text` for anything unstructured; the backend extracts fields. `source` must be one of `form`\|`text`\|`note`\|`referral`\|`email` — any other value gets a hard 422. |
-| `update_lead` | `(lead_id, **fields)` | updated lead | Any known field changes — status, phone, budget, etc. Resolve `lead_id` first. |
-| `close_lead` | `(lead_id, outcome, reason=None)` | closed lead | User explicitly confirms an opportunity was `won` or `lost`. Ambiguous "close it" requests require a question first. |
+| `create_lead` | `(raw_text=None, source="note", *, name=, phone=, email=, budget=, area=, timeline=, intent=)` | pending proposal | A new person appears — a form fill, text, note, or referral. Pass `raw_text` for anything unstructured; the backend extracts fields. `source` must be one of `form`\|`text`\|`note`\|`referral`\|`email` — any other value gets a hard 422. |
+| `update_lead` | `(lead_id, **fields)` | pending proposal | Any known field changes — status, phone, budget, etc. Resolve `lead_id` first. |
+| `add_note` | `(lead_id, content)` | pending proposal | Add a factual note to an existing lead after resolving the lead ID. Blank notes are rejected. |
+| `close_lead` | `(lead_id, outcome, reason=None)` | pending proposal | User explicitly confirms an opportunity was `won` or `lost`. Ambiguous "close it" requests require a question first. |
 | `find_duplicate_leads` | `(lead_id)` | `[{lead, match_on}]` | Before merging, or when you suspect this person already has a profile (same phone/email, or a very similar name). |
-| `merge_leads` | `(primary_id, duplicate_id)` | merged lead | User confirms two profiles are the same person. Primary's blanks get filled from the duplicate; primary wins conflicts; duplicate is deleted. |
+| `merge_leads` | `(primary_id, duplicate_id)` | pending proposal | User confirms two profiles are the same person. Primary's blanks get filled from the duplicate; primary wins conflicts; duplicate is deleted. |
 | `get_lead_context` | `(lead_id)` | lead + `events[]` + `appointments[]` | Before answering "what do we know about X", before drafting a message, before deciding next action. |
 | `list_leads` | `(sort="priority", status=None, neglected=None)` | `[lead]` | "Who should I follow up with", "show me Bellevue buyers" (filter client-side on the returned fields), inbox-style questions. |
 | `score_lead` | `(lead_id)` | `{lead_id, score, score_reason}` | After enough new info lands on a lead to re-score it (new note, new field). Deterministic formula server-side; only the reason is written by you upstream (already filled in by the backend's driver). |
 | `draft_followup` | `(lead_id)` | draft message text | User asks you to reach out to someone, or after scoring a hot lead. |
 | `check_availability` | `(date: "YYYY-MM-DD")` | `[{start_ts, end_ts}]` free slots | Before booking anything — always check first. |
 | `list_appointments` | `()` | `[{id, lead_id, start_ts, end_ts, location, created_at, lead_name}]`, all appointments, ordered by `start_ts` | Finding who has an appointment today (or any date) — filter the returned list client-side on `start_ts`. Used by `daily-command-center` Step 0.2 before deciding whose `get_lead_context` to pull. |
-| `book_appointment` | `(lead_id, start_ts, end_ts, location=None)` | appointment | User agrees to a specific time. Raises 409 on conflict — re-check availability and offer alternatives. Lead status auto-flips to `meeting_booked`. |
-| `schedule_followup` | `(lead_id, due_ts, note=None)` | reminder | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
+| `book_appointment` | `(lead_id, start_ts, end_ts, location=None)` | pending proposal | User agrees to a specific time. Raises 409 on an existing conflict. Approval re-checks the slot, then books and changes the lead to `meeting_booked`. |
+| `schedule_followup` | `(lead_id, due_ts, note=None)` | pending proposal | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
 | `find_neglected_leads` | `()` | `[lead]` newly flagged | Scheduled/cron check, or "who haven't I talked to" questions. Evaluates every open lead against the 2-day-idle rule right now. |
 | `generate_dashboard_insights` | `(probe_nonce?)` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. Omit `probe_nonce` for ordinary use; pass it only when the application's capability-check prompt supplies one. These are real counts — narrate them, don't replace them. `avg_response_minutes` can be `null` (no lead has a first-response event yet) — say "not enough data yet" rather than reporting it as `0` or omitting the field silently. |
-| `delete_lead` | `(lead_id, reason="")` | `{deleted, lead_id, name}` | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm the deleted lead's name back to the user afterwards. |
+| `delete_lead` | `(lead_id, reason="")` | pending proposal | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm that deletion was queued for review, not completed. |
 | `post_briefing` | `(payload: dict)` | validated advice payload | Publish preparation advice for real appointments. The backend rebuilds all displayed facts from CRM rows and ignores replacement schedule/name/time/score fields. |
 | `get_research_settings` | `()` | configured URLs and keywords | Before generating a daily market summary, so the report follows the operator's current source configuration. |
 | `get_insights` | `(date: "YYYY-MM-DD")` | stored CRM insight inputs | When the daily brief needs CRM-grounded context for the requested day. |

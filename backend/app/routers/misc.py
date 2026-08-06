@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
 from ..agent.status import AgentProbe, record_crm_capability
-from ..approvals import is_agent_write
+from ..approvals import is_agent_write, queue_pending_change
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
 from ..integrations import hooks
@@ -41,14 +41,30 @@ class ReminderIn(BaseModel):
 
 
 @router.post("/reminders")
-def create_reminder(body: ReminderIn):
+def create_reminder(body: ReminderIn, request: Request = None):
+    if is_agent_write(request):
+        with get_conn() as conn:
+            lead = fetch_lead(conn, body.lead_id)
+        summary = (
+            f"Schedule follow-up for #{body.lead_id} ({lead.get('name')}) "
+            f"at {body.due_ts}"
+        )
+        if body.note:
+            summary += f": {body.note}"
+        return queue_pending_change(
+            "schedule_followup", body.lead_id, body.model_dump(), summary
+        )
+    return _apply_create_reminder(body, actor="user")
+
+
+def _apply_create_reminder(body: ReminderIn, actor: str = "agent") -> dict:
     with get_conn() as conn:
         fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
         cur = conn.execute(
             "INSERT INTO reminders (lead_id, due_ts, note) VALUES (?,?,?)",
             (body.lead_id, body.due_ts, body.note),
         )
-        audit(conn, "agent", "schedule_followup", body.model_dump(), {}, body.lead_id)
+        audit(conn, actor, "schedule_followup", body.model_dump(), {}, body.lead_id)
         reminder = dict(conn.execute(
             "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
     # create_reminder is a sync `def` endpoint: FastAPI already runs the
