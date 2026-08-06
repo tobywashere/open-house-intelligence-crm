@@ -15,6 +15,12 @@ from app.db import audit, get_conn
 from app.routers import misc
 
 
+def test_default_gateway_url_is_localhost():
+    import app.agent.openclaw as module
+
+    assert module.GATEWAY_URL == "http://localhost:18789"
+
+
 class FakeClient:
     def __init__(self, option_status=405, post_status=200, post_json=None):
         self.option_status = option_status

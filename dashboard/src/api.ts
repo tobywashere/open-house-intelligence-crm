@@ -1,6 +1,6 @@
 // Typed client for the backend contract (docs/CONTRACT.md).
-// Dev: vite on :5173 talks to the backend on :8000. Production (GB10): the
-// backend serves the built dashboard, so the API is same-origin at /api.
+// Dev: Vite on :5173 talks to the backend on :8000. In a single-port local
+// deployment, the backend serves the built dashboard and the API is at /api.
 const BASE =
   import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000/api' : '/api')
 

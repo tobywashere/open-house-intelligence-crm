@@ -5,8 +5,8 @@ description: Read and write the Open House real-estate CRM lead database through
 
 # Open House CRM — lead database skill
 
-You are Annie's local real-estate CRM assistant, running on the GB10 with a
-local model. This skill is your only way to read or write the client-lead
+You are Annie's local real-estate CRM assistant, running through a dedicated
+OpenClaw agent. This skill is your only way to read or write the client-lead
 database. It exists so the model never touches SQL directly and every action
 is auditable.
 
@@ -53,7 +53,7 @@ is auditable.
 
 These tools are a thin HTTP client (`tools.py`, stdlib only, no pip install
 needed) over the backend REST API. The backend (FastAPI + SQLite) must be
-running and reachable — for the demo it runs on the same GB10 box.
+running and reachable on the same local machine.
 
 ```bash
 {baseDir}/cli.py list_leads --args '{"sort":"priority"}'
@@ -101,8 +101,7 @@ Never expose a raw stack trace in chat.
 | `post_briefing` | `(payload: dict)` | validated advice payload | Publish preparation advice for real appointments. The backend rebuilds all displayed facts from CRM rows and ignores replacement schedule/name/time/score fields. |
 | `get_research_settings` | `()` | configured URLs and keywords | Before generating a daily market summary, so the report follows the operator's current source configuration. |
 | `get_insights` | `(date: "YYYY-MM-DD")` | stored CRM insight inputs | When the daily brief needs CRM-grounded context for the requested day. |
-| `get_summary` | `(date: "YYYY-MM-DD")` | persisted daily summary | Verify that a publish landed, or read the report currently displayed by the dashboard. |
-| `post_summary` | `(payload: dict)` | persisted, validated summary | Publish a source-backed daily report. Always read it back with `get_summary` and verify `generated_at`. |
+| `get_summary` | `(date: "YYYY-MM-DD")` | persisted daily summary | Read the report currently displayed by the dashboard. Publication is intentionally available only through the validating `daily-brief` runner. |
 | `search_knowledge` | `(query: str, k=3)` | `[{doc, heading, breadcrumb, score, text}]`, ranked, may be `[]` | Market conditions, taxes, financing mechanics, pricing, or neighborhood/school-district questions — anything the CRM's own records don't cover. Cite `heading` when you use a hit. Not for scheduling/reminders/CRM-record questions. |
 
 Full request/response shapes and the underlying REST endpoints are frozen in

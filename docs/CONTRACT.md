@@ -236,10 +236,12 @@ before.
 | `get_research_settings()` | `GET /research-settings` — returns the configured market-research URLs and keywords |
 | `get_insights(date)` | `GET /insights?date=` — returns the stored CRM insight inputs for the requested day |
 | `get_summary(date)` | `GET /summary?date=` — returns the persisted daily market summary |
-| `post_summary(payload)` | `POST /summary` — validates and persists a source-backed daily market summary |
 | `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` — precise agent-invoked access to the same local BM25 retrieval that `POST /chat` may use as best-effort grounding |
 
 Curl examples for each live in [`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
+`POST /summary` remains a trusted application endpoint, but it is not exposed
+through the model-callable CRM wrapper. The validating `daily-brief` runner is
+the only supported agent publication path.
 
 ### `composio-email-calendar` (optional, requires internet)
 

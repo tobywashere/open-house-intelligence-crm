@@ -9,11 +9,13 @@ import argparse
 import datetime as dt
 import html
 import importlib.util
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit
 import urllib.request
 
 JOB_URL = "https://www.bls.gov/eag/eag.wa_seattle_msa.htm"
@@ -89,12 +91,7 @@ def _job_item(raw_html: str) -> dict:
     prior_rate = rates[-2]
     total_jobs = totals[-1]
     annual_change = changes[-1]
-    extracted = re.search(r"Data extracted on:\s*([A-Z][a-z]+ \d{1,2}, 2026)", text)
-    source_date = (
-        dt.datetime.strptime(extracted.group(1), "%B %d, %Y").date().isoformat()
-        if extracted
-        else dt.date.today().isoformat()
-    )
+    source_date = _publication_date_from_text(text)
     direction = "up" if current_rate > prior_rate else "down" if current_rate < prior_rate else "unchanged"
     return {
         "title": f"Seattle-area unemployment {direction} to {current_rate:.1f}% in June",
@@ -125,6 +122,7 @@ def _job_item_api() -> dict:
     )
     if response.get("status") != "REQUEST_SUCCEEDED":
         raise ValueError(f"BLS API failed: {response.get('message')}")
+    source_date = _publication_date_from_api(response)
     series = {
         item.get("seriesID"): item.get("data", [])
         for item in response.get("Results", {}).get("series", [])
@@ -156,7 +154,7 @@ def _job_item_api() -> dict:
             f"total nonfarm employment was {annual_change:.1f}% above a year earlier."
         ),
         "url": JOB_URL,
-        "date": dt.date.today().isoformat(),
+        "date": source_date,
         "summary": (
             f"BLS reported a {current_rate:.1f}% unemployment rate for "
             f"Seattle-Tacoma-Bellevue in June 2026, compared with {prior_rate:.1f}% in May. "
@@ -164,6 +162,44 @@ def _job_item_api() -> dict:
         ),
         "geo": "Seattle-Tacoma-Bellevue",
     }
+
+
+def _parse_publication_date(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("BLS source lacks an authoritative publication date")
+    cleaned = value.strip()
+    for parser in (
+        lambda candidate: dt.date.fromisoformat(candidate),
+        lambda candidate: dt.datetime.strptime(candidate, "%B %d, %Y").date(),
+    ):
+        try:
+            return parser(cleaned).isoformat()
+        except ValueError:
+            continue
+    raise ValueError("BLS publication date is not a supported date")
+
+
+def _publication_date_from_text(text: str) -> str:
+    match = re.search(
+        r"(?:release|publication)\s+date\s*:?\s*"
+        r"([A-Z][a-z]+ \d{1,2}, \d{4}|\d{4}-\d{2}-\d{2})",
+        text,
+        re.I,
+    )
+    if not match:
+        raise ValueError("BLS source lacks an authoritative publication date")
+    return _parse_publication_date(match.group(1))
+
+
+def _publication_date_from_api(response: dict) -> str:
+    containers = [response, response.get("Results")]
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in ("releaseDate", "release_date", "publicationDate", "publication_date"):
+            if key in container:
+                return _parse_publication_date(container[key])
+    raise ValueError("BLS API lacks an authoritative publication date")
 
 
 def _fed_item(raw_html: str) -> dict:
@@ -318,14 +354,38 @@ def load_payload(path: str) -> dict:
         return validate_payload(json.load(handle), require_all_sources=True)
 
 
-def _api_candidates(explicit: str | None) -> list[str]:
-    if explicit:
-        return [explicit.rstrip("/")]
+def _api_candidates() -> list[str]:
     configured = os.environ.get("CRM_API_URL")
     if configured:
         return [configured.rstrip("/")]
     # Dev server is :8000; single-port/OpenClaw production is :8080.
     return ["http://127.0.0.1:8000/api", "http://127.0.0.1:8080/api"]
+
+
+def _validated_local_api_base(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("CRM_API_URL must be a valid loopback API URL") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("CRM_API_URL must be an HTTP loopback API URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("CRM_API_URL must not include credentials, query, or fragment")
+    hostname = parsed.hostname.lower()
+    is_loopback = hostname == "localhost"
+    if not is_loopback:
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = False
+    if not is_loopback:
+        raise ValueError("CRM_API_URL must use a loopback host")
+    if parsed.path.rstrip("/") != "/api":
+        raise ValueError("CRM_API_URL must point to the local /api root")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("CRM_API_URL port is outside the valid range")
+    return value.rstrip("/")
 
 
 def _load_crm_tools():
@@ -339,12 +399,13 @@ def _load_crm_tools():
     return module
 
 
-def publish(payload: dict, api_base: str | None = None) -> tuple[str, dict]:
+def publish(payload: dict) -> tuple[str, dict]:
+    bases = [_validated_local_api_base(base) for base in _api_candidates()]
     crm = _load_crm_tools()
     errors: list[str] = []
-    for base in _api_candidates(api_base):
-        # Use the shared CRM client for both calls. Overriding BASE_URL only
-        # supplies local dev (:8000) fallback when CRM_API_URL is not set.
+    for base in bases:
+        # Use the shared CRM client for both calls after every candidate has
+        # been proven to be a local API origin.
         crm.BASE_URL = base
         try:
             posted = crm.post_summary(payload)
@@ -361,20 +422,13 @@ def publish(payload: dict, api_base: str | None = None) -> tuple[str, dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true")
-    mode.add_argument(
-        "--publish-payload",
-        metavar="JSON_FILE",
-        help="publish an AI/WebFetch-generated payload instead of fetching sources",
-    )
-    parser.add_argument("--api-base")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    payload = load_payload(args.publish_payload) if args.publish_payload else build_payload()
+    payload = build_payload()
     if args.dry_run:
         print(json.dumps({"ok": True, "published": False, "payload": payload}))
         return 0
-    api_base, saved = publish(payload, args.api_base)
+    api_base, saved = publish(payload)
     print(
         json.dumps(
             {

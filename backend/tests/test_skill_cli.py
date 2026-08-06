@@ -70,6 +70,12 @@ def test_dispatch_rejects_unknown_operation():
         skill_cli.dispatch("shell", {"command": "whoami"})
 
 
+def test_dispatch_rejects_direct_summary_publication():
+    assert "post_summary" not in skill_cli.OPERATIONS
+    with pytest.raises(ValueError, match="unknown CRM operation"):
+        skill_cli.dispatch("post_summary", {"payload": {"greeting": "invented"}})
+
+
 def test_dispatch_rejects_non_object_arguments():
     with pytest.raises(ValueError, match="JSON object"):
         skill_cli.dispatch("list_leads", [])

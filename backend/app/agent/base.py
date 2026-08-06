@@ -1,4 +1,4 @@
-"""Agent driver interface. Two implementations: mock (dev default) and openclaw (GB10)."""
+"""Agent driver interface for deterministic development and local OpenClaw."""
 from abc import ABC, abstractmethod
 
 from .status import AgentProbe

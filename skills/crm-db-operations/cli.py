@@ -31,7 +31,6 @@ OPERATIONS = {
         "get_research_settings",
         "get_insights",
         "get_summary",
-        "post_summary",
         "delete_lead",
         "search_knowledge",
     )

@@ -25,7 +25,7 @@ from .status import (
     resolved_status,
 )
 
-GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://gb10:18789")
+GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
 CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
 TOKEN = os.environ.get("AGENT_GATEWAY_TOKEN", "")
 TIMEOUT = float(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))

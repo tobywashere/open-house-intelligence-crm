@@ -210,6 +210,34 @@ def test_setup_allowlists_only_shipped_skill_entrypoints(tmp_path):
     assert not any(command.endswith(" python3") for command in rendered)
 
 
+def test_dashboard_refresh_uses_the_installed_allowlisted_daily_runner(tmp_path):
+    options = make_options(tmp_path)
+    actions = build_setup_actions(options, agents=[{"id": "openhouse-crm"}])
+    allowed = [
+        action.argv[-1]
+        for action in actions
+        if action.argv[1:4] == ["approvals", "allowlist", "add"]
+    ]
+    daily_runner = str(
+        options.workspace / "skills" / "daily-brief" / "scripts" / "run_daily_brief.py"
+    )
+    overlay = (
+        REPO_ROOT / "dashboard" / "src" / "components" / "DailySummaryOverlay.tsx"
+    ).read_text()
+    skill = (REPO_ROOT / "skills" / "daily-brief" / "SKILL.md").read_text()
+
+    assert allowed == [
+        str(options.workspace / "skills" / "crm-db-operations" / "cli.py"),
+        daily_runner,
+    ]
+    assert "daily-brief skill in Mode 1" in overlay
+    assert "python3 skills/" not in overlay
+    assert "{baseDir}/scripts/run_daily_brief.py" in skill
+    assert "Mode 2" not in skill
+    assert "--publish-payload" not in skill
+    assert "/tmp" not in skill
+
+
 def test_discord_binding_is_opt_in(tmp_path):
     without_binding = build_setup_actions(make_options(tmp_path), agents=[])
     with_binding = build_setup_actions(
