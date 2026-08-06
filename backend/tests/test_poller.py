@@ -1,7 +1,9 @@
+import json
 import time
 
 from .conftest import TEST_DB, make_lead
 from app.integrations import poller
+from app.routers import leads as leads_router
 
 
 def _fake_fetch(messages):
@@ -82,3 +84,105 @@ def test_noise_senders_ignored(client, monkeypatch):
          "preview": {"body": "Market trends this week"}},
     ]))
     assert poller.check_inbox() == {"replies": 0, "intake": 0}
+
+
+def test_process_fallback_returns_retryable_result_without_mutating_lead(client, monkeypatch):
+    lead = make_lead(client, budget=None, timeline=None, intent="unknown")
+    client.post(f"/api/leads/{lead['id']}/events", json={
+        "type": "note", "content": "Budget is $900k and timeline is 6 weeks.",
+    })
+
+    class FallbackDriver:
+        async def extract(self, raw_text):
+            return {
+                "budget": 900000,
+                "timeline": "6 weeks",
+                "intent": "buy",
+                "_fallback_used": "deterministic_parser",
+            }
+
+        async def explain_score(self, lead, score):
+            raise AssertionError("fallback extraction must stop processing before score")
+
+        async def draft_followup(self, lead):
+            raise AssertionError("fallback extraction must stop processing before drafting")
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDriver())
+
+    response = client.post(f"/api/leads/{lead['id']}/process")
+
+    assert response.status_code == 409
+    assert "backup parser" in response.json()["detail"].lower()
+    assert "_fallback_used" not in response.text
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["budget"] is None
+    assert current["timeline"] is None
+    assert current["intent"] == "unknown"
+    assert current["score"] is None
+    audit = client.get("/api/audit?limit=30").json()
+    assert "score_lead" not in [entry["tool"] for entry in audit]
+    assert "_fallback_used" not in json.dumps(audit)
+
+
+def test_reply_poller_does_not_auto_apply_deterministic_fallback_fields(client, monkeypatch):
+    lead = make_lead(client, budget=None, timeline=None, intent="unknown")
+
+    class FallbackDriver:
+        async def extract(self, raw_text):
+            return {
+                "budget": 900000,
+                "timeline": "6 weeks",
+                "intent": "buy",
+                "_fallback_used": "deterministic_parser",
+            }
+
+        async def explain_score(self, lead, score):
+            raise AssertionError("fallback extraction must stop processing before score")
+
+        async def draft_followup(self, lead):
+            raise AssertionError("fallback extraction must stop processing before drafting")
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDriver())
+    monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([{
+        "messageId": "fallback-reply-1",
+        "sender": "Test Lead <lead@example.com>",
+        "preview": {"body": "I can spend $900k and move in 6 weeks."},
+    }]))
+
+    assert poller.check_inbox() == {"replies": 1, "intake": 0}
+
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["budget"] is None
+    assert current["timeline"] is None
+    assert current["intent"] == "unknown"
+    assert current["score"] is None
+    audit = client.get("/api/audit?limit=30").json()
+    assert "score_lead" not in [entry["tool"] for entry in audit]
+    assert "_fallback_used" not in json.dumps(audit)
+    assert "agent_processing_deferred" in [entry["tool"] for entry in audit]
+
+
+def test_process_deterministic_draft_does_not_write_score_or_reason(client, monkeypatch):
+    lead = make_lead(client)
+
+    class FallbackDraftDriver:
+        async def extract(self, raw_text):
+            raise AssertionError("complete lead should not need extraction")
+
+        async def explain_score(self, lead, score):
+            return "The lead has a confirmed budget and timeline."
+
+        async def draft_followup(self, lead):
+            return "[deterministic fallback] Hi Test, can we talk Tuesday?"
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDraftDriver())
+
+    response = client.post(f"/api/leads/{lead['id']}/process")
+
+    assert response.status_code == 409
+    assert "backup response" in response.json()["detail"].lower()
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["score"] is None
+    assert current["score_reason"] is None
+    audit = client.get("/api/audit?limit=30").json()
+    assert "score_lead" not in [entry["tool"] for entry in audit]

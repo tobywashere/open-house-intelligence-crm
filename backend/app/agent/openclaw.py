@@ -152,8 +152,9 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:
             logging.warning("openclaw draft_followup failed (%s) — mock fallback", exc)
             from .mock import MockDriver
+            draft = await MockDriver().draft_followup(lead)
             record_fallback("draft_followup")
-            return "[deterministic fallback] " + await MockDriver().draft_followup(lead)
+            return "[deterministic fallback] " + draft
 
     async def explain_score(self, lead: dict, score: int) -> str:
         try:
@@ -166,8 +167,9 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:
             logging.warning("openclaw explain_score failed (%s) — mock fallback", exc)
             from .mock import MockDriver
+            explanation = await MockDriver().explain_score(lead, score)
             record_fallback("score_explanation")
-            return "[deterministic fallback] " + await MockDriver().explain_score(lead, score)
+            return "[deterministic fallback] " + explanation
 
     async def connected(self) -> bool:
         probe = await self.probe()

@@ -10,6 +10,8 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from fastapi import HTTPException
+
 from ..db import audit, get_conn
 from . import composio_client as cc
 
@@ -106,6 +108,17 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
         # new info in a reply may fill missing fields / change the score
         from ..routers.leads import process_lead
         asyncio.run(process_lead(lead["id"]))
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "cron",
+                    "agent_processing_deferred",
+                    {"lead_id": lead["id"]},
+                    {"reason": "deterministic_fallback"},
+                    lead["id"],
+                )
     except Exception:
         pass  # re-extraction is best-effort; the reply event is already logged
     return 1

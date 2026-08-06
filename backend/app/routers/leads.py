@@ -16,6 +16,7 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 
 NOW = "strftime('%Y-%m-%dT%H:%M:%S','now','localtime')"
 STATUSES = ["new", "contacted", "meeting_booked", "closed"]
+DETERMINISTIC_FALLBACK_PREFIX = "[deterministic fallback] "
 
 # forward-only lifecycle; any state may close. Backward moves need a human
 # with DB access — the agent must never un-close a lead.
@@ -445,9 +446,20 @@ async def process_lead(lead_id: int):
                 "SELECT content FROM events WHERE lead_id = ? AND type IN ('note','form','text','email') "
                 "ORDER BY created_at DESC LIMIT 1", (lead_id,)).fetchone()
 
-    # re-extract from the latest raw note if fields are missing
+    # Re-extract from the latest raw note if fields are missing. Keep all
+    # candidate changes in memory until every agent response is confirmed to
+    # be real agent output: this route is also called by the Gmail poller, so
+    # a deterministic fallback must never auto-apply CRM fields or a score.
+    fills: dict = {}
     if latest:
         extracted = await driver.extract(latest["content"])
+        fallback = extracted.pop("_fallback_used", None)
+        if fallback:
+            raise HTTPException(
+                409,
+                "The local agent used its backup parser. No CRM fields were changed. "
+                "Try again after OpenClaw is ready, then review the result.",
+            )
         fills = {k: extracted[k] for k in
                  ("phone", "email", "budget", "area", "timeline", "intent")
                  if not lead.get(k) and extracted.get(k) is not None}
@@ -458,18 +470,26 @@ async def process_lead(lead_id: int):
                 fills["budget"] = int(float(str(fills["budget"]).replace(",", "").strip()))
             except ValueError:
                 del fills["budget"]
-        if fills:
-            with get_conn() as conn:
-                sets = ", ".join(f"{k} = ?" for k in fills)
-                conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
-                             [*fills.values(), lead_id])
-                lead = fetch_lead(conn, lead_id)
 
-    score = score_lead(lead, event_count)
-    reason = await driver.explain_score(lead, score)
-    draft = await driver.draft_followup(lead)
+    candidate = {**lead, **fills}
+    score = score_lead(candidate, event_count)
+    reason = await driver.explain_score(candidate, score)
+    draft = await driver.draft_followup(candidate)
+    if (
+        reason.startswith(DETERMINISTIC_FALLBACK_PREFIX)
+        or draft.startswith(DETERMINISTIC_FALLBACK_PREFIX)
+    ):
+        raise HTTPException(
+            409,
+            "The local agent used a backup response. No CRM fields were changed. "
+            "Try again after OpenClaw is ready, then review the result.",
+        )
 
     with get_conn() as conn:
+        if fills:
+            sets = ", ".join(f"{k} = ?" for k in fills)
+            conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
+                         [*fills.values(), lead_id])
         conn.execute("UPDATE leads SET score = ?, score_reason = ? WHERE id = ?",
                      (score, reason, lead_id))
         audit(conn, "agent", "score_lead", {"lead_id": lead_id},

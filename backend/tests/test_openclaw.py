@@ -155,6 +155,70 @@ def test_draft_fallback_is_visibly_labeled():
     assert result.startswith("[deterministic fallback]")
 
 
+def test_score_fallback_is_labeled_and_counted(monkeypatch):
+    monkeypatch.setattr(agent_status, "_FALLBACKS", {}, raising=False)
+    driver = OpenClawDriver(client_factory=client_factory(post_status=500))
+
+    result = asyncio.run(driver.explain_score({"name": "Alex"}, 55))
+
+    assert result.startswith("[deterministic fallback]")
+    assert agent_status.fallback_counts() == {"score_explanation": 1}
+
+
+def test_failed_deterministic_draft_does_not_record_a_fallback(monkeypatch):
+    monkeypatch.setattr(agent_status, "_FALLBACKS", {}, raising=False)
+    monkeypatch.setattr(agent_status, "_EVENT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_FALLBACK_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_SEQUENCE", 0, raising=False)
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    driver = OpenClawDriver()
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    async def broken_draft(*args, **kwargs):
+        raise RuntimeError("deterministic draft failed")
+
+    monkeypatch.setattr(driver, "_send", unavailable)
+    monkeypatch.setattr(MockDriver, "draft_followup", broken_draft)
+
+    with pytest.raises(RuntimeError, match="deterministic draft failed"):
+        asyncio.run(driver.draft_followup({"name": "Alex"}))
+
+    assert agent_status.fallback_counts() == {}
+    assert agent_status.resolved_status(
+        gateway_reachable=True, endpoint_enabled=True
+    ) == "crm_verified"
+
+
+def test_failed_deterministic_score_explanation_does_not_record_a_fallback(monkeypatch):
+    monkeypatch.setattr(agent_status, "_FALLBACKS", {}, raising=False)
+    monkeypatch.setattr(agent_status, "_EVENT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_FALLBACK_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_SEQUENCE", 0, raising=False)
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    driver = OpenClawDriver()
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    async def broken_explanation(*args, **kwargs):
+        raise RuntimeError("deterministic explanation failed")
+
+    monkeypatch.setattr(driver, "_send", unavailable)
+    monkeypatch.setattr(MockDriver, "explain_score", broken_explanation)
+
+    with pytest.raises(RuntimeError, match="deterministic explanation failed"):
+        asyncio.run(driver.explain_score({"name": "Alex"}, 55))
+
+    assert agent_status.fallback_counts() == {}
+    assert agent_status.resolved_status(
+        gateway_reachable=True, endpoint_enabled=True
+    ) == "crm_verified"
+
+
 def test_crm_capability_request_is_read_only_and_targets_skill(monkeypatch):
     import app.agent.openclaw as module
 

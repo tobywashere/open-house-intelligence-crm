@@ -77,6 +77,17 @@ def test_successful_crm_verification_resets_fallback_degradation_epoch():
     assert agent_status.fallback_counts() == {"extract": 1}
 
 
+def test_fallback_before_latest_crm_verification_does_not_degrade_status():
+    agent_status.record_fallback("extract")
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "crm_verified"
+
+
 def test_configured_integration_is_not_reported_as_verified(client, monkeypatch):
     monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.setenv("COMPOSIO_TRANSPORT", "api")
