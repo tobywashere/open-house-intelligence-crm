@@ -96,7 +96,9 @@ def _validate_appointment(conn, body: AppointmentIn) -> dict:
     return lead
 
 
-def _apply_book_appointment(body: AppointmentIn, actor: str = "agent") -> dict:
+def _apply_book_appointment(
+    body: AppointmentIn, actor: str = "agent", *, run_hook: bool = True
+) -> dict:
     with get_conn() as conn:
         lead = _validate_appointment(conn, body)
         cur = conn.execute(
@@ -117,7 +119,8 @@ def _apply_book_appointment(body: AppointmentIn, actor: str = "agent") -> dict:
     # book_appointment is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the
     # event loop — no run_in_threadpool wrapping needed here.
-    hooks.on_tour_booked(lead, appt)
+    if run_hook:
+        hooks.on_tour_booked(lead, appt)
     return appt
 
 

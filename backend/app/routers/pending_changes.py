@@ -11,7 +11,8 @@ import inspect
 import json
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, ValidationError
 
 from ..db import audit, get_conn
 from . import leads as leads_router
@@ -72,6 +73,92 @@ def _parsed(row: dict) -> dict:
     return row
 
 
+def _claim_pending(pending_id: int) -> dict:
+    """Atomically reserve one proposal for exactly one approval worker."""
+    with get_conn() as conn:
+        row = _fetch(conn, pending_id)
+        if row["status"] != "pending":
+            raise HTTPException(
+                400, f"pending change {pending_id} is already {row['status']}"
+            )
+        claimed = conn.execute(
+            "UPDATE pending_changes SET status = 'applying' "
+            "WHERE id = ? AND status = 'pending'",
+            (pending_id,),
+        )
+        if claimed.rowcount != 1:
+            raise HTTPException(400, f"pending change {pending_id} is already being applied")
+        return row
+
+
+def _release_claim(pending_id: int) -> None:
+    """Make a pre-mutation validation/conflict failure editable and retryable."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE pending_changes SET status = 'pending' "
+            "WHERE id = ? AND status = 'applying'",
+            (pending_id,),
+        )
+
+
+def _finish_claim(pending_id: int, row: dict, result: dict) -> None:
+    with get_conn() as conn:
+        finished = conn.execute(
+            f"UPDATE pending_changes SET status = 'approved', result = ?, "
+            f"decided_at = ({NOW}) WHERE id = ? AND status = 'applying'",
+            (json.dumps(result, default=str), pending_id),
+        )
+        if finished.rowcount != 1:
+            raise HTTPException(409, f"pending change {pending_id} lost its approval claim")
+        audit(
+            conn,
+            "user",
+            "approve_pending_change",
+            {"pending_id": pending_id},
+            {"operation": row["operation"]},
+            row["lead_id"],
+        )
+
+
+def _audit_post_hook_failure(row: dict, exc: Exception) -> None:
+    tool = (
+        "gmail_create_draft (failed)"
+        if row["operation"] == "create_lead"
+        else "gcal_create_event (failed)"
+    )
+    try:
+        with get_conn() as conn:
+            audit(
+                conn,
+                "user",
+                tool,
+                {"pending_id": row["id"]},
+                {"error": str(exc)},
+                row["lead_id"],
+            )
+    except Exception:
+        pass
+
+
+async def _run_post_approval_hook(row: dict, result: dict) -> None:
+    """Run external work only after the proposal is durably non-replayable."""
+    try:
+        if row["operation"] == "create_lead":
+            await run_in_threadpool(leads_router.hooks.on_lead_created, result)
+        elif row["operation"] == "book_appointment":
+            from . import calendar as calendar_router
+
+            with get_conn() as conn:
+                lead = leads_router.fetch_lead(conn, result["lead_id"])
+            await run_in_threadpool(calendar_router.hooks.on_tour_booked, lead, result)
+        elif row["operation"] == "schedule_followup":
+            from . import misc as misc_router
+
+            await run_in_threadpool(misc_router.hooks.on_reminder_created, result)
+    except Exception as exc:
+        _audit_post_hook_failure(row, exc)
+
+
 @router.get("")
 def list_pending(status: str = "pending"):
     with get_conn() as conn:
@@ -84,31 +171,43 @@ def list_pending(status: str = "pending"):
 
 @router.post("/{pending_id}/approve")
 async def approve_pending(pending_id: int, body: ApproveIn = None):
-    with get_conn() as conn:
-        row = _fetch(conn, pending_id)
-    if row["status"] != "pending":
-        raise HTTPException(400, f"pending change {pending_id} is already {row['status']}")
+    row = _claim_pending(pending_id)
+    row["id"] = pending_id
+    mutation_committed = False
+    try:
+        payload = {
+            **json.loads(row["payload"]),
+            **((body.fields if body else None) or {}),
+        }
 
-    payload = {**json.loads(row["payload"]), **((body.fields if body else None) or {})}
+        if row["operation"] == "create_lead":
+            result = await leads_router._apply_resolved_create(payload, run_hook=False)
+        else:
+            model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
+            parsed_body = model_cls(**payload)
+            kwargs = (
+                {"run_hook": False}
+                if row["operation"] in {"book_appointment", "schedule_followup"}
+                else {}
+            )
+            call = (
+                apply_fn(row["lead_id"], parsed_body, **kwargs)
+                if needs_lead_id
+                else apply_fn(parsed_body, **kwargs)
+            )
+            result = await call if inspect.isawaitable(call) else call
+        mutation_committed = True
+        _finish_claim(pending_id, row, result)
+    except ValidationError as exc:
+        if not mutation_committed:
+            _release_claim(pending_id)
+        raise HTTPException(422, detail=json.loads(exc.json(include_url=False))) from None
+    except BaseException:
+        if not mutation_committed:
+            _release_claim(pending_id)
+        raise
 
-    if row["operation"] == "create_lead":
-        result = await leads_router._apply_resolved_create(payload)
-    else:
-        model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
-        parsed_body = model_cls(**payload)
-        # apply_fn may be sync or async (only create's is) — handle both
-        # without forcing every _apply_* signature to be async for uniformity.
-        call = apply_fn(row["lead_id"], parsed_body) if needs_lead_id else apply_fn(parsed_body)
-        result = await call if inspect.isawaitable(call) else call
-
-    with get_conn() as conn:
-        conn.execute(
-            f"UPDATE pending_changes SET status = 'approved', result = ?, "
-            f"decided_at = ({NOW}) WHERE id = ?",
-            (json.dumps(result, default=str), pending_id),
-        )
-        audit(conn, "user", "approve_pending_change", {"pending_id": pending_id},
-              {"operation": row["operation"]}, row["lead_id"])
+    await _run_post_approval_hook(row, result)
     return result
 
 

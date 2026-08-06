@@ -57,7 +57,9 @@ def create_reminder(body: ReminderIn, request: Request = None):
     return _apply_create_reminder(body, actor="user")
 
 
-def _apply_create_reminder(body: ReminderIn, actor: str = "agent") -> dict:
+def _apply_create_reminder(
+    body: ReminderIn, actor: str = "agent", *, run_hook: bool = True
+) -> dict:
     with get_conn() as conn:
         fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
         cur = conn.execute(
@@ -70,7 +72,8 @@ def _apply_create_reminder(body: ReminderIn, actor: str = "agent") -> dict:
     # create_reminder is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the
     # event loop — no run_in_threadpool wrapping needed here.
-    hooks.on_reminder_created(reminder)
+    if run_hook:
+        hooks.on_reminder_created(reminder)
     return reminder
 
 

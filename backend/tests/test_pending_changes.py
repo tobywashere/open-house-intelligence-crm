@@ -1,5 +1,8 @@
 """Agent-initiated lead writes (X-Actor: agent) must queue for approval
 instead of applying; the dashboard's untagged calls must be unaffected."""
+import asyncio
+import threading
+
 from tests.conftest import make_lead
 
 AGENT = {"X-Actor": "agent"}
@@ -9,6 +12,10 @@ def _pending(client, status="pending"):
     res = client.get(f"/api/pending-changes?status={status}")
     assert res.status_code == 200, res.text
     return res.json()
+
+
+def _audit_rows(client, tool):
+    return [row for row in client.get("/api/audit?limit=100").json() if row["tool"] == tool]
 
 
 def test_dashboard_create_is_unaffected(client):
@@ -200,7 +207,11 @@ def test_agent_note_queues_and_approval_applies(client):
 
     assert queued.status_code == 202
     assert queued.json()["operation"] == "add_event"
-    assert client.get(f"/api/leads/{lead['id']}").json()["events"] == []
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["events"] == []
+    assert unchanged["status"] == lead["status"]
+    assert unchanged["last_activity_at"] == lead["last_activity_at"]
+    assert _audit_rows(client, "add_event") == []
 
     approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
     assert approved.status_code == 200
@@ -226,6 +237,11 @@ def test_agent_booking_does_not_run_hook_before_approval(client, monkeypatch):
     assert queued.status_code == 202
     assert calls == []
     assert client.get("/api/appointments").json() == []
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["status"] == lead["status"]
+    assert unchanged["last_activity_at"] == lead["last_activity_at"]
+    assert unchanged["events"] == []
+    assert _audit_rows(client, "book_appointment") == []
 
     approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
     assert approved.status_code == 200
@@ -236,6 +252,8 @@ def test_agent_reminder_denial_has_no_local_or_external_effect(client, monkeypat
     from app.routers import misc
 
     lead = make_lead(client)
+    original_status = lead["status"]
+    original_activity = lead["last_activity_at"]
     calls = []
     monkeypatch.setattr(misc.hooks, "on_reminder_created", lambda value: calls.append(value))
     queued = client.post(
@@ -249,11 +267,20 @@ def test_agent_reminder_denial_has_no_local_or_external_effect(client, monkeypat
     assert denied.status_code == 200
     assert client.get("/api/reminders").json() == []
     assert calls == []
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["status"] == original_status
+    assert unchanged["last_activity_at"] == original_activity
+    assert unchanged["events"] == []
+    assert _audit_rows(client, "schedule_followup") == []
 
 
-def test_booking_conflict_during_approval_leaves_change_pending(client):
+def test_booking_conflict_during_approval_leaves_change_pending(client, monkeypatch):
+    from app.routers import calendar as calendar_router
+
     first = make_lead(client, name="First Buyer")
     second = make_lead(client, name="Second Buyer")
+    calls = []
+    monkeypatch.setattr(calendar_router.hooks, "on_tour_booked", lambda *args: calls.append(args))
     payload = {
         "start_ts": "2026-08-10T10:00:00",
         "end_ts": "2026-08-10T10:45:00",
@@ -270,7 +297,149 @@ def test_booking_conflict_during_approval_leaves_change_pending(client):
         json={"lead_id": second["id"], **payload},
     )
     assert direct.status_code == 200
+    assert len(calls) == 1
 
     approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
     assert approved.status_code == 409
     assert [item["id"] for item in _pending(client)] == [queued.json()["id"]]
+    unchanged = client.get(f"/api/leads/{first['id']}").json()
+    assert unchanged["status"] == first["status"]
+    assert unchanged["last_activity_at"] == first["last_activity_at"]
+    assert unchanged["events"] == []
+    assert len(calls) == 1
+    operation_rows = _audit_rows(client, "book_appointment")
+    assert len(operation_rows) == 1
+    assert operation_rows[0]["lead_id"] == second["id"]
+
+
+def test_edited_blank_note_is_rejected_and_remains_pending(client):
+    lead = make_lead(client)
+    queued = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Valid proposal"},
+        headers=AGENT,
+    )
+
+    approved = client.post(
+        f"/api/pending-changes/{queued.json()['id']}/approve",
+        json={"fields": {"content": "   "}},
+    )
+
+    assert approved.status_code == 422
+    assert [item["id"] for item in _pending(client)] == [queued.json()["id"]]
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["events"] == []
+    assert unchanged["last_activity_at"] == lead["last_activity_at"]
+    assert _audit_rows(client, "add_event") == []
+
+
+def test_concurrent_approvals_apply_reminder_once(client, monkeypatch):
+    from app.routers import pending_changes as pending_router
+
+    lead = make_lead(client)
+    queued = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-15T09:00:00", "note": "Call"},
+        headers=AGENT,
+    ).json()
+    original_operation = pending_router._operation
+    barrier = threading.Barrier(2)
+
+    def gated_operation(operation):
+        model_cls, apply_fn, needs_lead_id = original_operation(operation)
+        if operation != "schedule_followup":
+            return model_cls, apply_fn, needs_lead_id
+
+        def gated_apply(body, **kwargs):
+            try:
+                barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+            return apply_fn(body, **kwargs)
+
+        return model_cls, gated_apply, needs_lead_id
+
+    monkeypatch.setattr(pending_router, "_operation", gated_operation)
+    statuses = []
+
+    def approve():
+        from fastapi import HTTPException
+
+        try:
+            asyncio.run(pending_router.approve_pending(queued["id"]))
+            statuses.append(200)
+        except HTTPException as exc:
+            statuses.append(exc.status_code)
+
+    workers = [threading.Thread(target=approve) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert sorted(statuses) == [200, 400]
+    reminders = client.get("/api/reminders").json()
+    assert len(reminders) == 1
+    assert reminders[0]["note"] == "Call"
+    assert len(_audit_rows(client, "schedule_followup")) == 1
+    assert len(_audit_rows(client, "approve_pending_change")) == 1
+
+
+def test_booking_hook_exception_cannot_leave_applied_proposal_pending(client, monkeypatch):
+    from app.routers import calendar as calendar_router
+
+    lead = make_lead(client)
+    queued = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-08-16T10:00:00",
+            "end_ts": "2026-08-16T10:45:00",
+        },
+        headers=AGENT,
+    ).json()
+    monkeypatch.setattr(
+        calendar_router.hooks,
+        "on_tour_booked",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("calendar unavailable")),
+    )
+
+    approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert approved.status_code == 200
+    assert len(client.get("/api/appointments").json()) == 1
+    assert _pending(client) == []
+    assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
+    assert len(_audit_rows(client, "book_appointment")) == 1
+    failures = _audit_rows(client, "gcal_create_event (failed)")
+    assert len(failures) == 1
+    assert failures[0]["actor"] == "user"
+    assert failures[0]["lead_id"] == lead["id"]
+
+
+def test_reminder_hook_exception_cannot_leave_applied_proposal_pending(client, monkeypatch):
+    from app.routers import misc
+
+    lead = make_lead(client)
+    queued = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-17T09:00:00", "note": "Call"},
+        headers=AGENT,
+    ).json()
+    monkeypatch.setattr(
+        misc.hooks,
+        "on_reminder_created",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("calendar unavailable")),
+    )
+
+    approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert approved.status_code == 200
+    assert len(client.get("/api/reminders").json()) == 1
+    assert _pending(client) == []
+    assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
+    assert len(_audit_rows(client, "schedule_followup")) == 1
+    failures = _audit_rows(client, "gcal_create_event (failed)")
+    assert len(failures) == 1
+    assert failures[0]["actor"] == "user"
+    assert failures[0]["lead_id"] == lead["id"]

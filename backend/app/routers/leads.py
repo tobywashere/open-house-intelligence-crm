@@ -3,7 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
 from ..approvals import is_agent_write, queue_pending_change
@@ -58,6 +58,14 @@ class LeadPatch(BaseModel):
 class EventIn(BaseModel):
     type: str
     content: str
+
+    @field_validator("content")
+    @classmethod
+    def _nonempty_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("content must not be empty")
+        return value
 
 
 class MergeIn(BaseModel):
@@ -208,7 +216,7 @@ async def _apply_create_lead(body: LeadIn):
     return lead
 
 
-async def _apply_resolved_create(payload: dict) -> dict:
+async def _apply_resolved_create(payload: dict, *, run_hook: bool = True) -> dict:
     """Approval path for a queued create_lead: payload already holds
     resolved (and possibly operator-edited) fields from _resolve_create_fields
     — this must NOT re-run extraction, which would silently overwrite any
@@ -223,7 +231,8 @@ async def _apply_resolved_create(payload: dict) -> dict:
         except (TypeError, ValueError):
             del payload["budget"]
     lead = _insert_lead(name, payload, raw_text)
-    await run_in_threadpool(hooks.on_lead_created, lead)
+    if run_hook:
+        await run_in_threadpool(hooks.on_lead_created, lead)
     return lead
 
 
