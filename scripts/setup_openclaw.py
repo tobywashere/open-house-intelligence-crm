@@ -22,20 +22,21 @@ SKILL_NAMES = (
     "daily-command-center",
     "daily-brief",
 )
+DESIRED_TOOL_DENY = (
+    "web_fetch",
+    "web_search",
+    "browser",
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "canvas",
+    "nodes",
+    "cron",
+)
 DESIRED_TOOLS = {
     "allow": ["exec"],
-    "deny": [
-        "web_fetch",
-        "web_search",
-        "browser",
-        "read",
-        "write",
-        "edit",
-        "apply_patch",
-        "canvas",
-        "nodes",
-        "cron",
-    ],
+    "deny": list(DESIRED_TOOL_DENY),
     "exec": {"mode": "allowlist", "host": "gateway"},
 }
 DESIRED_SANDBOX = {"mode": "off"}
@@ -723,14 +724,19 @@ def _validate_authoritative_tools(payload: Any) -> None:
             "unsupported OpenClaw installation: authoritative agent tools "
             "did not expose allow and deny lists"
         )
-    if allow != ["exec"]:
+    if sorted(allow) != ["exec"]:
         raise SetupConflict(
             "dedicated CRM agent authoritative tool policy is not exactly exec-only"
         )
-    if not set(DESIRED_TOOLS["deny"]).issubset(set(deny)):
+    if "exec" in deny:
         raise SetupConflict(
-            "dedicated CRM agent authoritative tool policy does not deny all "
-            "general web, browser, and filesystem tools"
+            "dedicated CRM agent authoritative tool policy contradicts itself "
+            "by both allowing and denying exec"
+        )
+    if sorted(deny) != sorted(DESIRED_TOOL_DENY):
+        raise SetupConflict(
+            "dedicated CRM agent authoritative deny policy does not exactly "
+            "match the intended general-tool deny set"
         )
     if exec_policy != DESIRED_TOOLS["exec"]:
         raise SetupConflict(

@@ -272,6 +272,73 @@ def test_setup_rejects_non_authoritative_or_broad_effective_tools(
     assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
 
 
+_EXPECTED_TOOL_DENY = [
+    "web_fetch",
+    "web_search",
+    "browser",
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "canvas",
+    "nodes",
+    "cron",
+]
+
+
+@pytest.mark.parametrize(
+    "deny",
+    [
+        [*_EXPECTED_TOOL_DENY, "exec"],
+        [*_EXPECTED_TOOL_DENY, "unexpected_tool"],
+        _EXPECTED_TOOL_DENY[:-1],
+    ],
+    ids=["exec-conflict", "unexpected-extra", "missing-required"],
+)
+def test_setup_rejects_any_authoritative_deny_set_mismatch(tmp_path, deny):
+    command = (
+        "openclaw",
+        "config",
+        "get",
+        "agents.list[0].tools",
+        "--json",
+    )
+    tools = {
+        "allow": ["exec"],
+        "deny": deny,
+        "exec": {"mode": "allowlist", "host": "gateway"},
+    }
+    cli = FakeCLI({command: CommandResult(0, json.dumps(tools), "")})
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "authoritative" in result.render().lower()
+    assert "Validated the restricted agent" not in result.render()
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
+    command = (
+        "openclaw",
+        "config",
+        "get",
+        "agents.list[0].tools",
+        "--json",
+    )
+    tools = {
+        "allow": ["exec"],
+        "deny": list(reversed(_EXPECTED_TOOL_DENY)),
+        "exec": {"mode": "allowlist", "host": "gateway"},
+    }
+    cli = FakeCLI({command: CommandResult(0, json.dumps(tools), "")})
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert "Validated the restricted agent" in result.render()
+
+
 def test_setup_reads_back_exact_exec_tools_and_is_idempotent(tmp_path):
     cli = FakeCLI()
     options = make_options(tmp_path)
