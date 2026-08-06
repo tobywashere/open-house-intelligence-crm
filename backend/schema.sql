@@ -148,12 +148,15 @@ CREATE TABLE IF NOT EXISTS hook_outbox (
     CHECK (hook_type IN ('lead_created','tour_booked','reminder_created')),
   object_id INTEGER NOT NULL,
   lead_id INTEGER,
+  delivery_mode TEXT NOT NULL DEFAULT 'simulated'
+    CHECK (delivery_mode IN ('live','simulated')),
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending','processing','failed','delivered')),
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   claim_token TEXT,
   claimed_at TEXT,
+  next_attempt_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
   delivered_at TEXT

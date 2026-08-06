@@ -8,6 +8,7 @@ through identical logic — with one exception: create_lead's payload is
 already-resolved fields (see leads.py's _resolve_create_fields), so it goes
 through _apply_resolved_create instead of re-running extraction."""
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..db import audit, get_conn
 from ..integrations import hook_outbox
+from ..integrations import composio_client as cc
 from . import leads as leads_router
 
 router = APIRouter(prefix="/pending-changes", tags=["pending-changes"])
@@ -136,9 +138,70 @@ def _apply_pending_mutation(conn, row: dict, validated):
     )
 
 
-async def _dispatch_committed_hook(outbox_id: int) -> None:
-    """Dispatch durable intent after commit without blocking the event loop."""
-    await run_in_threadpool(hook_outbox.dispatch_hook, outbox_id)
+def _audit_post_hook_failure(row: dict, result: dict, exc: Exception) -> None:
+    tool = {
+        "create_lead": "lead_created_hook (failed)",
+        "book_appointment": "gcal_create_event (failed)",
+        "schedule_followup": "gcal_create_event (failed)",
+    }.get(row["operation"], "approval_hook (failed)")
+    lead_id = result.get("id") if row["operation"] == "create_lead" else row["lead_id"]
+    try:
+        with get_conn() as conn:
+            audit(
+                conn,
+                "user",
+                tool,
+                {"pending_id": row["id"]},
+                {"error": str(exc)},
+                lead_id,
+            )
+    except Exception:
+        logging.exception(
+            "could not persist post-approval hook failure for proposal %s",
+            row["id"],
+        )
+
+
+async def _run_forced_simulation(row: dict, result: dict) -> None:
+    """Preserve demo audits without creating work that can become live later."""
+    try:
+        if row["operation"] == "create_lead":
+            await run_in_threadpool(
+                leads_router.hooks.on_lead_created,
+                result,
+                force_simulated=True,
+            )
+        elif row["operation"] == "book_appointment":
+            from . import calendar as calendar_router
+
+            with get_conn() as conn:
+                lead = leads_router.fetch_lead(conn, result["lead_id"])
+            await run_in_threadpool(
+                calendar_router.hooks.on_tour_booked,
+                lead,
+                result,
+                force_simulated=True,
+            )
+        elif row["operation"] == "schedule_followup":
+            from . import misc as misc_router
+
+            await run_in_threadpool(
+                misc_router.hooks.on_reminder_created,
+                result,
+                force_simulated=True,
+            )
+    except Exception as exc:
+        _audit_post_hook_failure(row, result, exc)
+
+
+async def _dispatch_committed_hook(
+    outbox_id: int | None, row: dict, result: dict, delivery_mode: str
+) -> None:
+    """Wake durable live delivery or run the captured demo simulation."""
+    if outbox_id is not None:
+        hook_outbox.wake_worker()
+    elif delivery_mode == "simulated":
+        await _run_forced_simulation(row, result)
 
 
 @router.get("")
@@ -154,6 +217,10 @@ def list_pending(status: str = "pending"):
 @router.post("/{pending_id}/approve")
 async def approve_pending(pending_id: int, body: ApproveIn = None):
     outbox_id = None
+    # Capture intent before the transaction. A live request stays durable even
+    # when credentials are temporarily unavailable; an off/demo request is
+    # forced to remain simulated even if process configuration later changes.
+    delivery_mode = "live" if cc.mode() == "live" else "simulated"
     try:
         with get_conn() as conn:
             row = _claim_pending(conn, pending_id)
@@ -165,14 +232,18 @@ async def approve_pending(pending_id: int, body: ApproveIn = None):
             validated = _validate_pending_mutation(row, payload)
             result = _apply_pending_mutation(conn, row, validated)
             _finish_claim(conn, pending_id, row, result)
-            outbox_id = hook_outbox.enqueue_approval_hook(
-                conn, pending_id, row["operation"], result
-            )
+            if delivery_mode == "live":
+                outbox_id = hook_outbox.enqueue_approval_hook(
+                    conn,
+                    pending_id,
+                    row["operation"],
+                    result,
+                    delivery_mode=delivery_mode,
+                )
     except ValidationError as exc:
         raise HTTPException(422, detail=json.loads(exc.json(include_url=False))) from None
 
-    if outbox_id is not None:
-        await _dispatch_committed_hook(outbox_id)
+    await _dispatch_committed_hook(outbox_id, row, result, delivery_mode)
     return result
 
 

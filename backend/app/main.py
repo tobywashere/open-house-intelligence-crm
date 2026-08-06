@@ -65,17 +65,10 @@ app.include_router(voice.router, prefix="/api")
 @app.on_event("startup")
 def startup():
     init_db()
-    # Recover approvals committed before their post-commit calendar or draft
-    # hook could run. Each claim and status update is a short transaction; the
-    # external call itself runs with no SQLite connection open.
-    from .integrations.hook_outbox import drain_hook_outbox
-    from threading import Thread
-    app.state.hook_outbox_thread = Thread(
-        target=drain_hook_outbox,
-        name="approval-hook-outbox",
-        daemon=True,
-    )
-    app.state.hook_outbox_thread.start()
+    # Recover committed approval hooks continuously. The worker has one
+    # process-local instance and never holds SQLite across provider calls.
+    from .integrations.hook_outbox import start_worker
+    app.state.hook_outbox_thread = start_worker()
     host = os.environ.get("HOST", "127.0.0.1")
     if host not in ("127.0.0.1", "localhost") and not os.environ.get("OHI_API_TOKEN"):
         print("WARNING: serving on a non-localhost interface with no OHI_API_TOKEN — "
@@ -91,6 +84,13 @@ def startup():
         import asyncio
         from .integrations.poller import poll_loop
         app.state.poller_task = asyncio.get_event_loop().create_task(poll_loop())
+
+
+@app.on_event("shutdown")
+def shutdown():
+    from .integrations.hook_outbox import stop_worker
+
+    stop_worker()
 
 
 # GB10 single-port hosting: if the dashboard has been built (npm run build),

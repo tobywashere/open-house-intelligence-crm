@@ -108,12 +108,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         " ('lead_created','tour_booked','reminder_created')),"
         " object_id INTEGER NOT NULL,"
         " lead_id INTEGER,"
+        " delivery_mode TEXT NOT NULL DEFAULT 'simulated' CHECK (delivery_mode IN"
+        " ('live','simulated')),"
         " status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN"
         " ('pending','processing','failed','delivered')),"
         " attempts INTEGER NOT NULL DEFAULT 0,"
         " last_error TEXT,"
         " claim_token TEXT,"
         " claimed_at TEXT,"
+        " next_attempt_at TEXT,"
         " created_at TEXT NOT NULL DEFAULT"
         " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
         " updated_at TEXT NOT NULL DEFAULT"
@@ -123,6 +126,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_hook_outbox_delivery "
         "ON hook_outbox (status, claimed_at, id)"
+    )
+    outbox_cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(hook_outbox)")
+    }
+    if "delivery_mode" not in outbox_cols:
+        # Existing rows predate explicit intent metadata. Default them to the
+        # safe simulated mode so an upgrade cannot unexpectedly contact a
+        # provider for an intent created while integrations were off.
+        conn.execute(
+            "ALTER TABLE hook_outbox ADD COLUMN delivery_mode TEXT NOT NULL "
+            "DEFAULT 'simulated' CHECK (delivery_mode IN ('live','simulated'))"
+        )
+    if "next_attempt_at" not in outbox_cols:
+        conn.execute("ALTER TABLE hook_outbox ADD COLUMN next_attempt_at TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hook_outbox_retry "
+        "ON hook_outbox (status, next_attempt_at, claimed_at, id)"
     )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
     for col in ("persona", "relationship_summary", "close_reason"):
@@ -153,7 +173,13 @@ TIMESTAMP_COLUMNS = {
     "briefing": ["generated_at"],
     "insights": ["computed_at"],
     "daily_summary": ["generated_at"],
-    "hook_outbox": ["claimed_at", "created_at", "updated_at", "delivered_at"],
+    "hook_outbox": [
+        "claimed_at",
+        "next_attempt_at",
+        "created_at",
+        "updated_at",
+        "delivered_at",
+    ],
 }
 
 

@@ -67,6 +67,25 @@ def test_hook_outbox_schema_is_additive_and_idempotent(tmp_path, monkeypatch):
 
     db_path = tmp_path / "pre-hook-outbox.db"
     monkeypatch.setattr(db, "DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE hook_outbox ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "pending_change_id INTEGER NOT NULL UNIQUE,"
+        "idempotency_key TEXT NOT NULL UNIQUE,"
+        "hook_type TEXT NOT NULL, object_id INTEGER NOT NULL, lead_id INTEGER,"
+        "status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,"
+        "last_error TEXT, claim_token TEXT, claimed_at TEXT,"
+        "created_at TEXT NOT NULL DEFAULT '2026-08-01T00:00:00',"
+        "updated_at TEXT NOT NULL DEFAULT '2026-08-01T00:00:00', delivered_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO hook_outbox "
+        "(pending_change_id, idempotency_key, hook_type, object_id) "
+        "VALUES (1, 'pending-change:1', 'reminder_created', 1)"
+    )
+    conn.commit()
+    conn.close()
 
     db.init_db()
     db.init_db()
@@ -74,6 +93,9 @@ def test_hook_outbox_schema_is_additive_and_idempotent(tmp_path, monkeypatch):
     conn = sqlite3.connect(db_path)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(hook_outbox)")}
     indexes = conn.execute("PRAGMA index_list(hook_outbox)").fetchall()
+    legacy = conn.execute(
+        "SELECT delivery_mode, next_attempt_at FROM hook_outbox WHERE id = 1"
+    ).fetchone()
     conn.close()
 
     assert {
@@ -82,16 +104,19 @@ def test_hook_outbox_schema_is_additive_and_idempotent(tmp_path, monkeypatch):
         "hook_type",
         "object_id",
         "lead_id",
+        "delivery_mode",
         "status",
         "attempts",
         "last_error",
         "claim_token",
         "claimed_at",
+        "next_attempt_at",
         "created_at",
         "updated_at",
         "delivered_at",
     } <= cols
     assert any(index[2] for index in indexes), "outbox must enforce a unique key"
+    assert legacy == ("simulated", None)
 
 
 def test_legacy_leads_table_gains_outcome_columns(tmp_path, monkeypatch):

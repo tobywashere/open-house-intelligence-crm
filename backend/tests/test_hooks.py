@@ -106,7 +106,7 @@ def test_reminder_hook_reports_integration_failure(client, monkeypatch):
         }
     )
 
-    assert delivered is False
+    assert delivered is hooks.HookOutcome.FAILED
 
 
 def test_hook_blanket_guard_non_integration_error(client, monkeypatch):

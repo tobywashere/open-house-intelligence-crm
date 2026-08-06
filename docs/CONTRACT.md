@@ -76,17 +76,28 @@ Dashboard actions without that header continue to apply immediately. See §2,
 `id, pending_change_id UNIQUE, idempotency_key UNIQUE, hook_type
 (lead_created|tour_booked|reminder_created), object_id, lead_id, status
 (pending|processing|failed|delivered), attempts, last_error, claim_token,
-claimed_at, created_at, updated_at, delivered_at`.
+claimed_at, delivery_mode (live|simulated), next_attempt_at, created_at,
+updated_at, delivered_at`.
 
-Create, booking, and reminder approvals insert one reference-only outbox row in
-the same transaction as the CRM mutation, operation audit, terminal approval
-state, and user approval audit. No approved payload, message body, credential,
-or other secret is copied into this table. Dispatch claims a row in a short
-transaction, closes the database connection before any external call, and then
-records delivery or a retryable failure. Startup launches a background drain
-for pending, failed, and stale processing rows so slow providers do not delay
-the dashboard becoming available. Claims older than five minutes may be
-recovered by a new worker.
+When `INTEGRATIONS_MODE=live`, create, booking, and reminder approvals insert
+one reference-only live outbox row in the same transaction as the CRM mutation,
+operation audit, terminal approval state, and user approval audit. This remains
+a live intent if credentials are temporarily missing. No approved payload,
+message body, credential, or other secret is copied into the table. When mode
+is off, approval runs the normal simulated audit only and creates no durable
+intent, so changing configuration later cannot turn a demo action into a real
+calendar event or draft. Rows created before delivery-mode metadata existed are
+migrated to the safe simulated mode.
+
+One process-local worker starts without blocking application startup and is
+stopped and joined during shutdown. It drains every eligible 100-row batch,
+wakes immediately after a committed enqueue, and otherwise checks every five
+seconds. Each claim and state update is a short transaction; no database lock
+is held during a provider call. Failed rows retry with exponential backoff from
+five seconds up to five minutes, and processing claims older than five minutes
+can be recovered. A live row is terminally delivered only when the hook reports
+an explicit real provider success. Disabled or misconfigured integrations and
+simulated, failed, or unknown hook outcomes remain observable and retryable.
 
 Delivery is **at least once**. The stable `pending-change:<id>` key prevents two
 live workers from owning the same current claim and appears in failure audits,
@@ -127,7 +138,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /leads/{id}/duplicates` | → `[{lead, match_on}]` | exact phone/email, fuzzy name |
 | `POST /leads/merge` ⏸ | `{primary_id, duplicate_id}` → merged lead | moves events, deletes duplicate |
 | `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 7 operations' `payload` is their normal request body |
-| `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any external-hook outbox intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. Calendar/email dispatch runs from the durable outbox after commit, so failure never makes the proposal replayable and startup can retry pending, failed, or stale delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim |
+| `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any live external-hook intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. The managed outbox worker wakes after commit and continuously retries pending, failed, or stale live delivery. Off-mode approvals remain forced simulations and are never queued for later live delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim |
 | `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
 | `POST /leads/{id}/process` | `{}` → `{lead, followup_draft}` | extract → score → draft (mock or agent) |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |

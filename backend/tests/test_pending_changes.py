@@ -369,7 +369,11 @@ def test_agent_booking_does_not_run_hook_before_approval(client, monkeypatch):
 
     lead = make_lead(client)
     calls = []
-    monkeypatch.setattr(calendar_router.hooks, "on_tour_booked", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        calendar_router.hooks,
+        "on_tour_booked",
+        lambda *args, **_kwargs: calls.append(args),
+    )
     queued = client.post(
         "/api/appointments",
         json={
@@ -547,7 +551,9 @@ def test_booking_hook_exception_cannot_leave_applied_proposal_pending(client, mo
     monkeypatch.setattr(
         calendar_router.hooks,
         "on_tour_booked",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("calendar unavailable")),
+        lambda *args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("calendar unavailable")
+        ),
     )
 
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
@@ -574,13 +580,15 @@ def test_create_lead_hook_failure_audit_uses_new_lead_id(client, monkeypatch):
     monkeypatch.setattr(
         leads_router.hooks,
         "on_lead_created",
-        lambda *_: (_ for _ in ()).throw(RuntimeError("mail unavailable")),
+        lambda *args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("mail unavailable")
+        ),
     )
 
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
 
     assert approved.status_code == 200
-    failures = _audit_rows(client, "gmail_create_draft (failed)")
+    failures = _audit_rows(client, "lead_created_hook (failed)")
     assert len(failures) == 1
     assert failures[0]["lead_id"] == approved.json()["id"]
 
@@ -597,7 +605,9 @@ def test_reminder_hook_exception_cannot_leave_applied_proposal_pending(client, m
     monkeypatch.setattr(
         misc.hooks,
         "on_reminder_created",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("calendar unavailable")),
+        lambda *args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("calendar unavailable")
+        ),
     )
 
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")

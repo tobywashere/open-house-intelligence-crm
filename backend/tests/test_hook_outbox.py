@@ -39,10 +39,24 @@ def _approved(client, pending_id):
     ]
 
 
+def _wait_until(predicate, *, timeout=3):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    assert predicate(), "condition was not reached before timeout"
+
+
 def _approve_then_crash_before_dispatch(client, monkeypatch, pending_id):
+    from app.integrations import hook_outbox
     from app.routers import pending_changes as pending_router
 
-    async def process_crash(_outbox_id):
+    assert hook_outbox.stop_worker(timeout=2)
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test-key")
+
+    async def process_crash(*_args):
         raise RuntimeError("simulated process crash before hook dispatch")
 
     with monkeypatch.context() as patch:
@@ -57,8 +71,8 @@ def _approve_then_crash_before_dispatch(client, monkeypatch, pending_id):
 
 
 def test_startup_drains_hook_committed_before_dispatch(client, monkeypatch):
-    from app.integrations import hooks
-    from app.main import app, startup
+    from app.integrations import hook_outbox, hooks
+    from app.main import startup
 
     lead, queued = _queue_reminder(client)
     _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
@@ -76,23 +90,25 @@ def test_startup_drains_hook_committed_before_dispatch(client, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        hooks, "on_reminder_created", lambda reminder: calls.append(reminder) or True
+        hooks,
+        "on_reminder_created",
+        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
     )
     startup()
-    app.state.hook_outbox_thread.join(timeout=2)
+    _wait_until(lambda: _outbox_rows()[0]["status"] == "delivered")
 
-    assert not app.state.hook_outbox_thread.is_alive()
     assert len(calls) == 1
     assert calls[0]["lead_id"] == lead["id"]
     delivered = _outbox_rows()[0]
     assert delivered["status"] == "delivered"
     assert delivered["attempts"] == 1
     assert delivered["delivered_at"] is not None
+    assert hook_outbox.stop_worker(timeout=2)
 
 
 def test_startup_recovery_does_not_block_application_startup(client, monkeypatch):
-    from app.integrations import hooks
-    from app.main import app, startup
+    from app.integrations import hook_outbox, hooks
+    from app.main import startup
 
     _, queued = _queue_reminder(client)
     _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
@@ -102,7 +118,7 @@ def test_startup_recovery_does_not_block_application_startup(client, monkeypatch
     def slow_hook(_reminder):
         started.set()
         release.wait(timeout=3)
-        return True
+        return hooks.HookOutcome.LIVE_DELIVERED
 
     monkeypatch.setattr(hooks, "on_reminder_created", slow_hook)
     before = time.monotonic()
@@ -112,9 +128,8 @@ def test_startup_recovery_does_not_block_application_startup(client, monkeypatch
     assert elapsed < 0.5
     assert started.wait(timeout=2)
     release.set()
-    app.state.hook_outbox_thread.join(timeout=2)
-    assert not app.state.hook_outbox_thread.is_alive()
-    assert _outbox_rows()[0]["status"] == "delivered"
+    _wait_until(lambda: _outbox_rows()[0]["status"] == "delivered")
+    assert hook_outbox.stop_worker(timeout=2)
 
 
 def test_failed_hook_stays_retryable_and_retry_does_not_replay_approval(
@@ -123,23 +138,32 @@ def test_failed_hook_stays_retryable_and_retry_does_not_replay_approval(
     from app.integrations import hook_outbox, hooks
 
     _, queued = _queue_reminder(client)
+    assert hook_outbox.stop_worker(timeout=2)
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test-key")
     calls = []
 
     def flaky_hook(reminder):
         calls.append(reminder)
-        return len(calls) > 1
+        return (
+            hooks.HookOutcome.LIVE_DELIVERED
+            if len(calls) > 1
+            else hooks.HookOutcome.FAILED
+        )
 
     monkeypatch.setattr(hooks, "on_reminder_created", flaky_hook)
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
 
     assert approved.status_code == 200, approved.text
+    outbox_id = _outbox_rows()[0]["id"]
+    hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0)
     failed = _outbox_rows()[0]
     assert failed["status"] == "failed"
     assert failed["attempts"] == 1
     assert "reported failure" in failed["last_error"]
     assert len(_approved(client, queued["id"])) == 1
 
-    hook_outbox.drain_hook_outbox()
+    hook_outbox.drain_hook_outbox(retry_base_seconds=0)
 
     delivered = _outbox_rows()[0]
     assert delivered["status"] == "delivered"
@@ -169,7 +193,7 @@ def test_concurrent_drains_claim_one_delivery(client, monkeypatch):
         calls.append(reminder)
         started.set()
         release.wait(timeout=3)
-        return True
+        return hooks.HookOutcome.LIVE_DELIVERED
 
     monkeypatch.setattr(hooks, "on_reminder_created", blocking_hook)
 
@@ -209,7 +233,9 @@ def test_stale_processing_claim_is_recovered(client, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        hooks, "on_reminder_created", lambda reminder: calls.append(reminder) or True
+        hooks,
+        "on_reminder_created",
+        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
     )
     hook_outbox.drain_hook_outbox()
 
@@ -236,7 +262,7 @@ def test_dispatch_does_not_report_delivery_after_claim_is_replaced(
                 "WHERE pending_change_id = ?",
                 (queued["id"],),
             )
-        return True
+        return hooks.HookOutcome.LIVE_DELIVERED
 
     monkeypatch.setattr(hooks, "on_reminder_created", replace_claim)
     delivered = hook_outbox.dispatch_hook(_outbox_rows()[0]["id"])
