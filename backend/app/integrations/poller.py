@@ -102,9 +102,9 @@ def _seen(msg_id: str) -> bool:
 
 
 def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
-    if _seen(msg_id):
-        return 0
     with get_conn() as conn:
+        if _seen_in_conn(conn, msg_id):
+            return 0
         conn.execute(
             "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
             (lead["id"], "email",

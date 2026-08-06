@@ -1,7 +1,10 @@
 import json
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from .conftest import TEST_DB, make_lead
 from app.integrations import poller
@@ -59,6 +62,125 @@ def test_reply_dedupe_second_pass_noop(client, monkeypatch):
     monkeypatch.setattr("app.integrations.poller.cc.execute", fake)
     assert poller.check_inbox()["replies"] == 1
     assert poller.check_inbox()["replies"] == 0   # marker dedupe
+
+
+def test_concurrent_reply_logging_inserts_one_event_and_updates_activity(client, monkeypatch):
+    lead = make_lead(client)
+    client.post("/api/reminders", json={
+        "lead_id": lead["id"],
+        "due_ts": "2026-08-20T09:00:00",
+        "note": "Check for a reply to concurrent test",
+    })
+    with sqlite3.connect(TEST_DB) as conn:
+        conn.execute(
+            "UPDATE leads SET last_activity_at = '2000-01-01T00:00:00' WHERE id = ?",
+            (lead["id"],),
+        )
+        conn.commit()
+
+    async def no_process(_lead_id):
+        return {}
+
+    monkeypatch.setattr(leads_router, "process_lead", no_process)
+    original_seen = poller._seen
+    seen_barrier = threading.Barrier(2)
+
+    def coordinated_seen(msg_id):
+        result = original_seen(msg_id)
+        seen_barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(poller, "_seen", coordinated_seen)
+    start_barrier = threading.Barrier(2)
+
+    def log_reply():
+        start_barrier.wait(timeout=5)
+        return poller._log_reply(
+            lead,
+            "concurrent-reply-1",
+            "Sounds good, let's talk Tuesday",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(log_reply), executor.submit(log_reply)]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert sorted(results) == [0, 1]
+    profile = client.get(f"/api/leads/{lead['id']}").json()
+    reply_events = [
+        event for event in profile["events"]
+        if "[gmail:concurrent-reply-1]" in event["content"]
+    ]
+    assert len(reply_events) == 1
+    assert profile["last_activity_at"] > "2000-01-01T00:00:00"
+    assert not any(
+        reminder["note"].startswith("Check for a reply")
+        for reminder in client.get("/api/reminders").json()
+    )
+    audits = [
+        row for row in client.get("/api/audit?limit=30").json()
+        if row["tool"] == "gmail_reply_detected"
+    ]
+    assert len(audits) == 1
+
+
+def test_reply_audit_failure_rolls_back_event_and_allows_retry(client, monkeypatch):
+    lead = make_lead(client)
+    client.post("/api/reminders", json={
+        "lead_id": lead["id"],
+        "due_ts": "2026-08-20T09:00:00",
+        "note": "Check for a reply to rollback test",
+    })
+    with sqlite3.connect(TEST_DB) as conn:
+        conn.execute(
+            "UPDATE leads SET last_activity_at = '2000-01-01T00:00:00' WHERE id = ?",
+            (lead["id"],),
+        )
+        conn.commit()
+
+    async def no_process(_lead_id):
+        return {}
+
+    monkeypatch.setattr(leads_router, "process_lead", no_process)
+    real_audit = poller.audit
+    fail_reply_audit = True
+
+    def flaky_audit(conn, actor, tool, inputs, result, lead_id=None):
+        nonlocal fail_reply_audit
+        if tool == "gmail_reply_detected" and fail_reply_audit:
+            fail_reply_audit = False
+            raise RuntimeError("audit unavailable")
+        return real_audit(conn, actor, tool, inputs, result, lead_id)
+
+    monkeypatch.setattr(poller, "audit", flaky_audit)
+    args = (lead, "retry-reply-1", "Sounds good, let's talk Tuesday")
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        poller._log_reply(*args)
+
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["last_activity_at"] == "2000-01-01T00:00:00"
+    assert not any("[gmail:retry-reply-1]" in event["content"] for event in unchanged["events"])
+    assert any(
+        reminder["note"].startswith("Check for a reply")
+        for reminder in client.get("/api/reminders").json()
+    )
+    assert not any(
+        row["tool"] == "gmail_reply_detected"
+        for row in client.get("/api/audit?limit=30").json()
+    )
+
+    assert poller._log_reply(*args) == 1
+    profile = client.get(f"/api/leads/{lead['id']}").json()
+    assert len([
+        event for event in profile["events"]
+        if "[gmail:retry-reply-1]" in event["content"]
+    ]) == 1
+    assert profile["last_activity_at"] > "2000-01-01T00:00:00"
+    assert len([
+        row for row in client.get("/api/audit?limit=30").json()
+        if row["tool"] == "gmail_reply_detected"
+    ]) == 1
 
 
 def test_unknown_sender_queues_lead_for_review_without_mutating_crm(client, monkeypatch):
