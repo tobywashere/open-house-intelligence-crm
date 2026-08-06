@@ -222,7 +222,11 @@ def _resolved_create_proposal(resolution: LeadCreateResolution) -> tuple[dict, s
     return payload, summary
 
 
-def _insert_lead(name: str, fields: dict, raw_text: str | None) -> dict:
+def _insert_lead(name: str, fields: dict, raw_text: str | None, *, conn=None) -> dict:
+    if conn is None:
+        with get_conn() as owned_conn:
+            return _insert_lead(name, fields, raw_text, conn=owned_conn)
+
     fields = dict(fields)
     fields.pop("_fallback_used", None)
     if "preferences" in fields:
@@ -230,20 +234,19 @@ def _insert_lead(name: str, fields: dict, raw_text: str | None) -> dict:
     if "missing_fields" in fields:
         fields["missing_fields"] = json.dumps(fields["missing_fields"])
     source = fields.get("source", "note")
-    with get_conn() as conn:
-        cols = ["name", *fields.keys()]
-        cur = conn.execute(
-            f"INSERT INTO leads ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-            [name, *fields.values()],
+    cols = ["name", *fields.keys()]
+    cur = conn.execute(
+        f"INSERT INTO leads ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+        [name, *fields.values()],
+    )
+    lead_id = cur.lastrowid
+    if raw_text:
+        conn.execute(
+            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+            (lead_id, source if source in ("form", "text", "note", "call") else "note", raw_text),
         )
-        lead_id = cur.lastrowid
-        if raw_text:
-            conn.execute(
-                "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-                (lead_id, source if source in ("form", "text", "note", "call") else "note", raw_text),
-            )
-        lead = fetch_lead(conn, lead_id)
-        audit(conn, "agent", "create_lead", {"source": source}, {"lead_id": lead_id}, lead_id)
+    lead = fetch_lead(conn, lead_id)
+    audit(conn, "agent", "create_lead", {"source": source}, {"lead_id": lead_id}, lead_id)
     return lead
 
 
@@ -257,7 +260,7 @@ async def _apply_create_lead(body: LeadIn):
     return lead
 
 
-async def _apply_resolved_create(payload: dict, *, run_hook: bool = True) -> dict:
+def _apply_resolved_create_in_conn(conn, payload: dict) -> dict:
     """Approval path for a queued create_lead: payload already holds
     resolved (and possibly operator-edited) fields from _resolve_create_fields
     — this must NOT re-run extraction, which would silently overwrite any
@@ -272,7 +275,12 @@ async def _apply_resolved_create(payload: dict, *, run_hook: bool = True) -> dic
             payload["budget"] = int(payload["budget"])
         except (TypeError, ValueError):
             del payload["budget"]
-    lead = _insert_lead(name, payload, raw_text)
+    return _insert_lead(name, payload, raw_text, conn=conn)
+
+
+async def _apply_resolved_create(payload: dict, *, run_hook: bool = True) -> dict:
+    with get_conn() as conn:
+        lead = _apply_resolved_create_in_conn(conn, payload)
     if run_hook:
         await run_in_threadpool(hooks.on_lead_created, lead)
     return lead
@@ -316,7 +324,11 @@ def patch_lead(lead_id: int, body: LeadPatch, request: Request = None):
     return _apply_patch_lead(lead_id, body)
 
 
-def _apply_patch_lead(lead_id: int, body: LeadPatch):
+def _apply_patch_lead(lead_id: int, body: LeadPatch, *, conn=None):
+    if conn is None:
+        with get_conn() as owned_conn:
+            return _apply_patch_lead(lead_id, body, conn=owned_conn)
+
     fields = body.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(400, "no fields to update")
@@ -327,24 +339,23 @@ def _apply_patch_lead(lead_id: int, body: LeadPatch):
             400,
             "Use the close endpoint and choose whether the opportunity was won or lost.",
         )
-    with get_conn() as conn:
-        old = fetch_lead(conn, lead_id)
-        if "status" in fields and fields["status"] != old["status"]:
-            new_status = fields["status"]
-            if new_status not in ALLOWED_TRANSITIONS[old["status"]]:
-                raise HTTPException(400, f"invalid status transition {old['status']} -> {new_status}")
-        sets = ", ".join(f"{k} = ?" for k in fields)
+    old = fetch_lead(conn, lead_id)
+    if "status" in fields and fields["status"] != old["status"]:
+        new_status = fields["status"]
+        if new_status not in ALLOWED_TRANSITIONS[old["status"]]:
+            raise HTTPException(400, f"invalid status transition {old['status']} -> {new_status}")
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(
+        f"UPDATE leads SET {sets}, last_activity_at = ({NOW}) WHERE id = ?",
+        [*fields.values(), lead_id],
+    )
+    if "status" in fields and fields["status"] != old["status"]:
         conn.execute(
-            f"UPDATE leads SET {sets}, last_activity_at = ({NOW}) WHERE id = ?",
-            [*fields.values(), lead_id],
+            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+            (lead_id, "status_change", f"{old['status']} → {fields['status']}"),
         )
-        if "status" in fields and fields["status"] != old["status"]:
-            conn.execute(
-                "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-                (lead_id, "status_change", f"{old['status']} → {fields['status']}"),
-            )
-        audit(conn, "agent", "update_lead", fields, {}, lead_id)
-        return fetch_lead(conn, lead_id)
+    audit(conn, "agent", "update_lead", fields, {}, lead_id)
+    return fetch_lead(conn, lead_id)
 
 
 @router.post("/{lead_id}/close")
@@ -356,38 +367,41 @@ def close_lead(lead_id: int, body: CloseLeadIn, request: Request = None):
     return _apply_close_lead(lead_id, body)
 
 
-def _apply_close_lead(lead_id: int, body: CloseLeadIn):
+def _apply_close_lead(lead_id: int, body: CloseLeadIn, *, conn=None):
+    if conn is None:
+        with get_conn() as owned_conn:
+            return _apply_close_lead(lead_id, body, conn=owned_conn)
+
     reason = body.reason.strip() if body.reason else None
     reason = reason or None
-    with get_conn() as conn:
-        old = fetch_lead(conn, lead_id)
-        if old["status"] == "closed":
-            raise HTTPException(400, "This opportunity is already closed.")
-        if "closed" not in ALLOWED_TRANSITIONS[old["status"]]:
-            raise HTTPException(
-                400, f"invalid status transition {old['status']} -> closed"
-            )
-        conn.execute(
-            f"UPDATE leads SET status = 'closed', outcome = ?, close_reason = ?, "
-            f"last_activity_at = ({NOW}) WHERE id = ?",
-            (body.outcome, reason, lead_id),
+    old = fetch_lead(conn, lead_id)
+    if old["status"] == "closed":
+        raise HTTPException(400, "This opportunity is already closed.")
+    if "closed" not in ALLOWED_TRANSITIONS[old["status"]]:
+        raise HTTPException(
+            400, f"invalid status transition {old['status']} -> closed"
         )
-        content = f"{old['status']} → closed ({body.outcome})"
-        if reason:
-            content += f": {reason}"
-        conn.execute(
-            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-            (lead_id, "status_change", content),
-        )
-        audit(
-            conn,
-            "agent",
-            "close_lead",
-            {"outcome": body.outcome, "reason": reason},
-            {},
-            lead_id,
-        )
-        return fetch_lead(conn, lead_id)
+    conn.execute(
+        f"UPDATE leads SET status = 'closed', outcome = ?, close_reason = ?, "
+        f"last_activity_at = ({NOW}) WHERE id = ?",
+        (body.outcome, reason, lead_id),
+    )
+    content = f"{old['status']} → closed ({body.outcome})"
+    if reason:
+        content += f": {reason}"
+    conn.execute(
+        "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+        (lead_id, "status_change", content),
+    )
+    audit(
+        conn,
+        "agent",
+        "close_lead",
+        {"outcome": body.outcome, "reason": reason},
+        {},
+        lead_id,
+    )
+    return fetch_lead(conn, lead_id)
 
 
 @router.post("/{lead_id}/events")
@@ -399,17 +413,22 @@ def add_event(lead_id: int, body: EventIn, request: Request = None):
     return _apply_add_event(lead_id, body, actor="user")
 
 
-def _apply_add_event(lead_id: int, body: EventIn, actor: str = "agent") -> dict:
-    with get_conn() as conn:
-        fetch_lead(conn, lead_id)
-        cur = conn.execute(
-            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-            (lead_id, body.type, body.content),
-        )
-        conn.execute(f"UPDATE leads SET last_activity_at = ({NOW}) WHERE id = ?", (lead_id,))
-        audit(conn, actor, "add_event", {"type": body.type, "content": body.content},
-              {"event_id": cur.lastrowid}, lead_id)
-        return dict(conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone())
+def _apply_add_event(
+    lead_id: int, body: EventIn, actor: str = "agent", *, conn=None
+) -> dict:
+    if conn is None:
+        with get_conn() as owned_conn:
+            return _apply_add_event(lead_id, body, actor, conn=owned_conn)
+
+    fetch_lead(conn, lead_id)
+    cur = conn.execute(
+        "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+        (lead_id, body.type, body.content),
+    )
+    conn.execute(f"UPDATE leads SET last_activity_at = ({NOW}) WHERE id = ?", (lead_id,))
+    audit(conn, actor, "add_event", {"type": body.type, "content": body.content},
+          {"event_id": cur.lastrowid}, lead_id)
+    return dict(conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone())
 
 
 @router.get("/{lead_id}/duplicates")
@@ -434,38 +453,41 @@ def merge_leads(body: MergeIn, request: Request = None):
     return _apply_merge_leads(body)
 
 
-def _apply_merge_leads(body: MergeIn):
-    with get_conn() as conn:
-        primary = fetch_lead(conn, body.primary_id)
-        dup = fetch_lead(conn, body.duplicate_id)
-        # duplicate fills primary's blanks; primary wins conflicts
-        fills = {k: dup[k] for k in
-                 ("phone", "email", "budget", "area", "timeline", "intent")
-                 if not primary.get(k) and dup.get(k)}
-        if fills:
-            sets = ", ".join(f"{k} = ?" for k in fills)
-            conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
-                         [*fills.values(), body.primary_id])
-        conn.execute("UPDATE events SET lead_id = ? WHERE lead_id = ?",
-                     (body.primary_id, body.duplicate_id))
-        conn.execute("UPDATE appointments SET lead_id = ? WHERE lead_id = ?",
-                     (body.primary_id, body.duplicate_id))
-        conn.execute("UPDATE reminders SET lead_id = ? WHERE lead_id = ?",
-                     (body.primary_id, body.duplicate_id))
-        conn.execute("UPDATE audit_log SET lead_id = ? WHERE lead_id = ?",
-                     (body.primary_id, body.duplicate_id))
-        conn.execute("DELETE FROM leads WHERE id = ?", (body.duplicate_id,))
-        conn.execute(
-            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-            (body.primary_id, "merge",
-             f"Merged duplicate '{dup['name']}' (#{body.duplicate_id}) into this profile"),
-        )
-        conn.execute(f"UPDATE leads SET last_activity_at = ({NOW}) WHERE id = ?",
-                     (body.primary_id,))
-        audit(conn, "agent", "merge_leads",
-              {"primary_id": body.primary_id, "duplicate_id": body.duplicate_id},
-              {"filled": list(fills)}, body.primary_id)
-        return fetch_lead(conn, body.primary_id)
+def _apply_merge_leads(body: MergeIn, *, conn=None):
+    if conn is None:
+        with get_conn() as owned_conn:
+            return _apply_merge_leads(body, conn=owned_conn)
+
+    primary = fetch_lead(conn, body.primary_id)
+    dup = fetch_lead(conn, body.duplicate_id)
+    # duplicate fills primary's blanks; primary wins conflicts
+    fills = {k: dup[k] for k in
+             ("phone", "email", "budget", "area", "timeline", "intent")
+             if not primary.get(k) and dup.get(k)}
+    if fills:
+        sets = ", ".join(f"{k} = ?" for k in fills)
+        conn.execute(f"UPDATE leads SET {sets} WHERE id = ?",
+                     [*fills.values(), body.primary_id])
+    conn.execute("UPDATE events SET lead_id = ? WHERE lead_id = ?",
+                 (body.primary_id, body.duplicate_id))
+    conn.execute("UPDATE appointments SET lead_id = ? WHERE lead_id = ?",
+                 (body.primary_id, body.duplicate_id))
+    conn.execute("UPDATE reminders SET lead_id = ? WHERE lead_id = ?",
+                 (body.primary_id, body.duplicate_id))
+    conn.execute("UPDATE audit_log SET lead_id = ? WHERE lead_id = ?",
+                 (body.primary_id, body.duplicate_id))
+    conn.execute("DELETE FROM leads WHERE id = ?", (body.duplicate_id,))
+    conn.execute(
+        "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+        (body.primary_id, "merge",
+         f"Merged duplicate '{dup['name']}' (#{body.duplicate_id}) into this profile"),
+    )
+    conn.execute(f"UPDATE leads SET last_activity_at = ({NOW}) WHERE id = ?",
+                 (body.primary_id,))
+    audit(conn, "agent", "merge_leads",
+          {"primary_id": body.primary_id, "duplicate_id": body.duplicate_id},
+          {"filled": list(fills)}, body.primary_id)
+    return fetch_lead(conn, body.primary_id)
 
 
 @router.post("/{lead_id}/process")
@@ -549,18 +571,21 @@ def delete_lead(lead_id: int, request: Request = None, body: LeadDelete = None):
     return _apply_delete_lead(lead_id, body)
 
 
-def _apply_delete_lead(lead_id: int, body: LeadDelete = None):
+def _apply_delete_lead(lead_id: int, body: LeadDelete = None, *, conn=None):
     """Delete a lead and its linked rows. events/appointments/reminders have
     NOT NULL lead_id columns, so they are removed with the lead; audit_log rows
     are kept (lead_id set NULL) so the paper trail survives the delete."""
-    with get_conn() as conn:
-        old = fetch_lead(conn, lead_id)
-        for table in ("events", "appointments", "reminders"):
-            conn.execute(f"DELETE FROM {table} WHERE lead_id = ?", (lead_id,))
-        conn.execute("UPDATE audit_log SET lead_id = NULL WHERE lead_id = ?", (lead_id,))
-        conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
-        # lead_id=None: the row is gone, an FK reference to it would be rejected
-        audit(conn, "agent", "delete_lead",
-              {"lead_id": lead_id, "reason": (body.reason if body else "")},
-              {"name": old.get("name")}, None)
+    if conn is None:
+        with get_conn() as owned_conn:
+            return _apply_delete_lead(lead_id, body, conn=owned_conn)
+
+    old = fetch_lead(conn, lead_id)
+    for table in ("events", "appointments", "reminders"):
+        conn.execute(f"DELETE FROM {table} WHERE lead_id = ?", (lead_id,))
+    conn.execute("UPDATE audit_log SET lead_id = NULL WHERE lead_id = ?", (lead_id,))
+    conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+    # lead_id=None: the row is gone, an FK reference to it would be rejected
+    audit(conn, "agent", "delete_lead",
+          {"lead_id": lead_id, "reason": (body.reason if body else "")},
+          {"name": old.get("name")}, None)
     return {"deleted": True, "lead_id": lead_id, "name": old.get("name")}

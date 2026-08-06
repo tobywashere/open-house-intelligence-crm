@@ -7,7 +7,6 @@ the direct (dashboard) path uses, so approved and directly-applied writes go
 through identical logic — with one exception: create_lead's payload is
 already-resolved fields (see leads.py's _resolve_create_fields), so it goes
 through _apply_resolved_create instead of re-running extraction."""
-import inspect
 import json
 
 from fastapi import APIRouter, HTTPException
@@ -73,51 +72,44 @@ def _parsed(row: dict) -> dict:
     return row
 
 
-def _claim_pending(pending_id: int) -> dict:
-    """Atomically reserve one proposal for exactly one approval worker."""
-    with get_conn() as conn:
-        row = _fetch(conn, pending_id)
-        if row["status"] != "pending":
-            raise HTTPException(
-                400, f"pending change {pending_id} is already {row['status']}"
-            )
-        claimed = conn.execute(
-            "UPDATE pending_changes SET status = 'applying' "
-            "WHERE id = ? AND status = 'pending'",
-            (pending_id,),
+def _claim_pending(conn, pending_id: int) -> dict:
+    """Reserve a proposal inside the approval's caller-owned transaction."""
+    row = _fetch(conn, pending_id)
+    if row["status"] != "pending":
+        raise HTTPException(
+            400, f"pending change {pending_id} is already {row['status']}"
         )
-        if claimed.rowcount != 1:
-            raise HTTPException(400, f"pending change {pending_id} is already being applied")
-        return row
+    claimed = conn.execute(
+        "UPDATE pending_changes SET status = 'applying' "
+        "WHERE id = ? AND status = 'pending'",
+        (pending_id,),
+    )
+    if claimed.rowcount != 1:
+        raise HTTPException(400, f"pending change {pending_id} is already being applied")
+    return row
 
 
-def _release_claim(pending_id: int) -> None:
-    """Make a pre-mutation validation/conflict failure editable and retryable."""
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE pending_changes SET status = 'pending' "
-            "WHERE id = ? AND status = 'applying'",
-            (pending_id,),
-        )
-
-
-def _finish_claim(pending_id: int, row: dict, result: dict) -> None:
-    with get_conn() as conn:
-        finished = conn.execute(
-            f"UPDATE pending_changes SET status = 'approved', result = ?, "
-            f"decided_at = ({NOW}) WHERE id = ? AND status = 'applying'",
-            (json.dumps(result, default=str), pending_id),
-        )
-        if finished.rowcount != 1:
-            raise HTTPException(409, f"pending change {pending_id} lost its approval claim")
-        audit(
-            conn,
-            "user",
-            "approve_pending_change",
-            {"pending_id": pending_id},
-            {"operation": row["operation"]},
-            row["lead_id"],
-        )
+def _finish_claim(conn, pending_id: int, row: dict, result: dict) -> None:
+    finished = conn.execute(
+        f"UPDATE pending_changes SET status = 'approved', result = ?, "
+        f"decided_at = ({NOW}) WHERE id = ? AND status = 'applying'",
+        (json.dumps(result, default=str), pending_id),
+    )
+    if finished.rowcount != 1:
+        raise HTTPException(409, f"pending change {pending_id} lost its approval claim")
+    approval_lead_id = (
+        result.get("id")
+        if row["operation"] == "create_lead"
+        else None if row["operation"] == "delete_lead" else row["lead_id"]
+    )
+    audit(
+        conn,
+        "user",
+        "approve_pending_change",
+        {"pending_id": pending_id},
+        {"operation": row["operation"]},
+        approval_lead_id,
+    )
 
 
 def _audit_post_hook_failure(row: dict, result: dict, exc: Exception) -> None:
@@ -172,41 +164,31 @@ def list_pending(status: str = "pending"):
 
 @router.post("/{pending_id}/approve")
 async def approve_pending(pending_id: int, body: ApproveIn = None):
-    row = _claim_pending(pending_id)
-    row["id"] = pending_id
-    mutation_committed = False
     try:
-        payload = {
-            **json.loads(row["payload"]),
-            **((body.fields if body else None) or {}),
-        }
+        with get_conn() as conn:
+            row = _claim_pending(conn, pending_id)
+            row["id"] = pending_id
+            payload = {
+                **json.loads(row["payload"]),
+                **((body.fields if body else None) or {}),
+            }
 
-        if row["operation"] == "create_lead":
-            result = await leads_router._apply_resolved_create(payload, run_hook=False)
-        else:
-            model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
-            parsed_body = model_cls(**payload)
-            kwargs = (
-                {"run_hook": False}
-                if row["operation"] in {"book_appointment", "schedule_followup"}
-                else {}
-            )
-            call = (
-                apply_fn(row["lead_id"], parsed_body, **kwargs)
-                if needs_lead_id
-                else apply_fn(parsed_body, **kwargs)
-            )
-            result = await call if inspect.isawaitable(call) else call
-        mutation_committed = True
-        _finish_claim(pending_id, row, result)
+            if row["operation"] == "create_lead":
+                result = leads_router._apply_resolved_create_in_conn(conn, payload)
+            else:
+                model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
+                parsed_body = model_cls(**payload)
+                kwargs = {"conn": conn}
+                if row["operation"] in {"book_appointment", "schedule_followup"}:
+                    kwargs["run_hook"] = False
+                result = (
+                    apply_fn(row["lead_id"], parsed_body, **kwargs)
+                    if needs_lead_id
+                    else apply_fn(parsed_body, **kwargs)
+                )
+            _finish_claim(conn, pending_id, row, result)
     except ValidationError as exc:
-        if not mutation_committed:
-            _release_claim(pending_id)
         raise HTTPException(422, detail=json.loads(exc.json(include_url=False))) from None
-    except BaseException:
-        if not mutation_committed:
-            _release_claim(pending_id)
-        raise
 
     await _run_post_approval_hook(row, result)
     return result

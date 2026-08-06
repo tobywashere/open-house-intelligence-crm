@@ -58,23 +58,33 @@ def create_reminder(body: ReminderIn, request: Request = None):
 
 
 def _apply_create_reminder(
-    body: ReminderIn, actor: str = "agent", *, run_hook: bool = True
+    body: ReminderIn, actor: str = "agent", *, run_hook: bool = True, conn=None
 ) -> dict:
-    with get_conn() as conn:
-        fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
-        cur = conn.execute(
-            "INSERT INTO reminders (lead_id, due_ts, note) VALUES (?,?,?)",
-            (body.lead_id, body.due_ts, body.note),
-        )
-        audit(conn, actor, "schedule_followup", body.model_dump(), {}, body.lead_id)
-        reminder = dict(conn.execute(
-            "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
+    if conn is not None and run_hook:
+        raise ValueError("caller-owned reminder transactions cannot run external hooks")
+
+    if conn is None:
+        with get_conn() as owned_conn:
+            reminder = _create_reminder_in_conn(owned_conn, body, actor)
+    else:
+        reminder = _create_reminder_in_conn(conn, body, actor)
     # create_reminder is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the
     # event loop — no run_in_threadpool wrapping needed here.
     if run_hook:
         hooks.on_reminder_created(reminder)
     return reminder
+
+
+def _create_reminder_in_conn(conn, body: ReminderIn, actor: str) -> dict:
+    fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
+    cur = conn.execute(
+        "INSERT INTO reminders (lead_id, due_ts, note) VALUES (?,?,?)",
+        (body.lead_id, body.due_ts, body.note),
+    )
+    audit(conn, actor, "schedule_followup", body.model_dump(), {}, body.lead_id)
+    return dict(conn.execute(
+        "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
 
 
 @router.get("/reminders")

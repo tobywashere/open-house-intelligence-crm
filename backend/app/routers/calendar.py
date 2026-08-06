@@ -97,31 +97,42 @@ def _validate_appointment(conn, body: AppointmentIn) -> dict:
 
 
 def _apply_book_appointment(
-    body: AppointmentIn, actor: str = "agent", *, run_hook: bool = True
+    body: AppointmentIn, actor: str = "agent", *, run_hook: bool = True, conn=None
 ) -> dict:
-    with get_conn() as conn:
-        lead = _validate_appointment(conn, body)
-        cur = conn.execute(
-            "INSERT INTO appointments (lead_id, start_ts, end_ts, location) VALUES (?,?,?,?)",
-            (body.lead_id, body.start_ts, body.end_ts, body.location),
-        )
-        conn.execute(
-            f"UPDATE leads SET status = 'meeting_booked', last_activity_at = ({NOW}) "
-            "WHERE id = ?", (body.lead_id,))
-        conn.execute(
-            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-            (body.lead_id, "status_change", f"Meeting booked for {body.start_ts}"),
-        )
-        appt = dict(conn.execute(
-            "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
-        audit(conn, actor, "book_appointment", body.model_dump(),
-              {"appointment_id": appt["id"]}, body.lead_id)
+    if conn is not None and run_hook:
+        raise ValueError("caller-owned booking transactions cannot run external hooks")
+
+    if conn is None:
+        with get_conn() as owned_conn:
+            lead, appt = _book_appointment_in_conn(owned_conn, body, actor)
+    else:
+        lead, appt = _book_appointment_in_conn(conn, body, actor)
     # book_appointment is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the
     # event loop — no run_in_threadpool wrapping needed here.
     if run_hook:
         hooks.on_tour_booked(lead, appt)
     return appt
+
+
+def _book_appointment_in_conn(conn, body: AppointmentIn, actor: str) -> tuple[dict, dict]:
+    lead = _validate_appointment(conn, body)
+    cur = conn.execute(
+        "INSERT INTO appointments (lead_id, start_ts, end_ts, location) VALUES (?,?,?,?)",
+        (body.lead_id, body.start_ts, body.end_ts, body.location),
+    )
+    conn.execute(
+        f"UPDATE leads SET status = 'meeting_booked', last_activity_at = ({NOW}) "
+        "WHERE id = ?", (body.lead_id,))
+    conn.execute(
+        "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+        (body.lead_id, "status_change", f"Meeting booked for {body.start_ts}"),
+    )
+    appt = dict(conn.execute(
+        "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
+    audit(conn, actor, "book_appointment", body.model_dump(),
+          {"appointment_id": appt["id"]}, body.lead_id)
+    return lead, appt
 
 
 @router.get("/appointments/{appt_id}/ics")

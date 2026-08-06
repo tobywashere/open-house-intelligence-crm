@@ -3,6 +3,8 @@ instead of applying; the dashboard's untagged calls must be unaffected."""
 import asyncio
 import threading
 
+import pytest
+
 from tests.conftest import make_lead
 
 AGENT = {"X-Actor": "agent"}
@@ -16,6 +18,110 @@ def _pending(client, status="pending"):
 
 def _audit_rows(client, tool):
     return [row for row in client.get("/api/audit?limit=100").json() if row["tool"] == tool]
+
+
+def _business_snapshot():
+    """All state an approval mutation is allowed to change, excluding its queue row."""
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        return {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")]
+            for table in ("leads", "events", "appointments", "reminders", "audit_log")
+        }
+
+
+def _queue_atomicity_case(client, operation):
+    if operation == "create_lead":
+        queued = client.post(
+            "/api/leads",
+            json={"name": "Atomic Create", "source": "form"},
+            headers=AGENT,
+        )
+    elif operation == "merge_leads":
+        primary = make_lead(client, name="Atomic Primary", email="primary@example.com")
+        duplicate = make_lead(client, name="Atomic Duplicate", email="duplicate@example.com")
+        client.post(
+            f"/api/leads/{duplicate['id']}/events",
+            json={"type": "note", "content": "Move this note on merge"},
+        )
+        client.post(
+            "/api/reminders",
+            json={
+                "lead_id": duplicate["id"],
+                "due_ts": "2026-08-18T09:00:00",
+                "note": "Move this reminder on merge",
+            },
+        )
+        queued = client.post(
+            "/api/leads/merge",
+            json={"primary_id": primary["id"], "duplicate_id": duplicate["id"]},
+            headers=AGENT,
+        )
+    else:
+        lead = make_lead(client, name=f"Atomic {operation}")
+        if operation == "update_lead":
+            queued = client.patch(
+                f"/api/leads/{lead['id']}",
+                json={"area": "Kirkland"},
+                headers=AGENT,
+            )
+        elif operation == "add_event":
+            queued = client.post(
+                f"/api/leads/{lead['id']}/events",
+                json={"type": "note", "content": "Atomic note"},
+                headers=AGENT,
+            )
+        elif operation == "book_appointment":
+            queued = client.post(
+                "/api/appointments",
+                json={
+                    "lead_id": lead["id"],
+                    "start_ts": "2026-08-18T10:00:00",
+                    "end_ts": "2026-08-18T10:45:00",
+                },
+                headers=AGENT,
+            )
+        elif operation == "schedule_followup":
+            queued = client.post(
+                "/api/reminders",
+                json={
+                    "lead_id": lead["id"],
+                    "due_ts": "2026-08-18T11:00:00",
+                    "note": "Atomic reminder",
+                },
+                headers=AGENT,
+            )
+        elif operation == "close_lead":
+            queued = client.post(
+                f"/api/leads/{lead['id']}/close",
+                json={"outcome": "won", "reason": "Atomic close"},
+                headers=AGENT,
+            )
+        elif operation == "delete_lead":
+            client.post(
+                f"/api/leads/{lead['id']}/events",
+                json={"type": "note", "content": "Must survive rollback"},
+            )
+            client.post(
+                "/api/reminders",
+                json={
+                    "lead_id": lead["id"],
+                    "due_ts": "2026-08-18T12:00:00",
+                    "note": "Must survive rollback",
+                },
+            )
+            queued = client.request(
+                "DELETE",
+                f"/api/leads/{lead['id']}",
+                json={"reason": "Atomic delete"},
+                headers=AGENT,
+            )
+        else:  # pragma: no cover - parameter list below is the supported catalog
+            raise AssertionError(f"unsupported test operation {operation}")
+    assert queued.status_code == 202, queued.text
+    assert queued.json()["operation"] == operation
+    return queued.json()
 
 
 def test_dashboard_create_is_unaffected(client):
@@ -494,3 +600,75 @@ def test_reminder_hook_exception_cannot_leave_applied_proposal_pending(client, m
     assert len(failures) == 1
     assert failures[0]["actor"] == "user"
     assert failures[0]["lead_id"] == lead["id"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "tool"),
+    [
+        ("create_lead", "create_lead"),
+        ("update_lead", "update_lead"),
+        ("add_event", "add_event"),
+        ("book_appointment", "book_appointment"),
+        ("schedule_followup", "schedule_followup"),
+        ("close_lead", "close_lead"),
+        ("merge_leads", "merge_leads"),
+        ("delete_lead", "delete_lead"),
+    ],
+)
+def test_crash_after_business_mutation_rolls_back_every_approval_operation(
+    client, monkeypatch, operation, tool
+):
+    """A failure between mutation and finalization must leave no partial write.
+
+    Removing the caller-owned transaction from any apply helper makes this
+    fail for that operation because its CRM rows and agent audit survive.
+    """
+    from app.routers import pending_changes as pending_router
+
+    queued = _queue_atomicity_case(client, operation)
+    before = _business_snapshot()
+    operation_audits = len(_audit_rows(client, tool))
+    approval_audits = len(_audit_rows(client, "approve_pending_change"))
+
+    def crash_before_finalization(*_args, **_kwargs):
+        raise RuntimeError("simulated crash before approval finalization")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pending_router, "_finish_claim", crash_before_finalization)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert _business_snapshot() == before
+    assert [item["id"] for item in _pending(client)] == [queued["id"]]
+    assert _pending(client)[0]["result"] is None
+
+    retried = client.post(f"/api/pending-changes/{queued['id']}/approve")
+    assert retried.status_code == 200, retried.text
+    assert len(_audit_rows(client, tool)) == operation_audits + 1
+    assert len(_audit_rows(client, "approve_pending_change")) == approval_audits + 1
+    assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
+
+
+def test_crash_after_claim_rolls_back_claim_and_allows_one_retry(client, monkeypatch):
+    from app.routers import pending_changes as pending_router
+
+    queued = _queue_atomicity_case(client, "schedule_followup")
+    before = _business_snapshot()
+
+    def crash_after_claim(_operation):
+        raise RuntimeError("simulated crash after claim")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pending_router, "_operation", crash_after_claim)
+        with pytest.raises(RuntimeError, match="simulated crash after claim"):
+            client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert _business_snapshot() == before
+    assert [item["id"] for item in _pending(client)] == [queued["id"]]
+
+    retried = client.post(f"/api/pending-changes/{queued['id']}/approve")
+    assert retried.status_code == 200, retried.text
+    second_retry = client.post(f"/api/pending-changes/{queued['id']}/approve")
+    assert second_retry.status_code == 400
+    assert len(_audit_rows(client, "schedule_followup")) == 1
+    assert len(_audit_rows(client, "approve_pending_change")) == 1
