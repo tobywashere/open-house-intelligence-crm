@@ -59,12 +59,18 @@ Merging keeps the primary row, moves the duplicate's events over, and deletes th
 `id, ts, actor (agent|user|cron), tool, input JSON, output JSON, lead_id nullable`
 
 ### `pending_changes` — agent-initiated CRM writes awaiting operator approval
-(additive, recorded 2026-07-28) `id, operation (create_lead|update_lead|add_event|book_appointment|schedule_followup|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, status (pending|applying|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`. `applying` is an internal atomic-claim state: it prevents concurrent approval workers from replaying the same proposal and is restored to `pending` when validation or conflict checks fail before mutation.
-Rows are created only when one of the 8 reviewed CRM write endpoints is
-called with header `X-Actor: agent` (sent by `skills/crm-db-operations/tools.py`
-on every call — the only thing that executes those tools). Calls without that
-header (the dashboard) are unaffected and apply immediately, exactly as
-before. See §2/§3 below and `backend/app/approvals.py`.
+`id, operation (create_lead|update_lead|add_event|book_appointment|schedule_followup|close_lead|delete_lead|merge_leads), lead_id nullable, payload JSON, summary TEXT, status (pending|applying|approved|denied), result JSON nullable, deny_reason nullable, created_at, decided_at nullable`.
+
+An agent proposal for a lead create or update, note, booking, reminder, close,
+merge, or deletion is a proposal, not a write. `applying` is an internal
+atomic-claim state that prevents two approval workers from replaying the same
+proposal. If validation or a conflict check fails before mutation, the row
+returns to `pending` for correction, retry, or denial.
+
+Rows are created only when one of the reviewed CRM write endpoints is called
+with header `X-Actor: agent`, sent by `skills/crm-db-operations/tools.py`.
+Dashboard actions without that header continue to apply immediately. See §2,
+§3, and `backend/app/approvals.py`.
 
 ### `chat_messages`
 `id, session_id, role (user|agent), content, created_at`
@@ -116,9 +122,10 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /reminders?due=1` | → `[reminder + lead_name]` | dashboard polls this for the reminder banner |
 | `PATCH /reminders/{id}` | → reminder | marks done |
 | `GET /audit?limit=50` | → `[audit rows]` | newest first |
-| `GET /metrics` | → dashboard tile numbers | see below |
-| `GET /health` | → `{ok, agent_mode, agent_connected, agent_status}` | structured mock/enabled/verified/disabled/auth/unreachable/failed readiness |
-| `POST /health/agent-check` | → `agent_status` | one explicit harmless completion check |
+| `GET /metrics` | → dashboard tile numbers | ordinary reads do not audit; an `X-Actor: agent` request audits `generate_dashboard_insights`, including optional `probe_nonce` |
+| `GET /health` | → `{ok, agent_mode, agent_connected, agent_status}` | status is one of `mock`, `endpoint_enabled`, `chat_verified`, `crm_verified`, `degraded`, `endpoint_disabled`, `unauthorized`, `unreachable`, or `failed` |
+| `POST /health/agent-check` | → `agent_status` | sends one harmless completion; success proves chat, not CRM tool access |
+| `POST /health/crm-check` | → `agent_status` | asks the selected OpenClaw agent for read-only `generate_dashboard_insights` with a fresh nonce; only a new agent-tagged `/metrics` audit row with that nonce yields `crm_verified`; mock mode returns 409 |
 | `POST /demo/advance-time` | `{days}` → `{neglected: [lead]}` | backdates activity, runs neglect check |
 | `GET /briefing?date=YYYY-MM-DD` | → canonical CRM briefing JSON | always derives schedule, lead facts, and due actions from current rows; stored agent advice is optional |
 | `POST /briefing` | `{date, generated_at?, meeting_briefs:[{lead_id,prepare,recommendation}]}` → validated advice | factual replacement fields are ignored; unknown lead IDs are rejected |
@@ -144,6 +151,11 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
   "agent_mode": "mock", "cloud_llm_requests": 0
 }
 ```
+When the request has `X-Actor: agent`, `/metrics` creates one
+`audit_log` row with `actor: "agent"`, tool `generate_dashboard_insights`, and
+the request's `probe_nonce` when supplied. This narrowly scoped audited read is
+the evidence used by `POST /health/crm-check`; ordinary dashboard metrics reads
+remain read-only and unaudited.
 `avg_response_minutes` is `float | null` — the mean minutes from a lead's
 `created_at` to its first event's `created_at`, over leads with ≥1 event;
 `null` when no lead qualifies (don't assume `0`). `cloud_llm_requests` counts
@@ -184,10 +196,10 @@ an `audit_log` row for outbound comms. Note for readers of the dashboard:
 `audit_log` table in §1) — the dashboard's "agent activity" stream is
 really an **audit activity** stream covering all three, not agent-only.
 
-**Pending-approval gate (additive, recorded 2026-07-28):** `create_lead`,
-`update_lead`, `add_note`, `book_appointment`, `schedule_followup`,
-`close_lead`, `delete_lead`, and `merge_leads` — the 8 tools
-below marked ⏸ — no longer write directly. Because `tools.py` sends
+**Pending-approval gate:** `create_lead`, `update_lead`, `add_note`,
+`book_appointment`, `schedule_followup`, `close_lead`, `delete_lead`, and
+`merge_leads` — the eight tools below marked ⏸ — no longer write directly.
+Because `tools.py` sends
 `X-Actor: agent` on every call (see §2), calling one of these queues a
 `pending_changes` row (not itself audited — nothing was applied yet) and
 returns `{pending: true, ...}` instead of applying; a human then approves or
@@ -225,8 +237,7 @@ before.
 | `get_insights(date)` | `GET /insights?date=` — returns the stored CRM insight inputs for the requested day |
 | `get_summary(date)` | `GET /summary?date=` — returns the persisted daily market summary |
 | `post_summary(payload)` | `POST /summary` — validates and persists a source-backed daily market summary |
-| `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28); agent-invoked precise path — called when the model itself decides a question needs domain knowledge (market/tax/financing/neighborhood); the same retrieval also runs as best-effort auto-injection inside `POST /chat`, see that row's note |
-| `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` (additive, recorded 2026-07-28) — agent-invoked path onto the same BM25 retrieval `POST /chat` uses for auto-injection (see §2); this is the precise path — the model decides when domain knowledge is actually needed, rather than a lexical gate guessing from the raw message |
+| `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` — precise agent-invoked access to the same local BM25 retrieval that `POST /chat` may use as best-effort grounding |
 
 Curl examples for each live in [`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
 
