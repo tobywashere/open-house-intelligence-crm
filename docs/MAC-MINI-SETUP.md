@@ -61,6 +61,7 @@ Keep that Terminal open. Open a second Terminal, return to the project folder,
 and run:
 
 ```bash
+cd ~/Documents/open-intelligence-crm
 python3 scripts/doctor.py --live-agent --live-crm
 ```
 
@@ -86,6 +87,11 @@ the CRM tool.
    details, then cancel. Confirm no lead was added.
 4. Open **Daily summary**. Appointments and follow-ups must match the CRM. A
    missing market summary must stay unavailable, not turn into sample news.
+
+Only **CRM capability: crm_verified** proves that the agent made an audited
+CRM tool call. If the app uses a **deterministic fallback**, it labels the
+result for review. Market items require a source URL, publication date, short
+summary, and geographic area; incomplete information stays unavailable.
 
 ## 5. Voice notes
 

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -22,6 +23,7 @@ SetupOptions = setup_openclaw.SetupOptions
 build_setup_actions = setup_openclaw.build_setup_actions
 configure_openclaw = setup_openclaw.configure_openclaw
 sync_skills = setup_openclaw.sync_skills
+parse_args = setup_openclaw._parse_args
 
 
 def make_options(tmp_path, *, dry_run=False, bind_discord=None):
@@ -363,6 +365,91 @@ def test_output_redacts_api_token(fake_cli, tmp_path, monkeypatch):
 
     assert "secret-value" not in result.render()
     assert "<redacted>" in result.render()
+
+
+def test_setup_defaults_load_repo_env_port_and_token_without_leaking(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text(
+        "PORT=9123\nOHI_API_TOKEN=secret-from-dotenv\nAGENT_MODE=openclaw\n"
+    )
+    monkeypatch.delenv("CRM_API_URL", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    monkeypatch.delenv("OHI_API_TOKEN", raising=False)
+
+    try:
+        options = parse_args(
+            ["--workspace", str(tmp_path / "workspace")], repo=tmp_path
+        )
+        cli = FakeCLI()
+        result = configure_openclaw(options, cli=cli)
+
+        assert options.crm_api_url == "http://localhost:9123/api"
+        token_calls = [
+            call for call in cli.mutating_calls
+            if 'skills.entries["crm-db-operations"].env.OHI_API_TOKEN' in " ".join(call)
+        ]
+        assert len(token_calls) == 1
+        assert json.loads(token_calls[0][-2]) == "secret-from-dotenv"
+        assert "secret-from-dotenv" not in result.render()
+        assert "<redacted>" in result.render()
+    finally:
+        for key in ("CRM_API_URL", "PORT", "OHI_API_TOKEN", "AGENT_MODE"):
+            os.environ.pop(key, None)
+
+
+def test_setup_defaults_prefer_exported_values_and_explicit_cli_args(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text(
+        "CRM_API_URL=http://dotenv.example/api\nPORT=9123\n"
+    )
+    monkeypatch.setenv("CRM_API_URL", "http://exported.example/api")
+
+    try:
+        exported = parse_args([], repo=tmp_path)
+        explicit = parse_args(["--crm-api-url", "http://cli.example/api"], repo=tmp_path)
+
+        assert exported.crm_api_url == "http://exported.example/api"
+        assert explicit.crm_api_url == "http://cli.example/api"
+    finally:
+        os.environ.pop("PORT", None)
+
+
+def test_setup_defaults_use_dotenv_crm_url_before_port(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text(
+        "CRM_API_URL=http://crm.example:9555/api\nPORT=9123\n"
+    )
+    monkeypatch.delenv("CRM_API_URL", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+
+    try:
+        options = parse_args([], repo=tmp_path)
+        assert options.crm_api_url == "http://crm.example:9555/api"
+    finally:
+        for key in ("CRM_API_URL", "PORT"):
+            os.environ.pop(key, None)
+
+
+def test_dotenv_token_is_redacted_from_dry_run_and_setup_error(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("OHI_API_TOKEN=dotenv-secret\n")
+    monkeypatch.delenv("OHI_API_TOKEN", raising=False)
+    try:
+        options = parse_args(
+            ["--workspace", str(tmp_path / "workspace")], repo=tmp_path
+        )
+        dry_run = configure_openclaw(
+            SetupOptions(**{**options.__dict__, "dry_run": True}), cli=FakeCLI()
+        )
+        failed = configure_openclaw(
+            options,
+            cli=FakeCLI(
+                {("openclaw", "gateway", "restart"): CommandResult(1, "", "dotenv-secret")}
+            ),
+        )
+
+        assert "dotenv-secret" not in dry_run.render()
+        assert "dotenv-secret" not in failed.render()
+        assert "<redacted>" in dry_run.render()
+        assert "<redacted>" in failed.render()
+    finally:
+        os.environ.pop("OHI_API_TOKEN", None)
 
 
 @pytest.mark.parametrize("token", ['quote"value', r"slash\\value", "line\nvalue\tend"])

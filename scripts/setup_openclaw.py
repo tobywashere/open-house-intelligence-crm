@@ -98,6 +98,37 @@ def _redact_api_token(value: str) -> str:
     return value
 
 
+def _load_repo_env(repo: Path) -> None:
+    """Load simple .env assignments without overriding exported values.
+
+    This deliberately mirrors scripts/load-env.sh: no shell expansion, only
+    valid environment keys, and an existing process value always wins.
+    """
+    env_file = repo / ".env"
+    if not env_file.is_file():
+        return
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.rstrip("\r")
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        if key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+def _default_crm_api_url() -> str:
+    configured = os.environ.get("CRM_API_URL")
+    if configured:
+        return configured
+    port = os.environ.get("PORT") or "8080"
+    return f"http://localhost:{port}/api"
+
+
 def _entrypoints(options: SetupOptions) -> tuple[Path, Path]:
     wrapper = options.workspace / "skills" / "crm-db-operations" / "cli.py"
     daily = options.workspace / "skills" / "daily-brief" / "scripts" / "run_daily_brief.py"
@@ -949,7 +980,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         return SetupResult(False, messages)
 
 
-def _parse_args(argv: list[str] | None = None) -> SetupOptions:
+def _parse_args(
+    argv: list[str] | None = None, *, repo: Path | None = None
+) -> SetupOptions:
+    _load_repo_env(repo or Path(__file__).resolve().parents[1])
     parser = argparse.ArgumentParser(
         description="Safely configure a dedicated OpenClaw CRM agent"
     )
@@ -960,13 +994,13 @@ def _parse_args(argv: list[str] | None = None) -> SetupOptions:
         type=Path,
         default=Path("~/.openclaw/workspace-openhouse-crm"),
     )
-    parser.add_argument("--crm-api-url", default="http://localhost:8080/api")
+    parser.add_argument("--crm-api-url")
     parser.add_argument("--bind-discord", metavar="ACCOUNT")
     args = parser.parse_args(argv)
     return SetupOptions(
         agent_id=args.agent_id,
         workspace=args.workspace.expanduser(),
-        crm_api_url=args.crm_api_url,
+        crm_api_url=args.crm_api_url or _default_crm_api_url(),
         bind_discord=args.bind_discord,
         dry_run=args.dry_run,
     )

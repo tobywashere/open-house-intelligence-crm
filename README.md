@@ -7,7 +7,8 @@ in **Pending approvals**.
 
 It runs in two useful ways:
 
-- **Demo mode** is instant, offline, and safe for trying the product.
+- **Demo mode** is safe for trying the product and works offline after its
+  first launch installs the project dependencies.
 - **Real local-AI mode** connects the dashboard to your own OpenClaw agent and
   local CRM tools.
 
@@ -23,7 +24,8 @@ bash scripts/dev.sh
 
 Open [http://localhost:5173](http://localhost:5173). Demo mode creates
 clearly labeled sample data only in a new local database. It does not need a
-model, GPU, account, or internet connection.
+model, GPU, or account. The first launch may download Python and Node packages;
+after they are installed, demo mode works without internet access.
 
 ## Set up real local AI
 
@@ -56,6 +58,7 @@ Keep that Terminal open. In a second Terminal, change to the same project
 folder and run:
 
 ```bash
+cd open-intelligence-crm
 python3 scripts/doctor.py --live-agent --live-crm
 ```
 

@@ -123,8 +123,8 @@ Status meanings:
 ## Review before applying changes
 
 Natural-language CRM operations do not apply directly. New leads, updates,
-notes, reminders, bookings, closes, merges, and deletes enter **Pending
-approvals** first. The operator can edit, approve, or deny each item. Booking
+notes, reminders, bookings, closes, merges, and deletes enter **Pending approvals**
+first. The operator can edit, approve, or deny each item. Booking
 availability is checked again when approval happens.
 
 This is also true for the optional Discord binding:
@@ -155,8 +155,8 @@ editable review before it creates or updates a lead.
 The morning briefing rehydrates schedule blocks, lead facts, and due actions
 from current CRM rows. An agent may add labeled preparation advice but cannot
 replace those facts. A market summary exists only after a valid, source-backed
-daily payload is stored. Every market item needs a source URL, publication
-date, summary, and geographic area. Missing information stays visibly
+daily payload is stored. Every market item needs a source URL, publication date,
+summary, and geographic area. Missing information stays visibly
 unavailable.
 
 If the AI cannot extract a lead, draft a follow-up, or explain a score, the
@@ -177,6 +177,21 @@ be reviewed. It is never represented as a verified local-AI response.
   `AGENT_GATEWAY_URL`.
 - **Voice failure:** run the direct transcription command above and verify the
   provider/model selected in OpenClaw.
+
+## Linux target acceptance record
+
+These boxes are intentionally unchecked. Complete them after a real Linux
+OpenClaw run, rather than treating this documentation as a validation claim.
+
+- [ ] OpenClaw version:
+- [ ] Model/provider:
+- [ ] Linux distribution/version:
+- [ ] Memory:
+- [ ] Date and operator:
+- [ ] `--live-agent --live-crm` reports CRM capability verified
+- [ ] Dashboard chat proposes a reviewed CRM write
+- [ ] Voice note reaches the review screen
+- [ ] Optional Discord binding, if used, reaches the same agent
 
 For non-local access, bind the CRM to an exact private address, set matching
 `OHI_API_TOKEN` and `VITE_API_TOKEN`, and update `CORS_ORIGINS`. Do not expose

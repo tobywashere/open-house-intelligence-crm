@@ -8,18 +8,32 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
-def test_beginner_docs_use_one_agent_and_skill_name():
-    paths = [
-        REPO / "README.md",
-        REPO / "docs/LOCAL-AI.md",
-        REPO / "docs/MAC-MINI-SETUP.md",
-        REPO / "docs/GB10-SETUP.md",
-    ]
-    text = "\n".join(path.read_text() for path in paths)
+GUIDES = [
+    REPO / "README.md",
+    REPO / "docs/LOCAL-AI.md",
+    REPO / "docs/MAC-MINI-SETUP.md",
+    REPO / "docs/GB10-SETUP.md",
+]
 
-    assert "AGENT_ID=openhouse-crm" in text
-    assert "crm-db-operations" in text
-    assert "openhouse-crm skill" not in text.lower()
+
+def test_each_setup_guide_has_the_same_safe_agent_contract():
+    for path in GUIDES:
+        text = path.read_text()
+
+        assert "AGENT_ID=openhouse-crm" in text, path
+        assert "crm-db-operations" in text, path
+        assert "openhouse-crm skill" not in text.lower(), path
+        assert "AGENT_MODE=openclaw" in text, path
+        assert "gateway.http.endpoints.chatCompletions.enabled true" in text, path
+        assert "python3 scripts/setup_openclaw.py" in text, path
+        assert "bash scripts/serve.sh" in text, path
+        assert "python3 scripts/doctor.py --live-agent --live-crm" in text, path
+        assert "--bind-discord ACCOUNT" in text, path
+        assert "Pending approvals" in text, path
+        assert "deterministic fallback" in text, path
+        assert "publication date" in text and "geographic area" in text, path
+        assert text.index("python3 scripts/setup_openclaw.py") < text.index("bash scripts/serve.sh"), path
+        assert text.index("bash scripts/serve.sh") < text.index("python3 scripts/doctor.py --live-agent --live-crm"), path
 
 
 def test_readme_uses_setup_helper_and_real_capability_check():
@@ -31,16 +45,41 @@ def test_readme_uses_setup_helper_and_real_capability_check():
 
 
 def test_setup_docs_do_not_make_manual_skill_copy_the_primary_path():
-    paths = [
-        REPO / "README.md",
+    for path in GUIDES:
+        text = path.read_text()
+        assert "cp -R skills/" not in text, path
+
+
+def test_readme_and_mac_doctor_commands_are_copy_pasteable_from_second_terminal():
+    for path in [REPO / "README.md", REPO / "docs/MAC-MINI-SETUP.md"]:
+        text = path.read_text()
+        doctor_at = text.index("python3 scripts/doctor.py --live-agent --live-crm")
+        before_doctor = text[:doctor_at]
+        assert "second Terminal" in before_doctor, path
+        assert before_doctor.rfind("cd ") > before_doctor.rfind("second Terminal"), path
+
+
+def test_acceptance_records_remain_unchecked_for_all_target_hosts():
+    for path in [
         REPO / "docs/LOCAL-AI.md",
         REPO / "docs/MAC-MINI-SETUP.md",
         REPO / "docs/GB10-SETUP.md",
-    ]
-    text = "\n".join(path.read_text() for path in paths)
-
-    assert text.count("python3 scripts/setup_openclaw.py") >= len(paths)
-    assert "cp -R skills/" not in text
+    ]:
+        text = path.read_text()
+        for label in (
+            "OpenClaw version:",
+            "Model/provider:",
+            "Memory:",
+            "Date and operator:",
+            "--live-agent --live-crm",
+            "Dashboard chat proposes a reviewed CRM write",
+            "Voice note reaches the review screen",
+            "Optional Discord binding",
+        ):
+            assert any(
+                line.startswith("- [ ]") and label in line
+                for line in text.splitlines()
+            ), (path, label)
 
 
 def test_example_environment_selects_the_dedicated_agent_once():

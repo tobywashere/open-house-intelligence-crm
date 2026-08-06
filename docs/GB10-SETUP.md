@@ -7,9 +7,10 @@ is not required for the CRM. For an Apple-silicon Mac mini, use
 
 ## Before you start
 
-Install OpenClaw and configure a tool-capable model. The model choice controls
-memory use, speed, and quality. Record what you used in the acceptance checklist
-below instead of assuming a particular model or hardware combination is verified.
+Install Git, Python 3.11 or newer, Node.js 20 or newer, and OpenClaw. Configure
+a tool-capable model in OpenClaw. The model choice controls memory use, speed,
+and quality. Record what you used in the acceptance checklist below instead of
+assuming a particular model or hardware combination is verified.
 
 Enable the chat endpoint once:
 
@@ -69,6 +70,8 @@ bookings, and other CRM writes still wait for dashboard approval.
 - A deterministic fallback is visibly labeled for review.
 - Daily schedule facts match the CRM and missing market information stays
   unavailable instead of being fabricated.
+- Market items require a source URL, publication date, summary, and geographic area.
+  Incomplete information stays unavailable.
 
 ## Target-hardware acceptance record
 
