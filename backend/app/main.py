@@ -74,8 +74,8 @@ def startup():
         print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
               "running with integrations OFF (simulated).")
     # INTEGRATIONS_POLLER must be explicitly opted in — with the CLI transport
-    # the connected mailbox is a PERSONAL account, and auto-intake turns real
-    # inbound mail into CRM leads (and model input) with no human in the loop.
+    # the connected mailbox is a PERSONAL account. Polling sends real inbound
+    # mail to the model and queues new-lead proposals for human review.
     if cc.is_live() and os.environ.get("INTEGRATIONS_POLLER", "off") == "on":
         import asyncio
         from .integrations.poller import poll_loop

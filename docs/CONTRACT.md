@@ -17,7 +17,7 @@ Canonical DDL lives in [`backend/schema.sql`](../backend/schema.sql). Summary:
 | name | TEXT | required |
 | phone | TEXT | nullable, E.164-ish |
 | email | TEXT | nullable |
-| source | TEXT | `form` \| `text` \| `note` \| `referral` \| `email` (additive, recorded 2026-07-27; auto-intake from the Gmail poller) |
+| source | TEXT | `form` \| `text` \| `note` \| `referral` \| `email` (additive, recorded 2026-07-27; approved Gmail-poller intake proposals use `email`) |
 | status | TEXT | `new` → `contacted` → `meeting_booked` → `closed`; new closes use the dedicated close endpoint |
 | outcome | TEXT | nullable `won` \| `lost`; legacy closed rows remain `null` |
 | close_reason | TEXT | nullable operator-provided reason |
@@ -207,11 +207,15 @@ denies it from the dashboard. Denying writes a single `deny_pending_change`
 audit row (actor `user`) and nothing else. Approving runs the original write,
 so it audits twice: the original tool's own row (actor `agent`, e.g.
 `create_lead`) plus the operator's `approve_pending_change` (actor `user`).
-The in-process
-Gmail-poller auto-intake path (`_intake_lead` in `integrations/poller.py`)
-calls `create_lead` directly with no HTTP request at all and is unaffected by
-this gate — it still audits as `email_lead_intake` (actor `cron`), same as
-before.
+The in-process Gmail poller has no HTTP request from which to derive an actor,
+but its extraction is still automated agent work. Unknown-sender mail therefore
+uses the same editable `create_lead` approval boundary instead of writing a lead
+directly. The real inbound text stays in the proposal for review, duplicate poll
+passes do not queue it again, and the poller audits
+`email_intake_review_required` (actor `cron`). If extraction used the backup
+parser, the proposal summary says so; the internal fallback marker is never part
+of the editable fields. Only approval creates the lead and runs its external
+hook.
 
 | Tool | Endpoint |
 |---|---|

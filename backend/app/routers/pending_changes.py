@@ -120,12 +120,13 @@ def _finish_claim(pending_id: int, row: dict, result: dict) -> None:
         )
 
 
-def _audit_post_hook_failure(row: dict, exc: Exception) -> None:
+def _audit_post_hook_failure(row: dict, result: dict, exc: Exception) -> None:
     tool = (
         "gmail_create_draft (failed)"
         if row["operation"] == "create_lead"
         else "gcal_create_event (failed)"
     )
+    lead_id = result.get("id") if row["operation"] == "create_lead" else row["lead_id"]
     try:
         with get_conn() as conn:
             audit(
@@ -134,7 +135,7 @@ def _audit_post_hook_failure(row: dict, exc: Exception) -> None:
                 tool,
                 {"pending_id": row["id"]},
                 {"error": str(exc)},
-                row["lead_id"],
+                lead_id,
             )
     except Exception:
         pass
@@ -156,7 +157,7 @@ async def _run_post_approval_hook(row: dict, result: dict) -> None:
 
             await run_in_threadpool(misc_router.hooks.on_reminder_created, result)
     except Exception as exc:
-        _audit_post_hook_failure(row, exc)
+        _audit_post_hook_failure(row, result, exc)
 
 
 @router.get("")

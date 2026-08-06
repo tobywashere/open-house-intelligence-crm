@@ -55,8 +55,8 @@ def _extract_address(sender: str) -> str:
 
 def check_inbox() -> dict:
     """One polling pass over the inbox: replies from known leads (logged,
-    reminder cleared, fields re-extracted) + auto-intake of lead-like mail
-    from unknown senders via the existing raw-text pipeline."""
+    reminder cleared, fields re-extracted) + review proposals for lead-like
+    mail from unknown senders via the existing raw-text pipeline."""
     with get_conn() as conn:
         leads = [dict(r) for r in conn.execute(
             "SELECT id, name, email FROM leads WHERE email IS NOT NULL AND email != ''")]
@@ -84,8 +84,16 @@ def check_inbox() -> dict:
 
 def _seen(msg_id: str) -> bool:
     with get_conn() as conn:
-        return conn.execute("SELECT 1 FROM events WHERE content LIKE ?",
-                            (f"%[gmail:{msg_id}]%",)).fetchone() is not None
+        marker = f"%[gmail:{msg_id}]%"
+        if conn.execute(
+            "SELECT 1 FROM events WHERE content LIKE ?", (marker,)
+        ).fetchone():
+            return True
+        return conn.execute(
+            "SELECT 1 FROM pending_changes "
+            "WHERE operation = 'create_lead' AND payload LIKE ?",
+            (marker,),
+        ).fetchone() is not None
 
 
 def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
@@ -137,16 +145,28 @@ def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
     # literal tag.
     raw = _wrap_untrusted(addr, subject, body[:1000], msg_id)
     try:
-        from ..routers.leads import LeadIn, create_lead
-        lead = asyncio.run(create_lead(LeadIn(raw_text=raw, source="email", email=addr)))
+        from ..routers.leads import LeadIn, _queue_resolved_create, _resolve_create_fields
+
+        resolution = asyncio.run(
+            _resolve_create_fields(LeadIn(raw_text=raw, source="email", email=addr))
+        )
+        _queue_resolved_create(resolution)
     except Exception as e:
         with get_conn() as conn:
             audit(conn, "cron", "email_intake_failed",
                   {"from": addr, "subject": subject}, {"error": str(e)})
         return 0
     with get_conn() as conn:
-        audit(conn, "cron", "email_lead_intake", {"from": addr, "subject": subject},
-              {"lead_id": lead["id"]}, lead["id"])
+        audit(
+            conn,
+            "cron",
+            "email_intake_review_required",
+            {"from": addr, "subject": subject},
+            {
+                "message_id": msg_id,
+                "reason": "backup_parser" if resolution.fallback else "automatic_intake",
+            },
+        )
     return 1
 
 

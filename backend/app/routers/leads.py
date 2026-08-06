@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -83,6 +84,16 @@ class CloseLeadIn(BaseModel):
     reason: str | None = Field(default=None, max_length=2000)
 
 
+@dataclass(frozen=True)
+class LeadCreateResolution:
+    """Resolved create fields plus non-persisted extraction provenance."""
+
+    name: str
+    fields: dict
+    raw_text: str | None
+    fallback: str | None = None
+
+
 def fetch_lead(conn, lead_id: int) -> dict:
     row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
     if not row:
@@ -104,10 +115,13 @@ def _fmt_val(key: str, value) -> str:
 # Human-readable one-liners for the pending-changes approval dialog. Each does
 # a quick read (via fetch_lead, which 404s on a bad id — appropriately: a
 # write for a nonexistent lead should fail fast, not get queued).
-def summarize_create_lead(name: str, fields: dict) -> str:
+def summarize_create_lead(name: str, fields: dict, *, fallback: str | None = None) -> str:
     extra = [x for x in (fields.get("area"), f"${fields['budget']:,}" if fields.get("budget") else None) if x]
     suffix = f" ({', '.join(extra)})" if extra else ""
-    return f"Create lead: {name}{suffix}"
+    summary = f"Create lead: {name}{suffix}"
+    if fallback:
+        return f"Backup parser used. Review every field before approving. {summary}"
+    return summary
 
 
 def summarize_update_lead(lead_id: int, body: "LeadPatch") -> str:
@@ -156,13 +170,12 @@ async def create_lead(body: LeadIn, request: Request = None):
         # extraction cost up front instead of never paying it until later —
         # a worthwhile trade since there'd otherwise be nothing concrete to
         # show or edit.
-        name, fields, raw_text = await _resolve_create_fields(body)
-        payload = {"name": name, "raw_text": raw_text, **fields}
-        return queue_pending_change("create_lead", None, payload, summarize_create_lead(name, fields))
+        resolution = await _resolve_create_fields(body)
+        return _queue_resolved_create(resolution)
     return await _apply_create_lead(body)
 
 
-async def _resolve_create_fields(body: LeadIn) -> tuple[str, dict, str | None]:
+async def _resolve_create_fields(body: LeadIn) -> LeadCreateResolution:
     """The extraction step, split out so both the immediate-apply path and
     the pending-approval queue can share it. `fields`' preferences/
     missing_fields are plain lists here (not yet JSON-encoded) — easy to
@@ -170,10 +183,11 @@ async def _resolve_create_fields(body: LeadIn) -> tuple[str, dict, str | None]:
     time."""
     fields = body.model_dump(exclude={"raw_text"}, exclude_none=True)
     name = fields.pop("name", None)
+    fallback = None
 
     if body.raw_text:
         extracted = await get_driver().extract(body.raw_text)
-        extracted.pop("_fallback_used", None)
+        fallback = extracted.pop("_fallback_used", None)
         name = name or extracted.pop("name", None)
         for k in ("phone", "email", "budget", "area", "timeline", "intent"):
             if extracted.get(k) is not None:
@@ -181,11 +195,35 @@ async def _resolve_create_fields(body: LeadIn) -> tuple[str, dict, str | None]:
         fields["preferences"] = extracted.get("preferences", [])
         fields["missing_fields"] = extracted.get("missing_fields", [])
 
-    return name or PLACEHOLDER_NAME, fields, body.raw_text
+    return LeadCreateResolution(
+        name=name or PLACEHOLDER_NAME,
+        fields=fields,
+        raw_text=body.raw_text,
+        fallback=fallback,
+    )
+
+
+def _queue_resolved_create(resolution: LeadCreateResolution):
+    payload = {
+        "name": resolution.name,
+        "raw_text": resolution.raw_text,
+        **resolution.fields,
+    }
+    return queue_pending_change(
+        "create_lead",
+        None,
+        payload,
+        summarize_create_lead(
+            resolution.name,
+            resolution.fields,
+            fallback=resolution.fallback,
+        ),
+    )
 
 
 def _insert_lead(name: str, fields: dict, raw_text: str | None) -> dict:
     fields = dict(fields)
+    fields.pop("_fallback_used", None)
     if "preferences" in fields:
         fields["preferences"] = json.dumps(fields["preferences"])
     if "missing_fields" in fields:
@@ -209,8 +247,8 @@ def _insert_lead(name: str, fields: dict, raw_text: str | None) -> dict:
 
 
 async def _apply_create_lead(body: LeadIn):
-    name, fields, raw_text = await _resolve_create_fields(body)
-    lead = _insert_lead(name, fields, raw_text)
+    resolution = await _resolve_create_fields(body)
+    lead = _insert_lead(resolution.name, resolution.fields, resolution.raw_text)
     # create_lead is `async def`: a synchronous hook call here would freeze the
     # whole event loop (e.g. Composio's Gmail/GCal calls run ~15-30s live) —
     # run it in the threadpool so other requests keep flowing.
@@ -225,6 +263,7 @@ async def _apply_resolved_create(payload: dict, *, run_hook: bool = True) -> dic
     edit the operator made to preferences/missing_fields (extraction assigns
     those unconditionally, not just when absent)."""
     payload = dict(payload)
+    payload.pop("_fallback_used", None)
     name = payload.pop("name", None) or PLACEHOLDER_NAME
     raw_text = payload.pop("raw_text", None)
     if payload.get("budget") is not None:

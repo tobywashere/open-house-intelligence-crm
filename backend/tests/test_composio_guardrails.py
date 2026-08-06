@@ -369,22 +369,24 @@ def test_skill_known_lead_emails_missing_sibling_raises_integration_error(monkey
 
 
 def _fake_intake(monkeypatch, client):
-    """Wire _intake_lead's create_lead call to a fake that captures raw_text
-    without touching the DB (beyond a real lead id for the audit() FK)."""
-    import re
+    """Capture the resolved review proposal without creating a lead."""
+    from app.routers.leads import LeadCreateResolution
 
-    real_lead = make_lead(client)
     captured = {}
 
-    class FakeLeadIn:
-        def __init__(self, **kw):
-            captured.update(kw)
+    async def fake_resolve(lead_in):
+        captured.update(lead_in.model_dump())
+        return LeadCreateResolution(
+            name="Captured Sender",
+            fields={"source": lead_in.source, "email": lead_in.email},
+            raw_text=lead_in.raw_text,
+        )
 
-    async def fake_create_lead(lead_in):
-        return {"id": real_lead["id"]}
+    def fake_queue(resolution):
+        captured["queued"] = True
 
-    monkeypatch.setattr("app.routers.leads.LeadIn", FakeLeadIn)
-    monkeypatch.setattr("app.routers.leads.create_lead", fake_create_lead)
+    monkeypatch.setattr("app.routers.leads._resolve_create_fields", fake_resolve)
+    monkeypatch.setattr("app.routers.leads._queue_resolved_create", fake_queue)
     return captured
 
 

@@ -153,6 +153,35 @@ def test_agent_create_lead_from_raw_text_resolves_fields_at_queue_time(client):
     assert approved.json()["budget"] == 850_000
 
 
+def test_agent_create_fallback_warns_for_review_without_leaking_marker(client, monkeypatch):
+    from app.routers import leads as leads_router
+
+    class FallbackDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Jordan Ellis",
+                "area": "Kirkland",
+                "budget": 850_000,
+                "preferences": [],
+                "missing_fields": ["phone"],
+                "_fallback_used": "deterministic_parser",
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDriver())
+    queued = client.post(
+        "/api/leads",
+        json={"raw_text": "Met Jordan Ellis in Kirkland", "source": "note"},
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    assert "backup parser" in queued.json()["summary"].lower()
+    pending = _pending(client)[0]
+    assert "backup parser" in pending["summary"].lower()
+    assert "_fallback_used" not in str(queued.json())
+    assert "_fallback_used" not in str(pending)
+
+
 def test_approve_with_edited_fields_overrides_the_queued_payload(client):
     """The operator can edit a field in the dialog before approving —
     the applied write must reflect the edit, not the agent's original value."""
@@ -415,6 +444,28 @@ def test_booking_hook_exception_cannot_leave_applied_proposal_pending(client, mo
     assert len(failures) == 1
     assert failures[0]["actor"] == "user"
     assert failures[0]["lead_id"] == lead["id"]
+
+
+def test_create_lead_hook_failure_audit_uses_new_lead_id(client, monkeypatch):
+    from app.routers import leads as leads_router
+
+    queued = client.post(
+        "/api/leads",
+        json={"name": "Hook Failure", "source": "form"},
+        headers=AGENT,
+    ).json()
+    monkeypatch.setattr(
+        leads_router.hooks,
+        "on_lead_created",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("mail unavailable")),
+    )
+
+    approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert approved.status_code == 200
+    failures = _audit_rows(client, "gmail_create_draft (failed)")
+    assert len(failures) == 1
+    assert failures[0]["lead_id"] == approved.json()["id"]
 
 
 def test_reminder_hook_exception_cannot_leave_applied_proposal_pending(client, monkeypatch):

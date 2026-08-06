@@ -59,7 +59,11 @@ def test_reply_dedupe_second_pass_noop(client, monkeypatch):
     assert poller.check_inbox()["replies"] == 0   # marker dedupe
 
 
-def test_unknown_sender_becomes_lead(client, monkeypatch):
+def test_unknown_sender_queues_lead_for_review_without_mutating_crm(client, monkeypatch):
+    hook_calls = []
+    monkeypatch.setattr(
+        leads_router.hooks, "on_lead_created", lambda lead: hook_calls.append(lead)
+    )
     monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([{
         "messageId": "new-1",
         "sender": "Maria Lopez <maria@example.net>",
@@ -67,13 +71,72 @@ def test_unknown_sender_becomes_lead(client, monkeypatch):
         "preview": {"body": "Hi! My budget is around $800k, hoping to move in 3 months."},
     }]))
     assert poller.check_inbox()["intake"] == 1
-    leads = client.get("/api/leads").json()
-    maria = next(l for l in leads if l["email"] == "maria@example.net")
-    assert maria["source"] == "email"
-    # second pass: same message id is not intaken twice
+
+    assert client.get("/api/leads").json() == []
+    assert hook_calls == []
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["operation"] == "create_lead"
+    assert pending[0]["payload"]["email"] == "maria@example.net"
+    assert "My budget is around $800k" in pending[0]["payload"]["raw_text"]
+    assert "[gmail:new-1]" in pending[0]["payload"]["raw_text"]
+    assert "_fallback_used" not in json.dumps(pending[0])
+
+    audit = client.get("/api/audit?limit=30").json()
+    tools = [entry["tool"] for entry in audit]
+    assert "create_lead" not in tools
+    assert "score_lead" not in tools
+    assert "email_lead_intake" not in tools
+    assert "email_intake_review_required" in tools
+
+    # The pending payload retains the Gmail marker, so another poll pass must
+    # not create a duplicate proposal while the first one awaits review.
     assert poller.check_inbox()["intake"] == 0
-    assert len([l for l in client.get("/api/leads").json()
-                if l["email"] == "maria@example.net"]) == 1
+    assert len(client.get("/api/pending-changes").json()) == 1
+
+
+def test_unknown_sender_fallback_is_reviewable_and_leaks_no_internal_marker(client, monkeypatch):
+    class FallbackDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Maria Lopez",
+                "budget": 800_000,
+                "timeline": "3 months",
+                "intent": "buy",
+                "preferences": [],
+                "missing_fields": ["phone"],
+                "_fallback_used": "deterministic_parser",
+            }
+
+    hook_calls = []
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDriver())
+    monkeypatch.setattr(
+        leads_router.hooks, "on_lead_created", lambda lead: hook_calls.append(lead)
+    )
+    monkeypatch.setattr("app.integrations.poller.cc.execute", _fake_fetch([{
+        "messageId": "fallback-new-1",
+        "sender": "Maria Lopez <maria@example.net>",
+        "subject": "Looking for a home",
+        "preview": {"body": "My budget is $800k and I hope to move in 3 months."},
+    }]))
+
+    assert poller.check_inbox() == {"replies": 0, "intake": 1}
+
+    assert client.get("/api/leads").json() == []
+    assert hook_calls == []
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert "backup parser" in pending[0]["summary"].lower()
+    assert "My budget is $800k" in pending[0]["payload"]["raw_text"]
+    assert "[gmail:fallback-new-1]" in pending[0]["payload"]["raw_text"]
+
+    audit = client.get("/api/audit?limit=30").json()
+    tools = [entry["tool"] for entry in audit]
+    assert "create_lead" not in tools
+    assert "score_lead" not in tools
+    assert "email_lead_intake" not in tools
+    assert "email_intake_review_required" in tools
+    assert "_fallback_used" not in json.dumps({"pending": pending, "audit": audit})
 
 
 def test_noise_senders_ignored(client, monkeypatch):
@@ -176,6 +239,32 @@ def test_process_deterministic_draft_does_not_write_score_or_reason(client, monk
             return "[deterministic fallback] Hi Test, can we talk Tuesday?"
 
     monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDraftDriver())
+
+    response = client.post(f"/api/leads/{lead['id']}/process")
+
+    assert response.status_code == 409
+    assert "backup response" in response.json()["detail"].lower()
+    current = client.get(f"/api/leads/{lead['id']}").json()
+    assert current["score"] is None
+    assert current["score_reason"] is None
+    audit = client.get("/api/audit?limit=30").json()
+    assert "score_lead" not in [entry["tool"] for entry in audit]
+
+
+def test_process_deterministic_score_explanation_does_not_write_score_or_reason(client, monkeypatch):
+    lead = make_lead(client)
+
+    class FallbackScoreDriver:
+        async def extract(self, raw_text):
+            raise AssertionError("complete lead should not need extraction")
+
+        async def explain_score(self, lead, score):
+            return "[deterministic fallback] Scored from stored CRM fields."
+
+        async def draft_followup(self, lead):
+            return "Hi Test, can we talk Tuesday?"
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackScoreDriver())
 
     response = client.post(f"/api/leads/{lead['id']}/process")
 

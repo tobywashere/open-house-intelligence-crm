@@ -1,9 +1,9 @@
 """Generic infra for gating agent-initiated lead writes behind human approval.
 
-Only the agent's HTTP tool client (skills/crm-db-operations/tools.py) sends
-`X-Actor: agent` — the dashboard's fetch calls (dashboard/src/api.ts) never
-set it, so their writes are unaffected and keep applying immediately. See
-docs/CONTRACT.md's pending-changes section for the full contract.
+The agent's HTTP tool client (skills/crm-db-operations/tools.py) sends
+`X-Actor: agent`; automatic mailbox intake calls the same queue explicitly.
+The dashboard's fetch calls (dashboard/src/api.ts) never set the header, so
+manual writes remain immediate. See docs/CONTRACT.md for the full contract.
 """
 import json
 
@@ -14,9 +14,8 @@ from .db import get_conn
 
 
 def is_agent_write(request: Request | None) -> bool:
-    # request is None for in-process callers (e.g. the Gmail poller's direct
-    # create_lead(LeadIn(...)) call, which has no HTTP request at all) —
-    # those are out of scope for this gate and always apply immediately.
+    # In-process automation has no Request from which to derive an actor and
+    # must opt into queue_pending_change explicitly, as the mailbox poller does.
     return request is not None and request.headers.get("X-Actor") == "agent"
 
 
