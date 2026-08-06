@@ -62,6 +62,38 @@ def test_gcal_columns_migrated(client):
     assert "gcal_event_id" in rem_cols
 
 
+def test_hook_outbox_schema_is_additive_and_idempotent(tmp_path, monkeypatch):
+    import app.db as db
+
+    db_path = tmp_path / "pre-hook-outbox.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+
+    db.init_db()
+    db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(hook_outbox)")}
+    indexes = conn.execute("PRAGMA index_list(hook_outbox)").fetchall()
+    conn.close()
+
+    assert {
+        "pending_change_id",
+        "idempotency_key",
+        "hook_type",
+        "object_id",
+        "lead_id",
+        "status",
+        "attempts",
+        "last_error",
+        "claim_token",
+        "claimed_at",
+        "created_at",
+        "updated_at",
+        "delivered_at",
+    } <= cols
+    assert any(index[2] for index in indexes), "outbox must enforce a unique key"
+
+
 def test_legacy_leads_table_gains_outcome_columns(tmp_path, monkeypatch):
     import app.db as db
 

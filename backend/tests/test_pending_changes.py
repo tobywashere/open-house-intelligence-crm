@@ -9,6 +9,17 @@ from tests.conftest import make_lead
 
 AGENT = {"X-Actor": "agent"}
 
+ATOMIC_OPERATIONS = [
+    ("create_lead", "create_lead"),
+    ("update_lead", "update_lead"),
+    ("add_event", "add_event"),
+    ("book_appointment", "book_appointment"),
+    ("schedule_followup", "schedule_followup"),
+    ("close_lead", "close_lead"),
+    ("merge_leads", "merge_leads"),
+    ("delete_lead", "delete_lead"),
+]
+
 
 def _pending(client, status="pending"):
     res = client.get(f"/api/pending-changes?status={status}")
@@ -604,16 +615,7 @@ def test_reminder_hook_exception_cannot_leave_applied_proposal_pending(client, m
 
 @pytest.mark.parametrize(
     ("operation", "tool"),
-    [
-        ("create_lead", "create_lead"),
-        ("update_lead", "update_lead"),
-        ("add_event", "add_event"),
-        ("book_appointment", "book_appointment"),
-        ("schedule_followup", "schedule_followup"),
-        ("close_lead", "close_lead"),
-        ("merge_leads", "merge_leads"),
-        ("delete_lead", "delete_lead"),
-    ],
+    ATOMIC_OPERATIONS,
 )
 def test_crash_after_business_mutation_rolls_back_every_approval_operation(
     client, monkeypatch, operation, tool
@@ -649,17 +651,24 @@ def test_crash_after_business_mutation_rolls_back_every_approval_operation(
     assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
 
 
-def test_crash_after_claim_rolls_back_claim_and_allows_one_retry(client, monkeypatch):
+@pytest.mark.parametrize(("operation", "tool"), ATOMIC_OPERATIONS)
+def test_crash_after_claim_rolls_back_every_operation_and_allows_one_retry(
+    client, monkeypatch, operation, tool
+):
     from app.routers import pending_changes as pending_router
 
-    queued = _queue_atomicity_case(client, "schedule_followup")
+    queued = _queue_atomicity_case(client, operation)
     before = _business_snapshot()
+    operation_audits = len(_audit_rows(client, tool))
+    approval_audits = len(_audit_rows(client, "approve_pending_change"))
 
-    def crash_after_claim(_operation):
+    def crash_after_claim(*_args, **_kwargs):
         raise RuntimeError("simulated crash after claim")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pending_router, "_operation", crash_after_claim)
+        patch.setattr(
+            pending_router, "_apply_pending_mutation", crash_after_claim, raising=False
+        )
         with pytest.raises(RuntimeError, match="simulated crash after claim"):
             client.post(f"/api/pending-changes/{queued['id']}/approve")
 
@@ -670,5 +679,5 @@ def test_crash_after_claim_rolls_back_claim_and_allows_one_retry(client, monkeyp
     assert retried.status_code == 200, retried.text
     second_retry = client.post(f"/api/pending-changes/{queued['id']}/approve")
     assert second_retry.status_code == 400
-    assert len(_audit_rows(client, "schedule_followup")) == 1
-    assert len(_audit_rows(client, "approve_pending_change")) == 1
+    assert len(_audit_rows(client, tool)) == operation_audits + 1
+    assert len(_audit_rows(client, "approve_pending_change")) == approval_audits + 1

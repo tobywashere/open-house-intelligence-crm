@@ -135,3 +135,29 @@ CREATE TABLE IF NOT EXISTS pending_changes (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
   decided_at TEXT
 );
+
+-- Durable post-approval hook intent. This contains references only, never the
+-- approved CRM payload or credentials. Delivery is at-least-once: workers use
+-- a stable key and a recoverable claim, but the external providers exposed by
+-- the current Composio tools do not accept that key as an idempotency token.
+CREATE TABLE IF NOT EXISTS hook_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pending_change_id INTEGER NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  hook_type TEXT NOT NULL
+    CHECK (hook_type IN ('lead_created','tour_booked','reminder_created')),
+  object_id INTEGER NOT NULL,
+  lead_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','processing','failed','delivered')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  claim_token TEXT,
+  claimed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+  delivered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_hook_outbox_delivery
+  ON hook_outbox (status, claimed_at, id);

@@ -14,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ValidationError
 
 from ..db import audit, get_conn
+from ..integrations import hook_outbox
 from . import leads as leads_router
 
 router = APIRouter(prefix="/pending-changes", tags=["pending-changes"])
@@ -112,44 +113,32 @@ def _finish_claim(conn, pending_id: int, row: dict, result: dict) -> None:
     )
 
 
-def _audit_post_hook_failure(row: dict, result: dict, exc: Exception) -> None:
-    tool = (
-        "gmail_create_draft (failed)"
-        if row["operation"] == "create_lead"
-        else "gcal_create_event (failed)"
+def _validate_pending_mutation(row: dict, payload: dict):
+    """Validate edited fields before entering the generic mutation seam."""
+    if row["operation"] == "create_lead":
+        return payload
+    model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
+    return model_cls(**payload), apply_fn, needs_lead_id
+
+
+def _apply_pending_mutation(conn, row: dict, validated):
+    """Apply any supported operation through the shared caller-owned transaction."""
+    if row["operation"] == "create_lead":
+        return leads_router._apply_resolved_create_in_conn(conn, validated)
+    parsed_body, apply_fn, needs_lead_id = validated
+    kwargs = {"conn": conn}
+    if row["operation"] in {"book_appointment", "schedule_followup"}:
+        kwargs["run_hook"] = False
+    return (
+        apply_fn(row["lead_id"], parsed_body, **kwargs)
+        if needs_lead_id
+        else apply_fn(parsed_body, **kwargs)
     )
-    lead_id = result.get("id") if row["operation"] == "create_lead" else row["lead_id"]
-    try:
-        with get_conn() as conn:
-            audit(
-                conn,
-                "user",
-                tool,
-                {"pending_id": row["id"]},
-                {"error": str(exc)},
-                lead_id,
-            )
-    except Exception:
-        pass
 
 
-async def _run_post_approval_hook(row: dict, result: dict) -> None:
-    """Run external work only after the proposal is durably non-replayable."""
-    try:
-        if row["operation"] == "create_lead":
-            await run_in_threadpool(leads_router.hooks.on_lead_created, result)
-        elif row["operation"] == "book_appointment":
-            from . import calendar as calendar_router
-
-            with get_conn() as conn:
-                lead = leads_router.fetch_lead(conn, result["lead_id"])
-            await run_in_threadpool(calendar_router.hooks.on_tour_booked, lead, result)
-        elif row["operation"] == "schedule_followup":
-            from . import misc as misc_router
-
-            await run_in_threadpool(misc_router.hooks.on_reminder_created, result)
-    except Exception as exc:
-        _audit_post_hook_failure(row, result, exc)
+async def _dispatch_committed_hook(outbox_id: int) -> None:
+    """Dispatch durable intent after commit without blocking the event loop."""
+    await run_in_threadpool(hook_outbox.dispatch_hook, outbox_id)
 
 
 @router.get("")
@@ -164,6 +153,7 @@ def list_pending(status: str = "pending"):
 
 @router.post("/{pending_id}/approve")
 async def approve_pending(pending_id: int, body: ApproveIn = None):
+    outbox_id = None
     try:
         with get_conn() as conn:
             row = _claim_pending(conn, pending_id)
@@ -172,25 +162,17 @@ async def approve_pending(pending_id: int, body: ApproveIn = None):
                 **json.loads(row["payload"]),
                 **((body.fields if body else None) or {}),
             }
-
-            if row["operation"] == "create_lead":
-                result = leads_router._apply_resolved_create_in_conn(conn, payload)
-            else:
-                model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
-                parsed_body = model_cls(**payload)
-                kwargs = {"conn": conn}
-                if row["operation"] in {"book_appointment", "schedule_followup"}:
-                    kwargs["run_hook"] = False
-                result = (
-                    apply_fn(row["lead_id"], parsed_body, **kwargs)
-                    if needs_lead_id
-                    else apply_fn(parsed_body, **kwargs)
-                )
+            validated = _validate_pending_mutation(row, payload)
+            result = _apply_pending_mutation(conn, row, validated)
             _finish_claim(conn, pending_id, row, result)
+            outbox_id = hook_outbox.enqueue_approval_hook(
+                conn, pending_id, row["operation"], result
+            )
     except ValidationError as exc:
         raise HTTPException(422, detail=json.loads(exc.json(include_url=False))) from None
 
-    await _run_post_approval_hook(row, result)
+    if outbox_id is not None:
+        await _dispatch_committed_hook(outbox_id)
     return result
 
 

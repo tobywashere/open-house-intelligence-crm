@@ -72,6 +72,28 @@ with header `X-Actor: agent`, sent by `skills/crm-db-operations/tools.py`.
 Dashboard actions without that header continue to apply immediately. See §2,
 §3, and `backend/app/approvals.py`.
 
+### `hook_outbox` — durable post-approval integration delivery
+`id, pending_change_id UNIQUE, idempotency_key UNIQUE, hook_type
+(lead_created|tour_booked|reminder_created), object_id, lead_id, status
+(pending|processing|failed|delivered), attempts, last_error, claim_token,
+claimed_at, created_at, updated_at, delivered_at`.
+
+Create, booking, and reminder approvals insert one reference-only outbox row in
+the same transaction as the CRM mutation, operation audit, terminal approval
+state, and user approval audit. No approved payload, message body, credential,
+or other secret is copied into this table. Dispatch claims a row in a short
+transaction, closes the database connection before any external call, and then
+records delivery or a retryable failure. Startup launches a background drain
+for pending, failed, and stale processing rows so slow providers do not delay
+the dashboard becoming available. Claims older than five minutes may be
+recovered by a new worker.
+
+Delivery is **at least once**. The stable `pending-change:<id>` key prevents two
+live workers from owning the same current claim and appears in failure audits,
+but the current Composio Gmail and Google Calendar actions do not accept a
+compatible provider idempotency key. A process crash after the provider accepts
+an action but before the local delivered update can therefore cause a retry.
+
 ### `chat_messages`
 `id, session_id, role (user|agent), content, created_at`
 
@@ -105,7 +127,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /leads/{id}/duplicates` | → `[{lead, match_on}]` | exact phone/email, fuzzy name |
 | `POST /leads/merge` ⏸ | `{primary_id, duplicate_id}` → merged lead | moves events, deletes duplicate |
 | `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 7 operations' `payload` is their normal request body |
-| `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; atomically claims and replays the queued write through the same logic the direct path uses; **400** if not currently `pending`; validation/conflict failure before mutation restores `pending` for correction, retry, or denial. Once local mutation commits, the row becomes `approved` before any external calendar/email hook runs, so a hook failure cannot make the proposal replayable. Optional `fields` (additive, recorded 2026-07-29) is merged over (overriding) the stored `payload` before applying — lets the operator edit values in the approval dialog before they land; omit or send `{}` to approve the queued payload verbatim |
+| `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any external-hook outbox intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. Calendar/email dispatch runs from the durable outbox after commit, so failure never makes the proposal replayable and startup can retry pending, failed, or stale delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim |
 | `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
 | `POST /leads/{id}/process` | `{}` → `{lead, followup_draft}` | extract → score → draft (mock or agent) |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |

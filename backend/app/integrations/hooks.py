@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 from ..db import audit, get_conn
 from . import composio_client as cc
 
+_DELIVERY_FAILED = object()
+
 
 def _tz() -> str:
     return os.environ.get("GCAL_TIMEZONE", "America/Los_Angeles")
@@ -38,7 +40,7 @@ def _lead_details(lead: dict) -> str:
             "— Open House Intelligence")
 
 
-def _create_event(lead_id: int | None, args: dict) -> str | None:
+def _create_event(lead_id: int | None, args: dict) -> str | None | object:
     """Create a GCal event (or simulate). Returns the Google event id when live.
 
     The Composio network call runs with NO get_conn() open: it can take
@@ -59,7 +61,7 @@ def _create_event(lead_id: int | None, args: dict) -> str | None:
         with get_conn() as conn:
             audit(conn, "user", "gcal_create_event (failed)", args,
                   {"error": str(e)}, lead_id)
-        return None
+        return _DELIVERY_FAILED
     with get_conn() as conn:
         audit(conn, "user", "gcal_create_event", args,
               {"event_id": event_id}, lead_id)
@@ -75,7 +77,7 @@ def _audit_hook_failure(tool: str, lead_id: int | None, exc: Exception) -> None:
         pass  # If audit itself fails, swallow it — never let the hook raise
 
 
-def _on_tour_booked_impl(lead: dict, appt: dict) -> None:
+def _on_tour_booked_impl(lead: dict, appt: dict) -> bool:
     start = datetime.fromisoformat(appt["start_ts"])
     end = datetime.fromisoformat(appt["end_ts"])
     minutes = max(int((end - start).total_seconds() // 60), 15)
@@ -88,26 +90,30 @@ def _on_tour_booked_impl(lead: dict, appt: dict) -> None:
         "event_duration_minutes": minutes,
         "timezone": _tz(),
     })
+    if event_id is _DELIVERY_FAILED:
+        return False
     if event_id:
         with get_conn() as conn:
             conn.execute("UPDATE appointments SET gcal_event_id = ? WHERE id = ?",
                          (event_id, appt["id"]))
+    return True
 
 
-def on_tour_booked(lead: dict, appt: dict) -> None:
+def on_tour_booked(lead: dict, appt: dict) -> bool:
     """Book tour in GCal. Blanket guard ensures this never raises into the calling request."""
     try:
-        _on_tour_booked_impl(lead, appt)
+        return _on_tour_booked_impl(lead, appt)
     except Exception as e:
         _audit_hook_failure("gcal_create_event", lead.get("id"), e)
+        return False
 
 
-def _on_lead_created_impl(lead: dict) -> None:
+def _on_lead_created_impl(lead: dict) -> bool:
     # local wall-clock in the event's timezone — naive now() on a UTC box would
     # schedule the call block ~7h off
     start = (datetime.now(ZoneInfo(_tz())) + timedelta(minutes=30)).replace(
         second=0, microsecond=0, tzinfo=None)
-    _create_event(lead["id"], {
+    event_id = _create_event(lead["id"], {
         "calendar_id": "primary",
         "summary": f"📞 Call new lead: {lead['name']}",
         "description": _lead_details(lead),
@@ -115,8 +121,9 @@ def _on_lead_created_impl(lead: dict) -> None:
         "event_duration_minutes": 30,
         "timezone": _tz(),
     })
+    delivered = event_id is not _DELIVERY_FAILED
     if not lead.get("email"):
-        return
+        return delivered
     first = lead["name"].split()[0]
     subject = (f"Your home search in {lead['area']}" if lead.get("area")
                else "Great to connect!")
@@ -129,7 +136,7 @@ def _on_lead_created_impl(lead: dict) -> None:
         with get_conn() as conn:
             audit(conn, "user", "gmail_create_draft (simulated)", args,
                   {"simulated": True}, lead["id"])
-        return
+        return delivered
     try:
         data = cc.execute("GMAIL_CREATE_EMAIL_DRAFT", args)
         draft_id = (data.get("response_data") or data).get("id")
@@ -137,20 +144,22 @@ def _on_lead_created_impl(lead: dict) -> None:
         with get_conn() as conn:
             audit(conn, "user", "gmail_create_draft (failed)", args,
                   {"error": str(e)}, lead["id"])
-        return
+        return False
     with get_conn() as conn:
         audit(conn, "user", "gmail_create_draft", args, {"id": draft_id}, lead["id"])
+    return delivered
 
 
-def on_lead_created(lead: dict) -> None:
+def on_lead_created(lead: dict) -> bool:
     """Create call block + intro draft. Blanket guard ensures this never raises into the calling request."""
     try:
-        _on_lead_created_impl(lead)
+        return _on_lead_created_impl(lead)
     except Exception as e:
         _audit_hook_failure("gmail_create_draft", lead.get("id"), e)
+        return False
 
 
-def _on_reminder_created_impl(reminder: dict) -> None:
+def _on_reminder_created_impl(reminder: dict) -> bool:
     with get_conn() as conn:
         row = conn.execute("SELECT name FROM leads WHERE id = ?",
                            (reminder["lead_id"],)).fetchone()
@@ -163,15 +172,19 @@ def _on_reminder_created_impl(reminder: dict) -> None:
         "event_duration_minutes": 15,
         "timezone": _tz(),
     })
+    if event_id is _DELIVERY_FAILED:
+        return False
     if event_id:
         with get_conn() as conn:
             conn.execute("UPDATE reminders SET gcal_event_id = ? WHERE id = ?",
                          (event_id, reminder["id"]))
+    return True
 
 
-def on_reminder_created(reminder: dict) -> None:
+def on_reminder_created(reminder: dict) -> bool:
     """Create follow-up reminder in GCal. Blanket guard ensures this never raises into the calling request."""
     try:
-        _on_reminder_created_impl(reminder)
+        return _on_reminder_created_impl(reminder)
     except Exception as e:
         _audit_hook_failure("gcal_create_event", reminder.get("lead_id"), e)
+        return False

@@ -99,6 +99,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
         " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
         " decided_at TEXT)"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS hook_outbox ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " pending_change_id INTEGER NOT NULL UNIQUE,"
+        " idempotency_key TEXT NOT NULL UNIQUE,"
+        " hook_type TEXT NOT NULL CHECK (hook_type IN"
+        " ('lead_created','tour_booked','reminder_created')),"
+        " object_id INTEGER NOT NULL,"
+        " lead_id INTEGER,"
+        " status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN"
+        " ('pending','processing','failed','delivered')),"
+        " attempts INTEGER NOT NULL DEFAULT 0,"
+        " last_error TEXT,"
+        " claim_token TEXT,"
+        " claimed_at TEXT,"
+        " created_at TEXT NOT NULL DEFAULT"
+        " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
+        " updated_at TEXT NOT NULL DEFAULT"
+        " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
+        " delivered_at TEXT)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hook_outbox_delivery "
+        "ON hook_outbox (status, claimed_at, id)"
+    )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
     for col in ("persona", "relationship_summary", "close_reason"):
         if col not in cols:
@@ -115,7 +140,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 # Every timestamp column in schema.sql (Task 7's one convention: naive local
-# wall-clock) — 13 columns total across 9 tables. Keep in sync with
+# wall-clock). Keep in sync with
 # schema.sql — availability has no timestamp columns (start_time/end_time
 # are HH:MM only) so it's absent on purpose.
 TIMESTAMP_COLUMNS = {
@@ -128,6 +153,7 @@ TIMESTAMP_COLUMNS = {
     "briefing": ["generated_at"],
     "insights": ["computed_at"],
     "daily_summary": ["generated_at"],
+    "hook_outbox": ["claimed_at", "created_at", "updated_at", "delivered_at"],
 }
 
 
