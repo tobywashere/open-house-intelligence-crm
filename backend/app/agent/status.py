@@ -38,6 +38,8 @@ _CRM_DETAIL: str | None = None
 _EVENT_SEQUENCE = 0
 _LAST_CHAT_SEQUENCE = 0
 _CRM_SEQUENCE = 0
+_FALLBACKS: dict[str, int] = {}
+_LAST_FALLBACK_SEQUENCE = 0
 
 
 def record_chat(ok: bool, detail: str | None = None) -> None:
@@ -68,6 +70,19 @@ def last_crm_capability() -> tuple[bool | None, str | None]:
         return _CRM_OK, _CRM_DETAIL
 
 
+def record_fallback(kind: Literal["extract", "draft_followup", "score_explanation"]) -> None:
+    global _EVENT_SEQUENCE, _LAST_FALLBACK_SEQUENCE
+    with _LOCK:
+        _EVENT_SEQUENCE += 1
+        _LAST_FALLBACK_SEQUENCE = _EVENT_SEQUENCE
+        _FALLBACKS[kind] = _FALLBACKS.get(kind, 0) + 1
+
+
+def fallback_counts() -> dict[str, int]:
+    with _LOCK:
+        return dict(_FALLBACKS)
+
+
 def resolved_status(*, gateway_reachable: bool, endpoint_enabled: bool) -> AgentStatus:
     with _LOCK:
         if not gateway_reachable:
@@ -76,8 +91,10 @@ def resolved_status(*, gateway_reachable: bool, endpoint_enabled: bool) -> Agent
             return "endpoint_disabled"
         if (
             _CRM_OK is True
-            and _LAST_CHAT_OK is False
-            and _LAST_CHAT_SEQUENCE > _CRM_SEQUENCE
+            and (
+                (_LAST_CHAT_OK is False and _LAST_CHAT_SEQUENCE > _CRM_SEQUENCE)
+                or _LAST_FALLBACK_SEQUENCE > _CRM_SEQUENCE
+            )
         ):
             return "degraded"
         if _CRM_OK is True:

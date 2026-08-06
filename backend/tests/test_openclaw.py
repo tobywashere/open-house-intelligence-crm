@@ -136,6 +136,25 @@ def test_valid_completion_marks_chat_verified(monkeypatch):
     assert probe.crm_verified is False
 
 
+def test_extract_fallback_is_labeled(monkeypatch):
+    monkeypatch.setattr(agent_status, "_FALLBACKS", {}, raising=False)
+    driver = OpenClawDriver(client_factory=client_factory(post_status=500))
+
+    result = asyncio.run(driver.extract("Met Alex Rivera, budget $900k"))
+
+    assert result.pop("_fallback_used") == "deterministic_parser"
+    assert result["name"] == "Alex Rivera"
+    assert agent_status.fallback_counts()["extract"] == 1
+
+
+def test_draft_fallback_is_visibly_labeled():
+    driver = OpenClawDriver(client_factory=client_factory(post_status=500))
+
+    result = asyncio.run(driver.draft_followup({"name": "Alex"}))
+
+    assert result.startswith("[deterministic fallback]")
+
+
 def test_crm_capability_request_is_read_only_and_targets_skill(monkeypatch):
     import app.agent.openclaw as module
 

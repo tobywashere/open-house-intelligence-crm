@@ -172,6 +172,7 @@ async def _resolve_create_fields(body: LeadIn) -> tuple[str, dict, str | None]:
 
     if body.raw_text:
         extracted = await get_driver().extract(body.raw_text)
+        extracted.pop("_fallback_used", None)
         name = name or extracted.pop("name", None)
         for k in ("phone", "email", "budget", "area", "timeline", "intent"):
             if extracted.get(k) is not None:

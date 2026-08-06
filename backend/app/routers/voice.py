@@ -129,15 +129,20 @@ async def prepare_voice_note(body: VoicePrepareIn):
             except OSError:
                 pass
 
+    warnings: list[str] = []
     try:
         extracted = await get_driver().extract(transcript)
+        fallback = extracted.pop("_fallback_used", None)
         draft = VoiceDraft.model_validate(extracted)
     except (ValidationError, TypeError, ValueError):
         raise HTTPException(
             502, "The local agent returned an invalid CRM draft. No lead was changed."
         )
 
-    warnings: list[str] = []
+    if fallback:
+        warnings.append(
+            "OpenClaw extraction was unavailable; this draft used the deterministic parser. Review every field."
+        )
     if not draft.name:
         warnings.append("No name was detected. Add one before saving a new lead.")
     with get_conn() as conn:

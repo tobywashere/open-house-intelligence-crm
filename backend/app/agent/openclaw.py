@@ -17,9 +17,11 @@ import httpx
 from .base import AgentDriver
 from .status import (
     AgentProbe,
+    fallback_counts,
     last_chat,
     last_crm_capability,
     record_chat,
+    record_fallback,
     resolved_status,
 )
 
@@ -134,7 +136,10 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:  # demo insurance: lead creation must never break
             logging.warning("openclaw extract failed (%s) — regex fallback", exc)
             from .mock import MockDriver
-            return await MockDriver().extract(raw_text)
+            result = await MockDriver().extract(raw_text)
+            result["_fallback_used"] = "deterministic_parser"
+            record_fallback("extract")
+            return result
 
     async def draft_followup(self, lead: dict) -> str:
         try:
@@ -147,7 +152,8 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:
             logging.warning("openclaw draft_followup failed (%s) — mock fallback", exc)
             from .mock import MockDriver
-            return await MockDriver().draft_followup(lead)
+            record_fallback("draft_followup")
+            return "[deterministic fallback] " + await MockDriver().draft_followup(lead)
 
     async def explain_score(self, lead: dict, score: int) -> str:
         try:
@@ -160,7 +166,8 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:
             logging.warning("openclaw explain_score failed (%s) — mock fallback", exc)
             from .mock import MockDriver
-            return await MockDriver().explain_score(lead, score)
+            record_fallback("score_explanation")
+            return "[deterministic fallback] " + await MockDriver().explain_score(lead, score)
 
     async def connected(self) -> bool:
         probe = await self.probe()
@@ -172,7 +179,7 @@ class OpenClawDriver(AgentDriver):
         probe_fields = {
             "crm_verified": crm_ok is True,
             "agent_id": AGENT_ID or None,
-            "fallbacks": {},
+            "fallbacks": fallback_counts(),
         }
         try:
             async with self._client_factory(timeout=3) as client:

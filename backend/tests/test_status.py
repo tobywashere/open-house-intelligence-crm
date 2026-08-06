@@ -17,6 +17,8 @@ def clear_integration_status(monkeypatch):
     monkeypatch.setattr(agent_status, "_EVENT_SEQUENCE", 0, raising=False)
     monkeypatch.setattr(agent_status, "_LAST_CHAT_SEQUENCE", 0, raising=False)
     monkeypatch.setattr(agent_status, "_CRM_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_FALLBACKS", {}, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_FALLBACK_SEQUENCE", 0, raising=False)
 
 
 def test_chat_success_does_not_mean_crm_verified():
@@ -48,6 +50,31 @@ def test_newer_chat_failure_degrades_previously_verified_crm():
         gateway_reachable=True,
         endpoint_enabled=True,
     ) == "degraded"
+
+
+def test_fallback_after_crm_verification_marks_status_degraded():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    agent_status.record_fallback("extract")
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "degraded"
+    assert agent_status.fallback_counts() == {"extract": 1}
+
+
+def test_successful_crm_verification_resets_fallback_degradation_epoch():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    agent_status.record_fallback("extract")
+    agent_status.record_crm_capability(True)
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "crm_verified"
+    assert agent_status.fallback_counts() == {"extract": 1}
 
 
 def test_configured_integration_is_not_reported_as_verified(client, monkeypatch):
