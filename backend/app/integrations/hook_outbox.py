@@ -386,6 +386,8 @@ def start_worker(
 ) -> threading.Thread:
     """Start the single process-local delivery worker, or return the live one."""
     global _worker_thread, _worker_stop_event, _worker_wake_event
+    safe_retry_base = max(int(retry_base_seconds), 1)
+    safe_retry_max = max(int(retry_max_seconds), safe_retry_base)
     while True:
         stopping_thread = None
         with _WORKER_LOCK:
@@ -407,8 +409,8 @@ def start_worker(
                         "batch_size": max(int(batch_size), 1),
                         "poll_seconds": poll_seconds,
                         "stale_after_seconds": stale_after_seconds,
-                        "retry_base_seconds": retry_base_seconds,
-                        "retry_max_seconds": retry_max_seconds,
+                        "retry_base_seconds": safe_retry_base,
+                        "retry_max_seconds": safe_retry_max,
                     },
                     name="approval-hook-outbox",
                     daemon=True,

@@ -103,6 +103,26 @@ def test_configured_integration_is_not_reported_as_verified(client, monkeypatch)
     }
 
 
+def test_live_missing_credentials_warning_preserves_durable_retry_semantics(
+    client, monkeypatch, capsys
+):
+    from app.main import startup
+
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_TRANSPORT", "api")
+    monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
+    capsys.readouterr()
+
+    startup()
+
+    warning = capsys.readouterr().out
+    warning_lower = warning.lower()
+    assert "live integration delivery is unavailable" in warning_lower
+    assert "durable hook intents remain queued" in warning_lower
+    assert "retry automatically after configuration" in warning_lower
+    assert "simulated" not in warning_lower
+
+
 def test_successful_operation_records_verified_status(monkeypatch):
     monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.setenv("COMPOSIO_TRANSPORT", "api")

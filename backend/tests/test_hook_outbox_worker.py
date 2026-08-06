@@ -133,6 +133,49 @@ def test_worker_retries_failed_row_without_restart(client, monkeypatch):
     _stop_worker()
 
 
+def test_worker_clamps_zero_retry_base_to_prevent_tight_full_batch_loop(
+    client, monkeypatch
+):
+    import threading
+
+    from app.integrations import hook_outbox, hooks
+
+    _stop_worker()
+    _configure_live(monkeypatch)
+    _seed_live_reminder_rows(client, 1)
+    first_call = threading.Event()
+    second_call = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def always_fails(reminder):
+        calls.append(reminder)
+        if len(calls) == 1:
+            first_call.set()
+        else:
+            second_call.set()
+            release.wait(timeout=2)
+        return hooks.HookOutcome.FAILED
+
+    monkeypatch.setattr(hooks, "on_reminder_created", always_fails)
+    hook_outbox.start_worker(
+        batch_size=1,
+        poll_seconds=30,
+        retry_base_seconds=0,
+        retry_max_seconds=0,
+    )
+    try:
+        assert first_call.wait(timeout=2)
+        assert not second_call.wait(timeout=0.2)
+        failed = _outbox_rows()[0]
+        assert failed["status"] == "failed"
+        assert failed["attempts"] == 1
+        assert failed["next_attempt_at"] is not None
+    finally:
+        release.set()
+        _stop_worker()
+
+
 def test_one_failed_delivery_does_not_stop_the_rest_of_the_batch(
     client, monkeypatch
 ):

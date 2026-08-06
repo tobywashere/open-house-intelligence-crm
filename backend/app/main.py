@@ -75,8 +75,11 @@ def startup():
               "anyone on the network can read/write the CRM and use the agent.")
     from .integrations import composio_client as cc
     if cc.mode() == "live" and not cc.is_live():
-        print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
-              "running with integrations OFF (simulated).")
+        print(
+            "WARNING: INTEGRATIONS_MODE=live but live integration delivery is "
+            "unavailable. Durable hook intents remain queued and retry "
+            "automatically after configuration."
+        )
     # INTEGRATIONS_POLLER must be explicitly opted in — with the CLI transport
     # the connected mailbox is a PERSONAL account. Polling sends real inbound
     # mail to the model and queues new-lead proposals for human review.
