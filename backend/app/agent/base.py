@@ -1,4 +1,4 @@
-"""Agent driver interface. Two implementations: mock (dev default) and openclaw (GB10)."""
+"""Agent driver interface for deterministic development and local OpenClaw."""
 from abc import ABC, abstractmethod
 
 from .status import AgentProbe
@@ -40,6 +40,13 @@ class AgentDriver(ABC):
 
     async def live_check(self) -> AgentProbe:
         return await self.probe()
+
+    async def request_crm_capability(
+        self,
+        session_id: str,
+        probe_nonce: str,
+    ) -> None:
+        raise RuntimeError("CRM capability is unavailable for this driver")
 
 
 def get_driver() -> AgentDriver:

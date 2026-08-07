@@ -65,21 +65,35 @@ app.include_router(voice.router, prefix="/api")
 @app.on_event("startup")
 def startup():
     init_db()
+    # Recover committed approval hooks continuously. The worker has one
+    # process-local instance and never holds SQLite across provider calls.
+    from .integrations.hook_outbox import start_worker
+    app.state.hook_outbox_thread = start_worker()
     host = os.environ.get("HOST", "127.0.0.1")
     if host not in ("127.0.0.1", "localhost") and not os.environ.get("OHI_API_TOKEN"):
         print("WARNING: serving on a non-localhost interface with no OHI_API_TOKEN — "
               "anyone on the network can read/write the CRM and use the agent.")
     from .integrations import composio_client as cc
     if cc.mode() == "live" and not cc.is_live():
-        print("WARNING: INTEGRATIONS_MODE=live but COMPOSIO_API_KEY is not set — "
-              "running with integrations OFF (simulated).")
+        print(
+            "WARNING: INTEGRATIONS_MODE=live but live integration delivery is "
+            "unavailable. Durable hook intents remain queued and retry "
+            "automatically after configuration."
+        )
     # INTEGRATIONS_POLLER must be explicitly opted in — with the CLI transport
-    # the connected mailbox is a PERSONAL account, and auto-intake turns real
-    # inbound mail into CRM leads (and model input) with no human in the loop.
+    # the connected mailbox is a PERSONAL account. Polling sends real inbound
+    # mail to the model and queues new-lead proposals for human review.
     if cc.is_live() and os.environ.get("INTEGRATIONS_POLLER", "off") == "on":
         import asyncio
         from .integrations.poller import poll_loop
         app.state.poller_task = asyncio.get_event_loop().create_task(poll_loop())
+
+
+@app.on_event("shutdown")
+def shutdown():
+    from .integrations.hook_outbox import stop_worker
+
+    stop_worker()
 
 
 # GB10 single-port hosting: if the dashboard has been built (npm run build),

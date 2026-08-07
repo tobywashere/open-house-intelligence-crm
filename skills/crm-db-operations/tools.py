@@ -9,11 +9,10 @@ The model must never see or write raw SQL; every DB read/write goes through one
 of these functions, which call the FastAPI backend (Toby's layer) over HTTP.
 
 Configure the backend location with the CRM_API_URL env var
-(default: http://localhost:8080/api — same host as the backend when both run on
-the GB10 for the demo).
+(default: http://localhost:8080/api on the same local machine as the backend).
 
-Copy this whole directory (tools.py + SKILL.md) to ~/.openclaw/skills/crm-db-operations
-on the GB10 instance.
+The repository setup helper installs this directory into the dedicated
+OpenClaw agent workspace.
 """
 from __future__ import annotations
 
@@ -26,6 +25,20 @@ import urllib.request
 BASE_URL = os.environ.get("CRM_API_URL", "http://localhost:8080/api").rstrip("/")
 TIMEOUT = float(os.environ.get("CRM_API_TIMEOUT_SECONDS", "120"))
 API_TOKEN = os.environ.get("OHI_API_TOKEN", "")
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Turn every HTTP redirect into an HTTPError at the original origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_RejectRedirects())
+
+
+def _open_request(req: urllib.request.Request, *, timeout: float):
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
 
 
 class CRMError(Exception):
@@ -45,25 +58,28 @@ def _request(method: str, path: str, *, params: dict | None = None,
         if clean:
             url += "?" + urllib.parse.urlencode(clean)
     data = json.dumps(body).encode() if body is not None else None
-    # Marks every call here as agent-originated. The backend only acts on
-    # this for create_lead/update_lead/close_lead/delete_lead/merge_leads,
-    # which it queues as a pending change instead of applying — see
-    # docs/CONTRACT.md's pending-changes section. Harmless on every other
-    # endpoint, which ignores the header.
+    # Marks every call here as agent-originated. The backend uses this to gate
+    # writes behind approval and to audit read-only capability evidence. See
+    # docs/CONTRACT.md's pending-changes section. Other endpoints ignore it.
     headers = {"Content-Type": "application/json", "X-Actor": "agent"}
     if API_TOKEN:
         headers["X-API-Token"] = API_TOKEN
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with _open_request(req, timeout=TIMEOUT) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
+        try:
+            detail = e.read().decode(errors="replace")
+        except (TimeoutError, OSError):
+            detail = ""
         try:
             detail = json.loads(detail).get("detail", detail)
         except json.JSONDecodeError:
             pass
+        if not detail:
+            detail = str(e.reason)
         raise CRMError(e.code, str(detail)) from None
     except urllib.error.URLError as e:
         raise CRMError(0, f"could not reach CRM backend at {BASE_URL}: {e.reason}") from None
@@ -98,6 +114,17 @@ def update_lead(lead_id: int, **fields) -> dict:
     if not fields:
         raise ValueError("update_lead requires at least one field to change")
     return _request("PATCH", f"/leads/{lead_id}", body=fields)
+
+
+def add_note(lead_id: int, content: str) -> dict:
+    """Propose a note on an existing lead; operator approval is required."""
+    if not content.strip():
+        raise ValueError("content must not be empty")
+    return _request(
+        "POST",
+        f"/leads/{int(lead_id)}/events",
+        body={"type": "note", "content": content.strip()},
+    )
 
 
 def close_lead(
@@ -160,8 +187,10 @@ def _process_lead(lead_id: int) -> dict:
 
 
 def score_lead(lead_id: int) -> dict:
-    """Run the deterministic scoring formula for a lead and persist score +
-    score_reason. Returns {"lead_id", "score", "score_reason"}.
+    """Run the deterministic scoring formula for a lead and return the proposed
+    score + score_reason. The backend queues those fields for operator approval
+    rather than persisting them immediately. Returns
+    {"lead_id", "score", "score_reason"}.
     Note: this call and draft_followup share one backend round trip
     (POST /leads/{id}/process) — calling either re-runs both.
     """
@@ -172,7 +201,9 @@ def score_lead(lead_id: int) -> dict:
 
 def draft_followup(lead_id: int) -> str:
     """Generate a personalized follow-up message for a lead, grounded in their
-    stored context (budget, area, timeline, intent, activity).
+    stored context (budget, area, timeline, intent, activity). Any score or
+    extracted CRM-field candidates produced by the shared processing pass are
+    queued for operator approval, not persisted by this draft request.
     """
     return _process_lead(lead_id)["followup_draft"]
 
@@ -199,17 +230,17 @@ def list_appointments() -> list:
 
 def book_appointment(lead_id: int, start_ts: str, end_ts: str,
                       location: str | None = None) -> dict:
-    """Book a meeting. Raises CRMError(status=409) if the slot conflicts with
-    an existing appointment — check_availability first. On success the lead's
-    status flips to meeting_booked automatically.
+    """Propose a meeting for operator approval. Raises CRMError(status=409)
+    if the slot already conflicts — check_availability first. The lead changes
+    to meeting_booked only after approval.
     """
     return _request("POST", "/appointments", body={"lead_id": lead_id, "start_ts": start_ts,
                                                      "end_ts": end_ts, "location": location})
 
 
 def schedule_followup(lead_id: int, due_ts: str, note: str | None = None) -> dict:
-    """Schedule a reminder (e.g. after find_neglected_leads flags someone, or
-    after sending an initial follow-up) — the dashboard polls for due ones.
+    """Propose a reminder for operator approval (e.g. after
+    find_neglected_leads flags someone, or after sending an initial follow-up).
     """
     return _request("POST", "/reminders", body={"lead_id": lead_id, "due_ts": due_ts,
                                                    "note": note})
@@ -229,14 +260,14 @@ def find_neglected_leads() -> list:
     return _request("POST", "/demo/advance-time", body={"days": 0})["neglected"]
 
 
-def generate_dashboard_insights() -> dict:
+def generate_dashboard_insights(probe_nonce: str | None = None) -> dict:
     """Return the deterministic dashboard numbers (active leads, high-priority
     count, follow-ups due, appointments booked, avg response time, inference
     mode). This tool returns raw numbers only — the model is expected to
     compose the natural-language summary/insight on top of them; the backend
     does not write prose here.
     """
-    return _request("GET", "/metrics")
+    return _request("GET", "/metrics", params={"probe_nonce": probe_nonce})
 
 
 def post_briefing(payload: dict) -> dict:

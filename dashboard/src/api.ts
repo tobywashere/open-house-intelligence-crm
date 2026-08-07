@@ -1,6 +1,6 @@
 // Typed client for the backend contract (docs/CONTRACT.md).
-// Dev: vite on :5173 talks to the backend on :8000. Production (GB10): the
-// backend serves the built dashboard, so the API is same-origin at /api.
+// Dev: Vite on :5173 talks to the backend on :8000. In a single-port local
+// deployment, the backend serves the built dashboard and the API is at /api.
 const BASE =
   import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000/api' : '/api')
 
@@ -94,10 +94,13 @@ export interface IntegrationsStatus {
 }
 
 export interface AgentStatus {
-  status: 'mock' | 'unreachable' | 'unauthorized' | 'endpoint_disabled' | 'endpoint_enabled' | 'verified' | 'failed'
+  status: 'mock' | 'unreachable' | 'unauthorized' | 'endpoint_disabled' | 'endpoint_enabled' | 'chat_verified' | 'crm_verified' | 'degraded' | 'failed'
   gateway_reachable: boolean
   endpoint_enabled: boolean
   last_chat_ok: boolean | null
+  crm_verified: boolean
+  agent_id: string | null
+  fallbacks: Record<string, number>
   detail: string | null
 }
 
@@ -156,10 +159,20 @@ export interface DuplicateCandidate {
 // source, phone, email, budget, area, timeline, intent, preferences[],
 // missing_fields[]); update_lead is the proposed field changes; close_lead is
 // {outcome, reason}; delete_lead is {reason}; merge_leads is
-// {primary_id, duplicate_id}.
+// {primary_id, duplicate_id}; add_event is {type, content};
+// book_appointment is {lead_id, start_ts, end_ts, location}; and
+// schedule_followup is {lead_id, due_ts, note}.
 export interface PendingChange {
   id: number
-  operation: 'create_lead' | 'update_lead' | 'close_lead' | 'delete_lead' | 'merge_leads'
+  operation:
+    | 'create_lead'
+    | 'update_lead'
+    | 'close_lead'
+    | 'delete_lead'
+    | 'merge_leads'
+    | 'add_event'
+    | 'book_appointment'
+    | 'schedule_followup'
   lead_id: number | null
   payload: Record<string, unknown>
   summary: string

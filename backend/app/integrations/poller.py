@@ -10,6 +10,9 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from fastapi import HTTPException
+
+from ..approvals import insert_pending_change
 from ..db import audit, get_conn
 from . import composio_client as cc
 
@@ -53,8 +56,8 @@ def _extract_address(sender: str) -> str:
 
 def check_inbox() -> dict:
     """One polling pass over the inbox: replies from known leads (logged,
-    reminder cleared, fields re-extracted) + auto-intake of lead-like mail
-    from unknown senders via the existing raw-text pipeline."""
+    reminder cleared, fields re-extracted) + review proposals for lead-like
+    mail from unknown senders via the existing raw-text pipeline."""
     with get_conn() as conn:
         leads = [dict(r) for r in conn.execute(
             "SELECT id, name, email FROM leads WHERE email IS NOT NULL AND email != ''")]
@@ -74,41 +77,75 @@ def check_inbox() -> dict:
             or m.get("snippet") or ""
         lead = by_email.get(addr)
         if lead:
-            counts["replies"] += _log_reply(lead, msg_id, body)
+            _, inserted = _log_reply(lead, msg_id, body)
+            counts["replies"] += int(inserted)
         else:
             counts["intake"] += _intake_lead(addr, m.get("subject") or "", body, msg_id)
     return counts
 
 
+def _seen_in_conn(conn, msg_id: str) -> bool:
+    marker = f"%[gmail:{msg_id}]%"
+    if conn.execute(
+        "SELECT 1 FROM events WHERE content LIKE ?", (marker,)
+    ).fetchone():
+        return True
+    return conn.execute(
+        "SELECT 1 FROM pending_changes "
+        "WHERE operation = 'create_lead' AND payload LIKE ?",
+        (marker,),
+    ).fetchone() is not None
+
+
 def _seen(msg_id: str) -> bool:
     with get_conn() as conn:
-        return conn.execute("SELECT 1 FROM events WHERE content LIKE ?",
-                            (f"%[gmail:{msg_id}]%",)).fetchone() is not None
+        return _seen_in_conn(conn, msg_id)
 
 
-def _log_reply(lead: dict, msg_id: str, snippet: str) -> int:
-    if _seen(msg_id):
-        return 0
+def _log_reply(lead: dict, msg_id: str, snippet: str) -> tuple[int, bool]:
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-            (lead["id"], "email",
-             f"Reply received: {(snippet or '(no preview)')[:300]} [gmail:{msg_id}]"))
-        conn.execute(
-            "UPDATE reminders SET done = 1 WHERE lead_id = ? AND done = 0 "
-            "AND note LIKE 'Check for a reply%'", (lead["id"],))
-        conn.execute(
-            "UPDATE leads SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime') "
-            "WHERE id = ?", (lead["id"],))
-        audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
-              {"message_id": msg_id}, lead["id"])
+        marker = f"%[gmail:{msg_id}]%"
+        existing = conn.execute(
+            "SELECT id FROM events WHERE lead_id = ? AND content LIKE ? "
+            "ORDER BY id LIMIT 1",
+            (lead["id"], marker),
+        ).fetchone()
+        inserted = existing is None
+        if existing:
+            event_id = int(existing["id"])
+        else:
+            cur = conn.execute(
+                "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+                (lead["id"], "email",
+                 f"Reply received: {(snippet or '(no preview)')[:300]} [gmail:{msg_id}]"))
+            event_id = int(cur.lastrowid)
+            conn.execute(
+                "UPDATE reminders SET done = 1 WHERE lead_id = ? AND done = 0 "
+                "AND note LIKE 'Check for a reply%'", (lead["id"],))
+            conn.execute(
+                "UPDATE leads SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%S','now','localtime') "
+                "WHERE id = ?", (lead["id"],))
+            audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
+                  {"message_id": msg_id, "event_id": event_id}, lead["id"])
     try:
-        # new info in a reply may fill missing fields / change the score
+        # Use the precise Gmail event. Another note may arrive while agent
+        # extraction is running, and retrying this message must reuse its key.
         from ..routers.leads import process_lead
-        asyncio.run(process_lead(lead["id"]))
+        asyncio.run(process_lead(lead["id"], source_event_id=event_id))
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "cron",
+                    "agent_processing_deferred",
+                    {"lead_id": lead["id"]},
+                    {"reason": "deterministic_fallback"},
+                    lead["id"],
+                )
     except Exception:
         pass  # re-extraction is best-effort; the reply event is already logged
-    return 1
+    return event_id, inserted
 
 
 def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
@@ -124,16 +161,38 @@ def _intake_lead(addr: str, subject: str, body: str, msg_id: str) -> int:
     # literal tag.
     raw = _wrap_untrusted(addr, subject, body[:1000], msg_id)
     try:
-        from ..routers.leads import LeadIn, create_lead
-        lead = asyncio.run(create_lead(LeadIn(raw_text=raw, source="email", email=addr)))
+        from ..routers.leads import (
+            LeadIn,
+            _resolve_create_fields,
+            _resolved_create_proposal,
+        )
+
+        resolution = asyncio.run(
+            _resolve_create_fields(LeadIn(raw_text=raw, source="email", email=addr))
+        )
+        payload, summary = _resolved_create_proposal(resolution)
+        # Extraction may take minutes and therefore stays above the transaction.
+        # BEGIN IMMEDIATE serializes this final re-check, proposal insert, and
+        # audit so concurrent pollers cannot both claim the same Gmail message.
+        with get_conn() as conn:
+            if _seen_in_conn(conn, msg_id):
+                return 0
+            insert_pending_change(conn, "create_lead", None, payload, summary)
+            audit(
+                conn,
+                "cron",
+                "email_intake_review_required",
+                {"from": addr, "subject": subject},
+                {
+                    "message_id": msg_id,
+                    "reason": "backup_parser" if resolution.fallback else "automatic_intake",
+                },
+            )
     except Exception as e:
         with get_conn() as conn:
             audit(conn, "cron", "email_intake_failed",
                   {"from": addr, "subject": subject}, {"error": str(e)})
         return 0
-    with get_conn() as conn:
-        audit(conn, "cron", "email_lead_intake", {"from": addr, "subject": subject},
-              {"lead_id": lead["id"]}, lead["id"])
     return 1
 
 

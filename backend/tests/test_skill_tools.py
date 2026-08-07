@@ -1,9 +1,13 @@
 """Every public skill tool must be callable and raise only CRMError on failure.
 Would have caught delete_lead's NameError (dead since birth)."""
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import inspect
+import json
 import sys
 from pathlib import Path
+import threading
 from unittest.mock import patch
 
 import httpx
@@ -30,6 +34,7 @@ PUBLIC = [f for n, f in inspect.getmembers(crm, inspect.isfunction) if not n.sta
 # not as a second positional arg (that raises TypeError, not CRMError).
 SAMPLE_ARGS = {
     "create_lead": (("note text", "note"), {}),
+    "add_note": ((1, "Requested a Saturday tour"), {}),
     "update_lead": ((1,), {"status": "contacted"}),
     "find_duplicate_leads": ((1,), {}), "get_lead_context": ((1,), {}), "list_leads": ((), {}),
     "score_lead": ((1,), {}), "draft_followup": ((1,), {}), "check_availability": (("2026-08-03",), {}),
@@ -57,9 +62,8 @@ def test_every_tool_raises_only_crmerror_when_backend_down(fn):
 
 
 def test_read_timeout_is_crmerror():
-    """urlopen read-timeouts escape as TimeoutError unless _request catches them."""
-    import urllib.request
-    with patch.object(urllib.request, "urlopen", side_effect=TimeoutError("read timed out")):
+    """Read timeouts escape as TimeoutError unless _request catches them."""
+    with patch.object(crm, "_open_request", side_effect=TimeoutError("read timed out")):
         with pytest.raises(crm.CRMError):
             crm.list_leads()
 
@@ -75,11 +79,87 @@ class _FakeResponse:
         return b"{}"
 
 
+@contextmanager
+def _local_http_server(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
+def test_authenticated_crm_client_hard_fails_redirect_without_remote_hit(
+    redirect_status,
+):
+    origin_tokens = []
+    remote_hits = []
+
+    class RemoteHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            remote_hits.append(dict(self.headers.items()))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_POST = do_GET
+
+        def log_message(self, *_args):
+            pass
+
+    with _local_http_server(RemoteHandler) as remote_url:
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                origin_tokens.append(self.headers.get("X-API-Token"))
+                self.send_response(redirect_status)
+                self.send_header("Location", remote_url + "/capture")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        with _local_http_server(RedirectHandler) as origin_url:
+            with patch.object(crm, "BASE_URL", origin_url + "/api"):
+                with patch.object(crm, "API_TOKEN", "redirect-secret"):
+                    with pytest.raises(crm.CRMError) as exc:
+                        crm.post_summary({"date": "2026-08-06"})
+
+    assert exc.value.status == redirect_status
+    assert origin_tokens == ["redirect-secret"]
+    assert remote_hits == []
+
+
+def test_authenticated_crm_client_preserves_normal_local_calls():
+    received_tokens = []
+
+    class TrustedHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received_tokens.append(self.headers.get("X-API-Token"))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def log_message(self, *_args):
+            pass
+
+    with _local_http_server(TrustedHandler) as trusted_url:
+        with patch.object(crm, "BASE_URL", trusted_url + "/api"):
+            with patch.object(crm, "API_TOKEN", "trusted-secret"):
+                assert crm.list_leads() == []
+
+    assert received_tokens == ["trusted-secret"]
+
+
 def test_x_api_token_header_sent_when_configured():
     """.env.example and docs/LOCAL-AI.md tell operators to set OHI_API_TOKEN once
     the backend binds beyond localhost — every skill call must actually send it,
     or the guarded backend just 401s the whole product."""
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -87,13 +167,12 @@ def test_x_api_token_header_sent_when_configured():
         return _FakeResponse()
 
     with patch.object(crm, "API_TOKEN", "s3cret"):
-        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(crm, "_open_request", side_effect=fake_urlopen):
             crm.list_leads()
     assert captured["headers"].get("X-api-token") == "s3cret"
 
 
 def test_x_api_token_header_absent_when_unset():
-    import urllib.request
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -101,9 +180,59 @@ def test_x_api_token_header_absent_when_unset():
         return _FakeResponse()
 
     with patch.object(crm, "API_TOKEN", ""):
-        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(crm, "_open_request", side_effect=fake_urlopen):
             crm.list_leads()
     assert "X-api-token" not in captured["headers"]
+
+
+def test_dashboard_insights_passes_optional_probe_nonce():
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResponse()
+
+    with patch.object(crm, "_open_request", side_effect=fake_urlopen):
+        crm.generate_dashboard_insights("c" * 32)
+
+    assert captured["url"].endswith("/metrics?probe_nonce=" + "c" * 32)
+
+
+def test_dashboard_insights_remains_no_argument_compatible():
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResponse()
+
+    with patch.object(crm, "_open_request", side_effect=fake_urlopen):
+        crm.generate_dashboard_insights()
+
+    assert captured["url"].endswith("/metrics")
+
+
+def test_add_note_uses_reviewed_event_endpoint():
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.method
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data)
+        return _FakeResponse()
+
+    with patch.object(crm, "_open_request", side_effect=fake_urlopen):
+        crm.add_note(7, "  Requested a Saturday tour  ")
+
+    assert captured["url"].endswith("/leads/7/events")
+    assert captured["method"] == "POST"
+    assert captured["headers"]["X-actor"] == "agent"
+    assert captured["body"] == {"type": "note", "content": "Requested a Saturday tour"}
+
+
+def test_add_note_rejects_blank_content_before_request():
+    with pytest.raises(ValueError, match="content must not be empty"):
+        crm.add_note(7, "   ")
 
 
 def test_search_knowledge_end_to_end(live_server):
@@ -143,18 +272,20 @@ def test_natural_language_crm_write_and_booking_contract_end_to_end(live_server)
     with patch.object(crm, "BASE_URL", f"{live_server}/api"):
         lead = _approve(live_server, crm.create_lead(name="Taylor Brooks", source="note", area="Bellevue"))
         updated = _approve(live_server, crm.update_lead(lead["id"], budget=900_000))
-        reminder = crm.schedule_followup(
+        note = _approve(live_server, crm.add_note(lead["id"], "Asked about Saturday tours"))
+        reminder = _approve(live_server, crm.schedule_followup(
             lead["id"], "2026-08-03T09:00:00", "Call Taylor"
-        )
+        ))
         slots = crm.check_availability("2026-08-03")
-        appointment = crm.book_appointment(
+        appointment = _approve(live_server, crm.book_appointment(
             lead["id"],
             slots[0]["start_ts"],
             slots[0]["end_ts"],
             "Bellevue",
-        )
+        ))
 
         assert updated["budget"] == 900_000
+        assert note["content"] == "Asked about Saturday tours"
         assert reminder["lead_id"] == lead["id"]
         assert appointment["lead_id"] == lead["id"]
         assert crm.get_lead_context(lead["id"])["status"] == "meeting_booked"
@@ -173,3 +304,79 @@ def test_close_lead_tool_records_explicit_won_outcome(live_server):
 def test_close_lead_tool_rejects_ambiguous_outcome_before_request():
     with pytest.raises(ValueError, match="won.*lost"):
         crm.close_lead(1, "unknown")
+
+
+def test_score_lead_returns_candidate_without_persisting_before_approval(live_server):
+    created = httpx.post(
+        f"{live_server}/api/leads",
+        json={
+            "name": "Score Candidate",
+            "source": "note",
+            "email": "score@example.com",
+            "budget": 900_000,
+            "timeline": "6 weeks",
+            "intent": "buy",
+        },
+    )
+    assert created.status_code == 200, created.text
+    lead_id = created.json()["id"]
+
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        candidate = crm.score_lead(lead_id)
+        repeated_candidate = crm.score_lead(lead_id)
+
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert candidate["score"] > 0
+    assert candidate["score_reason"]
+    assert repeated_candidate == candidate
+    assert persisted["score"] is None
+    assert persisted["score_reason"] is None
+    pending = httpx.get(f"{live_server}/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"]["score"] == candidate["score"]
+    assert pending[0]["payload"]["score_reason"] == candidate["score_reason"]
+
+    approved = httpx.post(
+        f"{live_server}/api/pending-changes/{pending[0]['id']}/approve"
+    )
+    assert approved.status_code == 200, approved.text
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert persisted["score"] == candidate["score"]
+    assert persisted["score_reason"] == candidate["score_reason"]
+
+
+def test_draft_followup_does_not_persist_candidate_score_before_approval(live_server):
+    created = httpx.post(
+        f"{live_server}/api/leads",
+        json={
+            "name": "Draft Candidate",
+            "source": "note",
+            "email": "draft@example.com",
+            "budget": 850_000,
+            "area": "Kirkland",
+            "timeline": "2 months",
+            "intent": "buy",
+        },
+    )
+    assert created.status_code == 200, created.text
+    lead_id = created.json()["id"]
+
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        draft = crm.draft_followup(lead_id)
+
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert "Draft" in draft
+    assert persisted["score"] is None
+    assert persisted["score_reason"] is None
+    pending = httpx.get(f"{live_server}/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"]["score"] > 0
+    assert pending[0]["payload"]["score_reason"]
+
+    approved = httpx.post(
+        f"{live_server}/api/pending-changes/{pending[0]['id']}/approve"
+    )
+    assert approved.status_code == 200, approved.text
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert persisted["score"] == pending[0]["payload"]["score"]
+    assert persisted["score_reason"] == pending[0]["payload"]["score_reason"]

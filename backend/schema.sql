@@ -120,18 +120,48 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
 );
 
--- Agent-proposed lead-lifecycle writes awaiting a human decision (see
+-- Agent-proposed CRM writes awaiting a human decision (see
 -- routers/pending_changes.py). Only agent-tagged calls (X-Actor: agent) to
--- create/update/close/delete/merge get queued here instead of applied.
+-- create/update/note/book/remind/close/delete/merge get queued here.
 CREATE TABLE IF NOT EXISTS pending_changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  operation TEXT NOT NULL,     -- create_lead | update_lead | close_lead | delete_lead | merge_leads
+  operation TEXT NOT NULL,     -- one of the reviewed CRM operations
   lead_id INTEGER,             -- target lead when known; NULL for create_lead
   payload TEXT NOT NULL,       -- JSON body as submitted, replayed verbatim on approve
   summary TEXT NOT NULL,       -- human-readable one-liner for the approval dialog
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | denied
+  dedupe_key TEXT,             -- stable internal source marker for automated proposals
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | applying (internal) | approved | denied
   result TEXT,                 -- JSON of the applied result, filled on approve
   deny_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
   decided_at TEXT
 );
+
+-- Durable post-approval hook intent. This contains references only, never the
+-- approved CRM payload or credentials. Delivery is at-least-once: workers use
+-- a stable key and a recoverable claim, but the external providers exposed by
+-- the current Composio tools do not accept that key as an idempotency token.
+CREATE TABLE IF NOT EXISTS hook_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pending_change_id INTEGER NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  hook_type TEXT NOT NULL
+    CHECK (hook_type IN ('lead_created','tour_booked','reminder_created')),
+  object_id INTEGER NOT NULL,
+  lead_id INTEGER,
+  delivery_mode TEXT NOT NULL DEFAULT 'simulated'
+    CHECK (delivery_mode IN ('live','simulated')),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','processing','failed','delivered','cancelled')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  claim_token TEXT,
+  claimed_at TEXT,
+  next_attempt_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+  delivered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_hook_outbox_delivery
+  ON hook_outbox (status, claimed_at, id);

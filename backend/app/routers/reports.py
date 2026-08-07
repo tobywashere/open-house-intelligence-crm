@@ -5,6 +5,7 @@ advice. Daily summaries are schema-validated and require source URLs for
 market items. Dashboard insights remain a deterministic persisted payload.
 """
 import json
+import sqlite3
 from datetime import date as Date
 
 from fastapi import APIRouter, Body, HTTPException
@@ -29,14 +30,19 @@ def _upsert(table: str, ts_col: str, payload: dict) -> dict:
     date = payload.get("date")
     if not date:
         raise HTTPException(400, "payload must include a 'date' field")
-    with get_conn() as conn:
-        conn.execute(
-            f"INSERT INTO {table} (date, payload) VALUES (?, ?) "
-            f"ON CONFLICT(date) DO UPDATE SET payload = excluded.payload, "
-            f"{ts_col} = (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))",
-            (date, json.dumps(payload)),
-        )
-        audit(conn, "agent", f"post_{table}", {"date": date}, {})
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                f"INSERT INTO {table} (date, payload) VALUES (?, ?) "
+                f"ON CONFLICT(date) DO UPDATE SET payload = excluded.payload, "
+                f"{ts_col} = (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))",
+                (date, json.dumps(payload)),
+            )
+            audit(conn, "agent", f"post_{table}", {"date": date}, {})
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            503, "Could not save this report right now. Please try again."
+        ) from exc
     return payload
 
 

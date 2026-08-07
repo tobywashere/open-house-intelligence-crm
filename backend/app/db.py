@@ -11,6 +11,31 @@ SCHEMA_PATH = BACKEND_DIR / "schema.sql"
 
 JSON_FIELDS = {"preferences", "missing_fields"}
 
+HOOK_OUTBOX_DDL = (
+    "CREATE TABLE IF NOT EXISTS hook_outbox ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " pending_change_id INTEGER NOT NULL UNIQUE,"
+    " idempotency_key TEXT NOT NULL UNIQUE,"
+    " hook_type TEXT NOT NULL CHECK (hook_type IN"
+    " ('lead_created','tour_booked','reminder_created')),"
+    " object_id INTEGER NOT NULL,"
+    " lead_id INTEGER,"
+    " delivery_mode TEXT NOT NULL DEFAULT 'simulated' CHECK (delivery_mode IN"
+    " ('live','simulated')),"
+    " status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN"
+    " ('pending','processing','failed','delivered','cancelled')),"
+    " attempts INTEGER NOT NULL DEFAULT 0,"
+    " last_error TEXT,"
+    " claim_token TEXT,"
+    " claimed_at TEXT,"
+    " next_attempt_at TEXT,"
+    " created_at TEXT NOT NULL DEFAULT"
+    " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
+    " updated_at TEXT NOT NULL DEFAULT"
+    " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
+    " delivered_at TEXT)"
+)
+
 
 @contextmanager
 def get_conn() -> Iterator[sqlite3.Connection]:
@@ -92,12 +117,45 @@ def _migrate(conn: sqlite3.Connection) -> None:
         " lead_id INTEGER,"
         " payload TEXT NOT NULL,"
         " summary TEXT NOT NULL,"
+        " dedupe_key TEXT,"
         " status TEXT NOT NULL DEFAULT 'pending',"
         " result TEXT,"
         " deny_reason TEXT,"
         " created_at TEXT NOT NULL DEFAULT"
         " (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),"
         " decided_at TEXT)"
+    )
+    pending_cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(pending_changes)")
+    }
+    if "dedupe_key" not in pending_cols:
+        conn.execute("ALTER TABLE pending_changes ADD COLUMN dedupe_key TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_changes_dedupe "
+        "ON pending_changes (dedupe_key) WHERE dedupe_key IS NOT NULL"
+    )
+    conn.execute(HOOK_OUTBOX_DDL)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hook_outbox_delivery "
+        "ON hook_outbox (status, claimed_at, id)"
+    )
+    outbox_cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(hook_outbox)")
+    }
+    if "delivery_mode" not in outbox_cols:
+        # Existing rows predate explicit intent metadata. Default them to the
+        # safe simulated mode so an upgrade cannot unexpectedly contact a
+        # provider for an intent created while integrations were off.
+        conn.execute(
+            "ALTER TABLE hook_outbox ADD COLUMN delivery_mode TEXT NOT NULL "
+            "DEFAULT 'simulated' CHECK (delivery_mode IN ('live','simulated'))"
+        )
+    if "next_attempt_at" not in outbox_cols:
+        conn.execute("ALTER TABLE hook_outbox ADD COLUMN next_attempt_at TEXT")
+    _migrate_hook_outbox_cancelled_status(conn)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hook_outbox_retry "
+        "ON hook_outbox (status, next_attempt_at, claimed_at, id)"
     )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)")}
     for col in ("persona", "relationship_summary", "close_reason"):
@@ -114,8 +172,34 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN gcal_event_id TEXT")
 
 
+def _migrate_hook_outbox_cancelled_status(conn: sqlite3.Connection) -> None:
+    """Widen the SQLite CHECK constraint without losing existing intents."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hook_outbox'"
+    ).fetchone()
+    sql = row["sql"] if row else ""
+    compact = "".join((sql or "").lower().split())
+    if "check(statusin(" not in compact or "'cancelled'" in compact:
+        return
+
+    columns = (
+        "id, pending_change_id, idempotency_key, hook_type, object_id, lead_id, "
+        "delivery_mode, status, attempts, last_error, claim_token, claimed_at, "
+        "next_attempt_at, created_at, updated_at, delivered_at"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_delivery")
+    conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_retry")
+    conn.execute("ALTER TABLE hook_outbox RENAME TO hook_outbox_before_cancelled")
+    conn.execute(HOOK_OUTBOX_DDL)
+    conn.execute(
+        f"INSERT INTO hook_outbox ({columns}) SELECT {columns} "
+        "FROM hook_outbox_before_cancelled"
+    )
+    conn.execute("DROP TABLE hook_outbox_before_cancelled")
+
+
 # Every timestamp column in schema.sql (Task 7's one convention: naive local
-# wall-clock) — 13 columns total across 9 tables. Keep in sync with
+# wall-clock). Keep in sync with
 # schema.sql — availability has no timestamp columns (start_time/end_time
 # are HH:MM only) so it's absent on purpose.
 TIMESTAMP_COLUMNS = {
@@ -128,6 +212,13 @@ TIMESTAMP_COLUMNS = {
     "briefing": ["generated_at"],
     "insights": ["computed_at"],
     "daily_summary": ["generated_at"],
+    "hook_outbox": [
+        "claimed_at",
+        "next_attempt_at",
+        "created_at",
+        "updated_at",
+        "delivered_at",
+    ],
 }
 
 

@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.agent import status as agent_status
 from app.integrations import composio_client as cc
 
 
@@ -9,6 +10,82 @@ from app.integrations import composio_client as cc
 def clear_integration_status(monkeypatch):
     monkeypatch.setattr(cc, "_LAST_OPERATION", None, raising=False)
     monkeypatch.setattr(cc, "_LAST_DETAIL", None, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_CHAT_OK", None, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_DETAIL", None, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_OK", None, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_DETAIL", None, raising=False)
+    monkeypatch.setattr(agent_status, "_EVENT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_CHAT_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_CRM_SEQUENCE", 0, raising=False)
+    monkeypatch.setattr(agent_status, "_FALLBACKS", {}, raising=False)
+    monkeypatch.setattr(agent_status, "_LAST_FALLBACK_SEQUENCE", 0, raising=False)
+
+
+def test_chat_success_does_not_mean_crm_verified():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(False, "no audited CRM call")
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "chat_verified"
+
+
+def test_crm_success_is_distinct():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "crm_verified"
+
+
+def test_newer_chat_failure_degrades_previously_verified_crm():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    agent_status.record_chat(False, "timeout")
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "degraded"
+
+
+def test_fallback_after_crm_verification_marks_status_degraded():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    agent_status.record_fallback("extract")
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "degraded"
+    assert agent_status.fallback_counts() == {"extract": 1}
+
+
+def test_successful_crm_verification_resets_fallback_degradation_epoch():
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+    agent_status.record_fallback("extract")
+    agent_status.record_crm_capability(True)
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "crm_verified"
+    assert agent_status.fallback_counts() == {"extract": 1}
+
+
+def test_fallback_before_latest_crm_verification_does_not_degrade_status():
+    agent_status.record_fallback("extract")
+    agent_status.record_chat(True)
+    agent_status.record_crm_capability(True)
+
+    assert agent_status.resolved_status(
+        gateway_reachable=True,
+        endpoint_enabled=True,
+    ) == "crm_verified"
 
 
 def test_configured_integration_is_not_reported_as_verified(client, monkeypatch):
@@ -24,6 +101,26 @@ def test_configured_integration_is_not_reported_as_verified(client, monkeypatch)
         "last_operation": None,
         "detail": None,
     }
+
+
+def test_live_missing_credentials_warning_preserves_durable_retry_semantics(
+    client, monkeypatch, capsys
+):
+    from app.main import startup
+
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_TRANSPORT", "api")
+    monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
+    capsys.readouterr()
+
+    startup()
+
+    warning = capsys.readouterr().out
+    warning_lower = warning.lower()
+    assert "live integration delivery is unavailable" in warning_lower
+    assert "durable hook intents remain queued" in warning_lower
+    assert "retry automatically after configuration" in warning_lower
+    assert "simulated" not in warning_lower
 
 
 def test_successful_operation_records_verified_status(monkeypatch):

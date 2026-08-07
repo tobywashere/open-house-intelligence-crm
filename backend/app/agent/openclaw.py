@@ -1,28 +1,49 @@
-"""Relay to the OpenClaw gateway running on the GB10.
+"""Relay to a local OpenClaw Gateway.
 
 The gateway exposes an HTTP API (default port 18789) authenticated with a Bearer
 token. Chat goes through its OpenAI-compatible chat endpoint by default; override
 AGENT_CHAT_PATH if the installed OpenClaw version mounts it elsewhere.
 
-Extraction/drafting also route through chat with instruction prompts — the agent's
-system prompt + skill (see agent/prompts and agent/skills) make it answer with
-bare JSON / bare text. K owns prompt quality here.
+Extraction and drafting also route through chat with instruction prompts.
 """
 import json
 import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
 
 import httpx
 
 from .base import AgentDriver
-from .status import AgentProbe, last_chat, record_chat
+from .status import (
+    AgentProbe,
+    fallback_counts,
+    last_chat,
+    last_crm_capability,
+    record_chat,
+    record_fallback,
+    resolved_status,
+)
 
-GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "http://gb10:18789")
+
+def resolve_gateway_url(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the Gateway URL while keeping environment overrides intact."""
+    values = os.environ if environ is None else environ
+    return values.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+
+
+GATEWAY_URL = resolve_gateway_url()
 CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
 TOKEN = os.environ.get("AGENT_GATEWAY_TOKEN", "")
 TIMEOUT = float(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))
+AGENT_ID = os.environ.get("AGENT_ID", "openhouse-crm").strip()
+
+
+def openclaw_model(agent_id: str | None = None) -> str:
+    """Return the OpenAI-compatible model selector for an OpenClaw agent."""
+    selected = AGENT_ID if agent_id is None else agent_id.strip()
+    return f"openclaw/{selected}" if selected else "openclaw"
 
 
 def _parse_json_reply(reply: str) -> dict:
@@ -67,7 +88,7 @@ class OpenClawDriver(AgentDriver):
                     GATEWAY_URL.rstrip("/") + CHAT_PATH,
                     headers=headers,
                     json={
-                        "model": "openclaw",
+                        "model": openclaw_model(),
                         "user": session_id,
                         "messages": [{"role": "user", "content": message}],
                     },
@@ -93,6 +114,19 @@ class OpenClawDriver(AgentDriver):
             return ("⚠ The local agent is unavailable or returned an invalid response. "
                     "Your message is saved — check agent readiness and try again.")
 
+    async def request_crm_capability(
+        self,
+        session_id: str,
+        probe_nonce: str,
+    ) -> None:
+        arguments = json.dumps({"probe_nonce": probe_nonce})
+        await self._send(
+            "Use the crm-db-operations skill to run its fixed CLI operation "
+            f"generate_dashboard_insights --args '{arguments}'. "
+            "Do not modify CRM data. After the call, reply with only CHECKED.",
+            session_id,
+        )
+
     async def extract(self, raw_text: str) -> dict:
         try:
             reply = await self._send(session_id=f"extract-{uuid.uuid4().hex[:8]}", message=
@@ -110,7 +144,10 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:  # demo insurance: lead creation must never break
             logging.warning("openclaw extract failed (%s) — regex fallback", exc)
             from .mock import MockDriver
-            return await MockDriver().extract(raw_text)
+            result = await MockDriver().extract(raw_text)
+            result["_fallback_used"] = "deterministic_parser"
+            record_fallback("extract")
+            return result
 
     async def draft_followup(self, lead: dict) -> str:
         try:
@@ -123,7 +160,9 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:
             logging.warning("openclaw draft_followup failed (%s) — mock fallback", exc)
             from .mock import MockDriver
-            return await MockDriver().draft_followup(lead)
+            draft = await MockDriver().draft_followup(lead)
+            record_fallback("draft_followup")
+            return "[deterministic fallback] " + draft
 
     async def explain_score(self, lead: dict, score: int) -> str:
         try:
@@ -136,14 +175,22 @@ class OpenClawDriver(AgentDriver):
         except Exception as exc:
             logging.warning("openclaw explain_score failed (%s) — mock fallback", exc)
             from .mock import MockDriver
-            return await MockDriver().explain_score(lead, score)
+            explanation = await MockDriver().explain_score(lead, score)
+            record_fallback("score_explanation")
+            return "[deterministic fallback] " + explanation
 
     async def connected(self) -> bool:
         probe = await self.probe()
-        return probe.status in {"endpoint_enabled", "verified"}
+        return probe.gateway_reachable and probe.endpoint_enabled
 
     async def probe(self) -> AgentProbe:
         headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+        crm_ok, crm_detail = last_crm_capability()
+        probe_fields = {
+            "crm_verified": crm_ok is True,
+            "agent_id": AGENT_ID or None,
+            "fallbacks": fallback_counts(),
+        }
         try:
             async with self._client_factory(timeout=3) as client:
                 resp = await client.options(
@@ -157,6 +204,7 @@ class OpenClawDriver(AgentDriver):
                 endpoint_enabled=False,
                 last_chat_ok=last_chat()[0],
                 detail=_safe_error(exc),
+                **probe_fields,
             )
 
         last_ok, last_detail = last_chat()
@@ -167,6 +215,7 @@ class OpenClawDriver(AgentDriver):
                 endpoint_enabled=False,
                 last_chat_ok=last_ok,
                 detail=f"HTTP {resp.status_code}",
+                **probe_fields,
             )
         if resp.status_code == 404:
             return AgentProbe(
@@ -175,15 +224,23 @@ class OpenClawDriver(AgentDriver):
                 endpoint_enabled=False,
                 last_chat_ok=last_ok,
                 detail="Chat Completions endpoint returned HTTP 404",
+                **probe_fields,
             )
         if 200 <= resp.status_code < 400 or resp.status_code == 405:
-            status = "verified" if last_ok is True else "failed" if last_ok is False else "endpoint_enabled"
             return AgentProbe(
-                status=status,
+                status=resolved_status(
+                    gateway_reachable=True,
+                    endpoint_enabled=True,
+                ),
                 gateway_reachable=True,
                 endpoint_enabled=True,
                 last_chat_ok=last_ok,
-                detail=last_detail,
+                detail=(
+                    last_detail
+                    if last_ok is False
+                    else crm_detail if crm_ok is False else last_detail
+                ),
+                **probe_fields,
             )
         return AgentProbe(
             status="failed",
@@ -191,6 +248,7 @@ class OpenClawDriver(AgentDriver):
             endpoint_enabled=False,
             last_chat_ok=last_ok,
             detail=f"Unexpected probe response HTTP {resp.status_code}",
+            **probe_fields,
         )
 
     async def live_check(self) -> AgentProbe:

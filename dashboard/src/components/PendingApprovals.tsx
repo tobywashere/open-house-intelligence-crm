@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { api, fmtDate, fmtMoney, Lead, LeadProfile, PendingChange } from '../api'
 import { toast } from './Toast'
 
-// Polls for lead-lifecycle writes the agent proposed (create/update/close/
-// delete/merge) and, while any are pending, blocks the UI behind a modal
+// Polls for CRM writes the agent proposed (lead changes, notes, bookings,
+// and reminders) and, while any are pending, blocks the UI behind a modal
 // showing the actual proposed fields — editable — until the operator
 // approves (with any edits) or denies each one. Mirrors ReminderBanner's
 // polling; manual dashboard edits never appear here — only agent-tagged
@@ -15,6 +15,9 @@ const LABELS: Record<string, string> = {
   name: 'Name', phone: 'Phone', email: 'Email', budget: 'Budget',
   area: 'Area', timeline: 'Timeline', intent: 'Intent', status: 'Status',
   reason: 'Reason', outcome: 'Outcome',
+  content: 'Note', start_ts: 'Start', end_ts: 'End', location: 'Location',
+  due_ts: 'Due', note: 'Reminder note',
+  preferences: 'Preferences',
 }
 
 const inputCls =
@@ -34,6 +37,9 @@ function editableFieldsFor(item: PendingChange): Record<string, FieldValue> {
         area: (p.area as string) ?? '',
         timeline: (p.timeline as string) ?? '',
         intent: (p.intent as string) ?? '',
+        preferences: Array.isArray(p.preferences)
+          ? p.preferences.filter((value): value is string => typeof value === 'string').join('\n')
+          : '',
       }
     case 'update_lead': {
       const out: Record<string, FieldValue> = {}
@@ -44,6 +50,16 @@ function editableFieldsFor(item: PendingChange): Record<string, FieldValue> {
       return { outcome: (p.outcome as string) ?? 'won', reason: (p.reason as string) ?? '' }
     case 'delete_lead':
       return { reason: (p.reason as string) ?? '' }
+    case 'add_event':
+      return { content: (p.content as string) ?? '' }
+    case 'book_appointment':
+      return {
+        start_ts: (p.start_ts as string) ?? '',
+        end_ts: (p.end_ts as string) ?? '',
+        location: (p.location as string) ?? '',
+      }
+    case 'schedule_followup':
+      return { due_ts: (p.due_ts as string) ?? '', note: (p.note as string) ?? '' }
     default:
       return {} // merge_leads: not field-editable, see FieldsFor below
   }
@@ -61,10 +77,16 @@ function leadIdsToFetch(item: PendingChange): number[] {
 function coerceForSubmit(values: Record<string, FieldValue>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(values)) {
-    if (k === 'budget') {
+    if (k === 'preferences') {
+      // An empty textarea intentionally clears the queued preferences instead
+      // of omitting the field and silently retaining the agent's original list.
+      out[k] = typeof v === 'string'
+        ? v.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+        : []
+    } else if (k === 'budget') {
       out[k] = v === '' || v === null || v === undefined ? null : Number(v)
     } else if (typeof v === 'string') {
-      out[k] = v.trim() === '' ? null : v.trim()
+      out[k] = v.trim()
     } else {
       out[k] = v
     }
@@ -247,6 +269,23 @@ function TextField({
   )
 }
 
+function PreferencesField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block text-xs text-sub">
+      <span>Preferences</span>
+      <textarea
+        rows={3}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`mt-1 resize-y ${inputCls}`}
+      />
+      <span className="mt-1 block text-[11px] text-sub/70">
+        Put each preference on its own line. Leave this blank to clear them.
+      </span>
+    </label>
+  )
+}
+
 function FieldsFor({
   item, values, setField, lead, duplicateLead,
 }: {
@@ -270,6 +309,13 @@ function FieldsFor({
           <TextField label="Timeline" value={str('timeline')} onChange={(v) => setField('timeline', v)} />
         </div>
         <TextField label="Intent" value={str('intent')} onChange={(v) => setField('intent', v)} />
+        <PreferencesField
+          value={str('preferences')}
+          onChange={(v) => setField('preferences', v)}
+        />
+        {/* raw_text is evidence shown below; source and missing_fields are
+            provenance/derived metadata. All persisted business values are
+            visible and editable above. */}
         {typeof item.payload.raw_text === 'string' && item.payload.raw_text && (
           <div className="text-[11px] text-sub/70 italic border-l-2 border-tile pl-2">
             "{item.payload.raw_text as string}"
@@ -338,6 +384,54 @@ function FieldsFor({
           className={`mt-1 ${inputCls} resize-y`}
         />
       </label>
+    )
+  }
+
+  if (item.operation === 'add_event') {
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-sub">
+          Type <span className="text-ink">{String(item.payload.type ?? 'note')}</span>
+        </div>
+        <label className="block text-xs text-sub">
+          <span>Note</span>
+          <textarea
+            value={str('content')}
+            onChange={(e) => setField('content', e.target.value)}
+            rows={3}
+            className={`mt-1 ${inputCls} resize-y`}
+          />
+        </label>
+      </div>
+    )
+  }
+
+  if (item.operation === 'book_appointment') {
+    return (
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <TextField label="Start" type="datetime-local" value={str('start_ts')} onChange={(v) => setField('start_ts', v)} />
+          <TextField label="End" type="datetime-local" value={str('end_ts')} onChange={(v) => setField('end_ts', v)} />
+        </div>
+        <TextField label="Location (optional)" value={str('location')} onChange={(v) => setField('location', v)} />
+      </div>
+    )
+  }
+
+  if (item.operation === 'schedule_followup') {
+    return (
+      <div className="space-y-2">
+        <TextField label="Due" type="datetime-local" value={str('due_ts')} onChange={(v) => setField('due_ts', v)} />
+        <label className="block text-xs text-sub">
+          <span>Reminder note (optional)</span>
+          <textarea
+            value={str('note')}
+            onChange={(e) => setField('note', e.target.value)}
+            rows={2}
+            className={`mt-1 ${inputCls} resize-y`}
+          />
+        </label>
+      </div>
     )
   }
 

@@ -13,7 +13,8 @@ suggestions and a recommendation for a real appointment.
 
 ## Non-negotiable trust rules
 
-1. Use only `crm-db-operations` tools. Never read or write SQL.
+1. Use only the allowlisted `crm-db-operations` wrapper. Never read or write
+   SQL, and do not use general web, network, browser, or filesystem tools.
 2. Never invent a lead, appointment, time, location, score, preference,
    relationship fact, travel time, market fact, or outstanding response.
 3. Never add a plausible appointment or schedule block when the calendar is
@@ -26,15 +27,27 @@ suggestions and a recommendation for a real appointment.
 
 ## Pull today's data
 
-1. Call `list_appointments()`.
+1. Run:
+
+   ```bash
+   {baseDir}/../crm-db-operations/cli.py list_appointments --args '{}'
+   ```
+
 2. Filter appointments to today's local `YYYY-MM-DD` date using `start_ts`.
-3. For every unique `lead_id` in those appointments, call
-   `get_lead_context(lead_id)`.
+3. For every unique `lead_id` in those appointments, run the wrapper with that
+   real ID:
+
+   ```bash
+   {baseDir}/../crm-db-operations/cli.py get_lead_context --args '{"lead_id":4}'
+   ```
+
 4. Use the returned lead fields and events only to decide whether a short
    preparation checklist or recommendation is warranted.
 
 When there are no appointments today, post an empty `meeting_briefs` array.
 The backend will display the honest empty schedule.
+If either CRM read fails or returns malformed data, do not publish a briefing.
+Report the failure instead of guessing about appointments or leads.
 
 ## What the backend displays
 
@@ -86,8 +99,14 @@ the API drops them.
 
 ## Publish
 
-Call `post_briefing(payload)` with the output above. If it raises `CRMError`,
-report the failure in the run output; do not substitute a sample briefing.
+Call the wrapper with the complete payload as the named argument:
+
+```bash
+{baseDir}/../crm-db-operations/cli.py post_briefing --args '{"payload":{"date":"2026-07-28","generated_at":"2026-07-28T07:00:12","meeting_briefs":[]}}'
+```
+
+Replace the example values with today's grounded payload. If the command
+returns an error, report it; do not substitute a sample briefing.
 
 After publishing, the dashboard combines this advice with current CRM facts.
 If the advice is absent or invalid, the factual CRM schedule still renders

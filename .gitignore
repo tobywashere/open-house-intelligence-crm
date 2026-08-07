@@ -25,3 +25,4 @@ dashboard/tsconfig.tsbuildinfo
 # never meant to ship in the public repo
 .superpowers/
 .claude/
+.worktrees/

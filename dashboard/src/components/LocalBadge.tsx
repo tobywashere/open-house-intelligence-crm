@@ -4,25 +4,19 @@ import { HealthStatus } from '../api'
 // its Chat Completions endpoint is disabled or unauthorized.
 export function LocalBadge({ health }: { health: HealthStatus | null }) {
   const status = health?.agent_status.status
-  const verified = status === 'verified'
-  const ready = status === 'endpoint_enabled'
-  const failed = status && !['mock', 'endpoint_enabled', 'verified'].includes(status)
+  const verified = status === 'crm_verified'
+  const failed = status && !['mock', 'endpoint_enabled', 'chat_verified', 'crm_verified'].includes(status)
   const label =
-    status === 'mock'
-      ? 'Inference: mock mode'
-      : verified
-        ? 'Local agent · verified'
-        : ready
-          ? 'Local agent · endpoint enabled'
-          : status === 'endpoint_disabled'
-            ? 'Local agent · chat endpoint off'
-            : status === 'unauthorized'
-              ? 'Local agent · unauthorized'
-              : status === 'unreachable'
-                ? 'Local agent · unreachable'
-                : status === 'failed'
-                  ? 'Local agent · error'
-                  : 'Agent status…'
+    status === 'crm_verified' ? 'CRM agent · verified' :
+    status === 'chat_verified' ? 'Chat works · CRM not verified' :
+    status === 'degraded' ? 'CRM agent · degraded' :
+    status === 'endpoint_enabled' ? 'OpenClaw · endpoint enabled' :
+    status === 'endpoint_disabled' ? 'OpenClaw · chat endpoint off' :
+    status === 'unauthorized' ? 'OpenClaw · unauthorized' :
+    status === 'unreachable' ? 'OpenClaw · unreachable' :
+    status === 'failed' ? 'OpenClaw · error' :
+    status === 'mock' ? 'Inference · mock mode' :
+    'Agent status…'
   return (
     <div className="flex items-center gap-2 text-xs rounded-full border border-line px-3 py-1.5">
       <span className={`h-2 w-2 rounded-full ${verified ? 'bg-accent' : failed ? 'bg-alert' : 'bg-sub'}`} />

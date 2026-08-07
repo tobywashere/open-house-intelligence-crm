@@ -5,10 +5,14 @@ structurally valid and may only refer to CRM records that actually exist.
 """
 
 import json
+import sqlite3
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.db import get_conn
+from app.main import app
+from app.routers import reports
 from tests.conftest import make_lead
 
 
@@ -51,6 +55,127 @@ def test_summary_post_requires_a_real_source_url(client):
     assert response.status_code == 422
 
 
+def test_summary_rejects_market_item_without_supported_source_fields(client):
+    payload = {
+        "date": "2026-08-05",
+        "generated_at": "2026-08-05T07:00:00",
+        "greeting": "Daily brief",
+        "market_watch": [
+            {
+                "title": "Seattle employment",
+                "source": "U.S. Bureau of Labor Statistics",
+                "url": "https://www.bls.gov/eag/eag.wa_seattle_msa.htm",
+                "takeaway": "Review the published figures.",
+                "date": "2026-08-05",
+                "summary": "Source-backed summary.",
+                "geo": "Seattle",
+            }
+        ],
+        "ai_insights": [],
+    }
+    del payload["market_watch"][0]["url"]
+
+    response = client.post("/api/summary", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_summary_rejects_market_item_from_an_unconfigured_source(client):
+    response = client.post(
+        "/api/summary",
+        json={
+            "date": "2026-08-05",
+            "generated_at": "2026-08-05T07:00:00",
+            "greeting": "Daily brief",
+            "market_watch": [
+                {
+                    "title": "Unsupported source",
+                    "source": "Example",
+                    "url": "https://example.com/unsupported",
+                    "takeaway": "This must not be shown as a daily brief fact.",
+                    "date": "2026-08-05",
+                    "summary": "This URL is not one of the configured sources.",
+                    "geo": "Seattle",
+                }
+            ],
+            "ai_insights": [],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("field", ["source", "title", "takeaway", "summary", "geo"])
+def test_summary_rejects_blank_required_market_source_fields(client, field):
+    item = {
+        "title": "Seattle employment",
+        "source": "U.S. Bureau of Labor Statistics",
+        "url": "https://www.bls.gov/eag/eag.wa_seattle_msa.htm",
+        "takeaway": "Review the published figures.",
+        "date": "2026-08-05",
+        "summary": "Source-backed summary.",
+        "geo": "Seattle",
+    }
+    item[field] = "   "
+
+    response = client.post(
+        "/api/summary",
+        json={
+            "date": "2026-08-05",
+            "generated_at": "2026-08-05T07:00:00",
+            "greeting": "Daily brief",
+            "market_watch": [item],
+            "ai_insights": [],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_summary_storage_failure_returns_503_without_replacing_prior_report(
+    client, monkeypatch
+):
+    payload = {
+        "date": "2026-08-05",
+        "generated_at": "2026-08-05T07:00:00",
+        "greeting": "Daily brief",
+        "market_watch": [
+            {
+                "title": "Seattle employment",
+                "source": "U.S. Bureau of Labor Statistics",
+                "url": "https://www.bls.gov/eag/eag.wa_seattle_msa.htm",
+                "takeaway": "Review the published figures.",
+                "date": "2026-08-05",
+                "summary": "Source-backed summary.",
+                "geo": "Seattle",
+            }
+        ],
+        "ai_insights": [],
+    }
+    assert client.post("/api/summary", json=payload).status_code == 200
+    prior = client.get("/api/summary?date=2026-08-05").json()
+    with get_conn() as conn:
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE tool = 'post_daily_summary'"
+        ).fetchone()[0]
+
+    def unavailable_audit(*_args, **_kwargs):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(reports, "audit", unavailable_audit)
+    changed = {**payload, "greeting": "This must not replace the saved report"}
+    with TestClient(app, raise_server_exceptions=False) as nonthrowing_client:
+        response = nonthrowing_client.post("/api/summary", json=changed)
+
+    assert response.status_code == 503
+    assert "could not save" in response.json()["detail"].lower()
+    assert client.get("/api/summary?date=2026-08-05").json() == prior
+    with get_conn() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE tool = 'post_daily_summary'"
+        ).fetchone()[0] == audit_count
+
+
 def test_briefing_never_promotes_a_lead_to_a_fake_meeting(client):
     lead = make_lead(client, name="No Appointment")
 
@@ -62,6 +187,16 @@ def test_briefing_never_promotes_a_lead_to_a_fake_meeting(client):
     assert body["schedule"] == []
     assert body["meeting_briefs"] == []
     assert all(action["lead_id"] != lead["id"] for action in body["suggested_actions"])
+
+
+def test_empty_briefing_contains_no_sample_people_or_appointments(client):
+    body = client.get("/api/briefing?date=2026-08-05").json()
+
+    assert body["schedule"] == []
+    assert body["meeting_briefs"] == []
+    serialized = json.dumps(body).lower()
+    assert "sample" not in serialized
+    assert "sarah chen" not in serialized
 
 
 def test_briefing_rehydrates_facts_from_real_appointment(client):

@@ -70,7 +70,7 @@ GET/POST /api/summary?date=YYYY-MM-DD
 {
   "date": "…", "generated_at": "…", "greeting": "…",
   "market_watch": [{ "title", "source", "takeaway", "url",    // required
-                     "date?", "summary?", "geo?",              // optional — all rendered
+                     "date", "summary", "geo",                 // required
                      "content_opportunity?" }],               //   (mirrors prompts/seattle-real-estate-news-reporter.md)
   "ai_insights":  [{ "title", "body" }]                       // model-written narrative
 }
@@ -78,8 +78,9 @@ GET/POST /api/summary?date=YYYY-MM-DD
 
 `ai_insights` here are the model's *written* observations — separate from the
 deterministic insights engine (`docs/INSIGHTS.md`), which K's cron can use as input.
-Every market item requires a valid HTTP(S) source URL. Missing or invalid
-summaries render an explicit state rather than sample content.
+Every market item requires a valid HTTP(S) source URL, publication date,
+summary, and geographic area. Missing or invalid summaries render an explicit
+state rather than sample content.
 
 ## Dashboard information architecture
 

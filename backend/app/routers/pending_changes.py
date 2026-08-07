@@ -1,19 +1,22 @@
-"""Approve/deny queue for agent-initiated lead writes (see ..approvals).
+"""Approve/deny queue for agent-initiated CRM writes (see ..approvals).
 
-Every row here was queued by one of the 5 gated leads.py endpoints when the
+Every row here was queued by one of the gated CRM mutation endpoints when the
 caller sent `X-Actor: agent` (only skills/crm-db-operations/tools.py does).
 Approving replays the original request through the same `_apply_*` function
 the direct (dashboard) path uses, so approved and directly-applied writes go
 through identical logic — with one exception: create_lead's payload is
 already-resolved fields (see leads.py's _resolve_create_fields), so it goes
 through _apply_resolved_create instead of re-running extraction."""
-import inspect
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, ValidationError
 
 from ..db import audit, get_conn
+from ..integrations import hook_outbox
+from ..integrations import composio_client as cc
 from . import leads as leads_router
 
 router = APIRouter(prefix="/pending-changes", tags=["pending-changes"])
@@ -29,6 +32,21 @@ _OPS = {
     "delete_lead": (leads_router.LeadDelete, leads_router._apply_delete_lead, True),
     "merge_leads": (leads_router.MergeIn, leads_router._apply_merge_leads, False),
 }
+
+
+def _operation(operation: str):
+    if operation == "add_event":
+        return leads_router.EventIn, leads_router._apply_add_event, True
+    if operation == "book_appointment":
+        from . import calendar as calendar_router
+        return calendar_router.AppointmentIn, calendar_router._apply_book_appointment, False
+    if operation == "schedule_followup":
+        from . import misc as misc_router
+        return misc_router.ReminderIn, misc_router._apply_create_reminder, False
+    try:
+        return _OPS[operation]
+    except KeyError:
+        raise HTTPException(400, f"unknown pending operation {operation}") from None
 
 
 class DenyIn(BaseModel):
@@ -51,10 +69,142 @@ def _fetch(conn, pending_id: int) -> dict:
 
 def _parsed(row: dict) -> dict:
     row = dict(row)
+    row.pop("dedupe_key", None)
     row["payload"] = json.loads(row["payload"])
     if row.get("result"):
         row["result"] = json.loads(row["result"])
     return row
+
+
+def _claim_pending(conn, pending_id: int) -> dict:
+    """Reserve a proposal inside the approval's caller-owned transaction."""
+    row = _fetch(conn, pending_id)
+    if row["status"] != "pending":
+        raise HTTPException(
+            400, f"pending change {pending_id} is already {row['status']}"
+        )
+    claimed = conn.execute(
+        "UPDATE pending_changes SET status = 'applying' "
+        "WHERE id = ? AND status = 'pending'",
+        (pending_id,),
+    )
+    if claimed.rowcount != 1:
+        raise HTTPException(400, f"pending change {pending_id} is already being applied")
+    return row
+
+
+def _finish_claim(conn, pending_id: int, row: dict, result: dict) -> None:
+    finished = conn.execute(
+        f"UPDATE pending_changes SET status = 'approved', result = ?, "
+        f"decided_at = ({NOW}) WHERE id = ? AND status = 'applying'",
+        (json.dumps(result, default=str), pending_id),
+    )
+    if finished.rowcount != 1:
+        raise HTTPException(409, f"pending change {pending_id} lost its approval claim")
+    approval_lead_id = (
+        result.get("id")
+        if row["operation"] == "create_lead"
+        else None if row["operation"] == "delete_lead" else row["lead_id"]
+    )
+    audit(
+        conn,
+        "user",
+        "approve_pending_change",
+        {"pending_id": pending_id},
+        {"operation": row["operation"]},
+        approval_lead_id,
+    )
+
+
+def _validate_pending_mutation(row: dict, payload: dict):
+    """Validate edited fields before entering the generic mutation seam."""
+    if row["operation"] == "create_lead":
+        return leads_router.ResolvedLeadCreate(**payload)
+    model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
+    return model_cls(**payload), apply_fn, needs_lead_id
+
+
+def _apply_pending_mutation(conn, row: dict, validated):
+    """Apply any supported operation through the shared caller-owned transaction."""
+    if row["operation"] == "create_lead":
+        return leads_router._apply_resolved_create_in_conn(
+            conn, validated.model_dump(exclude_none=True)
+        )
+    parsed_body, apply_fn, needs_lead_id = validated
+    kwargs = {"conn": conn}
+    if row["operation"] in {"book_appointment", "schedule_followup"}:
+        kwargs["run_hook"] = False
+    return (
+        apply_fn(row["lead_id"], parsed_body, **kwargs)
+        if needs_lead_id
+        else apply_fn(parsed_body, **kwargs)
+    )
+
+
+def _audit_post_hook_failure(row: dict, result: dict, exc: Exception) -> None:
+    tool = {
+        "create_lead": "lead_created_hook (failed)",
+        "book_appointment": "gcal_create_event (failed)",
+        "schedule_followup": "gcal_create_event (failed)",
+    }.get(row["operation"], "approval_hook (failed)")
+    lead_id = result.get("id") if row["operation"] == "create_lead" else row["lead_id"]
+    try:
+        with get_conn() as conn:
+            audit(
+                conn,
+                "user",
+                tool,
+                {"pending_id": row["id"]},
+                {"error": str(exc)},
+                lead_id,
+            )
+    except Exception:
+        logging.exception(
+            "could not persist post-approval hook failure for proposal %s",
+            row["id"],
+        )
+
+
+async def _run_forced_simulation(row: dict, result: dict) -> None:
+    """Preserve demo audits without creating work that can become live later."""
+    try:
+        if row["operation"] == "create_lead":
+            await run_in_threadpool(
+                leads_router.hooks.on_lead_created,
+                result,
+                force_simulated=True,
+            )
+        elif row["operation"] == "book_appointment":
+            from . import calendar as calendar_router
+
+            with get_conn() as conn:
+                lead = leads_router.fetch_lead(conn, result["lead_id"])
+            await run_in_threadpool(
+                calendar_router.hooks.on_tour_booked,
+                lead,
+                result,
+                force_simulated=True,
+            )
+        elif row["operation"] == "schedule_followup":
+            from . import misc as misc_router
+
+            await run_in_threadpool(
+                misc_router.hooks.on_reminder_created,
+                result,
+                force_simulated=True,
+            )
+    except Exception as exc:
+        _audit_post_hook_failure(row, result, exc)
+
+
+async def _dispatch_committed_hook(
+    outbox_id: int | None, row: dict, result: dict, delivery_mode: str
+) -> None:
+    """Wake durable live delivery or run the captured demo simulation."""
+    if outbox_id is not None:
+        hook_outbox.wake_worker()
+    elif delivery_mode == "simulated":
+        await _run_forced_simulation(row, result)
 
 
 @router.get("")
@@ -69,31 +219,34 @@ def list_pending(status: str = "pending"):
 
 @router.post("/{pending_id}/approve")
 async def approve_pending(pending_id: int, body: ApproveIn = None):
-    with get_conn() as conn:
-        row = _fetch(conn, pending_id)
-    if row["status"] != "pending":
-        raise HTTPException(400, f"pending change {pending_id} is already {row['status']}")
+    outbox_id = None
+    # Capture intent before the transaction. A live request stays durable even
+    # when credentials are temporarily unavailable; an off/demo request is
+    # forced to remain simulated even if process configuration later changes.
+    delivery_mode = "live" if cc.mode() == "live" else "simulated"
+    try:
+        with get_conn() as conn:
+            row = _claim_pending(conn, pending_id)
+            row["id"] = pending_id
+            payload = {
+                **json.loads(row["payload"]),
+                **((body.fields if body else None) or {}),
+            }
+            validated = _validate_pending_mutation(row, payload)
+            result = _apply_pending_mutation(conn, row, validated)
+            _finish_claim(conn, pending_id, row, result)
+            if delivery_mode == "live":
+                outbox_id = hook_outbox.enqueue_approval_hook(
+                    conn,
+                    pending_id,
+                    row["operation"],
+                    result,
+                    delivery_mode=delivery_mode,
+                )
+    except ValidationError as exc:
+        raise HTTPException(422, detail=json.loads(exc.json(include_url=False))) from None
 
-    payload = {**json.loads(row["payload"]), **((body.fields if body else None) or {})}
-
-    if row["operation"] == "create_lead":
-        result = await leads_router._apply_resolved_create(payload)
-    else:
-        model_cls, apply_fn, needs_lead_id = _OPS[row["operation"]]
-        parsed_body = model_cls(**payload)
-        # apply_fn may be sync or async (only create's is) — handle both
-        # without forcing every _apply_* signature to be async for uniformity.
-        call = apply_fn(row["lead_id"], parsed_body) if needs_lead_id else apply_fn(parsed_body)
-        result = await call if inspect.isawaitable(call) else call
-
-    with get_conn() as conn:
-        conn.execute(
-            f"UPDATE pending_changes SET status = 'approved', result = ?, "
-            f"decided_at = ({NOW}) WHERE id = ?",
-            (json.dumps(result, default=str), pending_id),
-        )
-        audit(conn, "user", "approve_pending_change", {"pending_id": pending_id},
-              {"operation": row["operation"]}, row["lead_id"])
+    await _dispatch_committed_hook(outbox_id, row, result, delivery_mode)
     return result
 
 

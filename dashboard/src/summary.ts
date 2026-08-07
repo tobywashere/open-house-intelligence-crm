@@ -12,9 +12,9 @@ export interface MarketItem {
   source: string
   takeaway: string // "why this matters" for this realtor
   url: string
-  date?: string
-  summary?: string // the 2-4 sentence story summary
-  geo?: string // geographic impact, e.g. "Eastside", "King County"
+  date: string
+  summary: string // the 2-4 sentence story summary
+  geo: string // geographic impact, e.g. "Eastside", "King County"
   content_opportunity?: string // suggested post/newsletter/client email idea
 }
 

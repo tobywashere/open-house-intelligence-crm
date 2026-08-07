@@ -1,25 +1,21 @@
 # Mac mini setup
 
-This guide is for a nontechnical operator who wants the CRM and local AI on
-one Mac mini.
+This is the practical path for running the CRM and local AI on one Mac mini.
+You should see a clear result after each step.
 
-## Before you start
+## What you need
 
-Minimum supported host:
+- An Apple-silicon Mac mini with **16 GB** unified memory or more
+- macOS, 25 GB free disk space, Git, Python 3.11+, and Node.js 20+
+- OpenClaw with a tool-capable model that can answer a basic prompt
 
-- Apple-silicon Mac mini (M-series)
-- 16 GB unified memory
-- macOS with at least 25 GB of free disk space
-- Git, Python 3.11+, and Node.js 20+
-- OpenClaw with a tool-capable model
+Sixteen gigabytes is the minimum for the CRM plus a modest quantized model.
+Choose a smaller model if responses are slow. The CRM does not require a
+specific model, provider, or GB10.
 
-Sixteen gigabytes is enough for the CRM plus a modest quantized model. Larger
-models may need 32 GB or more. The model and audio provider are configured in
-OpenClaw, not in this repository.
+## 1. Check the basics
 
-## 1. Install the basic tools
-
-Open **Terminal** and check each command:
+Open **Terminal** and run:
 
 ```bash
 git --version
@@ -28,13 +24,23 @@ node --version
 openclaw --version
 ```
 
-If one is missing, install it using the vendor's current macOS instructions.
-For OpenClaw, complete its setup wizard and verify that it can answer a basic
-prompt before continuing. The relevant upstream references are its
-[Chat Completions endpoint](https://docs.openclaw.ai/gateway/openai-http-api)
-and [audio inference CLI](https://docs.openclaw.ai/cli/infer).
+Install anything that is missing using its vendor's current macOS guide. Finish
+OpenClaw's own setup and make sure it can answer a simple question first.
 
-## 2. Download the CRM
+## 2. Enable OpenClaw chat access
+
+The CRM talks to OpenClaw through `/v1/chat/completions`. Some OpenClaw
+installs leave it off until you enable it:
+
+```bash
+openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
+openclaw config validate
+```
+
+Follow any restart instruction OpenClaw prints. A missing endpoint gives a
+404 even when the gateway itself is running.
+
+## 3. Download and set up the CRM
 
 ```bash
 cd ~/Documents
@@ -43,197 +49,104 @@ cd open-intelligence-crm
 cp .env.example .env
 ```
 
-The included Mac-safe settings use localhost: the CRM, OpenClaw gateway, and
-browser all remain on the same machine.
-
-## 3. Enable OpenClaw chat access
-
-OpenClaw's Chat Completions endpoint is disabled by default in some versions.
-Enable it with:
+Open `.env` in a text editor. Change `AGENT_MODE=mock` to
+`AGENT_MODE=openclaw`, then continue in Terminal:
 
 ```bash
-openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
-openclaw config validate
+python3 scripts/setup_openclaw.py
+bash scripts/serve.sh
 ```
 
-Follow the restart hint printed by OpenClaw. Then verify the endpoint:
+Keep that Terminal open. Open a second Terminal and run:
 
 ```bash
-curl -X POST http://localhost:18789/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"openclaw","messages":[{"role":"user","content":"Reply with READY"}]}'
+cd ~/Documents/open-intelligence-crm
+python3 scripts/doctor.py --live-agent --live-crm
 ```
 
-A real JSON completion means the endpoint works. A `404` means it is still
-disabled. A `401` means the gateway requires a token; put that token in
-`AGENT_GATEWAY_TOKEN` in `.env`.
+Open [http://localhost:8080](http://localhost:8080). Keep the Terminal running
+`bash scripts/serve.sh` open while you use the CRM.
 
-Keep the gateway on localhost unless you understand the security impact. A
-valid gateway credential provides broad operator-level access, not a
-restricted end-user session.
+The setup helper creates `openhouse-crm`, copies the shipped skills to its own
+workspace, enables the `crm-db-operations` skill for that agent, and sets its
+restricted command access. The configuration in `.env` is
+`AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
+required capabilities before changing anything, and allows only `exec` with
+the CRM wrapper and daily-brief runner on its executable allowlist. General
+web, browser, and file tools are denied. It then reads that tool policy back
+from OpenClaw and will not report success if broader tools remain available.
 
-## 4. Install the CRM skills
+The doctor command should finish with **CRM capability: crm_verified**. A chat
+answer alone is not enough because it could come from a generic agent without
+the CRM tool.
 
-```bash
-mkdir -p ~/.openclaw/skills
-cp -R skills/crm-db-operations ~/.openclaw/skills/
-cp -R skills/business-card-scanner ~/.openclaw/skills/
-cp -R skills/daily-command-center ~/.openclaw/skills/
-```
+## 4. Check the visible behavior
 
-Keep those directory names. The scanner depends on the
-`crm-db-operations` path.
+1. Ask chat to add a disposable lead. It should appear in **Pending approvals**,
+   not immediately in **Leads**.
+2. Approve the lead, then ask to add a note, reminder, and tour booking. Review
+   each proposed change before applying it.
+3. Open **Add voice note**, record a short note, review its transcript and
+   details, then cancel. Confirm no lead was added.
+4. Open **Daily summary**. Appointments and follow-ups must match the CRM. A
+   missing market summary must stay unavailable, not turn into sample news.
 
-Make sure the OpenClaw process has:
+Only **CRM capability: crm_verified** proves that the agent made an audited
+CRM tool call. If the app uses a **deterministic fallback**, it labels the
+result for review. Market items require a source URL, publication date, short
+summary, and geographic area; incomplete information stays unavailable.
 
-```text
-CRM_API_URL=http://localhost:8080/api
-```
+## 5. Voice notes
 
-How environment variables are attached to OpenClaw depends on how you start
-it. If it runs as a macOS service, add the value to that service's
-environment rather than typing `export` after every restart.
-
-## 5. Check `.env`
-
-Use these important local values:
-
-```dotenv
-AGENT_MODE=openclaw
-AGENT_GATEWAY_URL=http://localhost:18789
-AGENT_CHAT_PATH=/v1/chat/completions
-PORT=8080
-HOST=127.0.0.1
-CRM_API_URL=http://localhost:8080/api
-VOICE_TRANSCRIBE_COMMAND=openclaw
-```
-
-If `.env` still says `AGENT_MODE=mock`, change it to `openclaw`.
-
-Do not set `HOST=0.0.0.0` just to make setup easier. Localhost is the safe
-default. See [Network access](#network-access-from-another-device) only if
-you need another device to reach the CRM.
-
-## 6. Verify voice transcription
-
-The app uses OpenClaw's supported file-transcription command and has no cloud
-fallback:
+Check local transcription before relying on voice input:
 
 ```bash
 openclaw infer audio transcribe --file /path/to/a-short-recording.m4a --json
 ```
 
-You must see JSON containing a non-empty `text` or `transcript` value. If your
-audio model is not the OpenClaw default, add its exact `provider/model` name
-to `.env`:
+The response needs a non-empty `text` or `transcript`. If you selected a
+specific audio model in OpenClaw, set its name in `.env` as
+`VOICE_TRANSCRIBE_MODEL=provider/model`, then restart the product. The app has
+no cloud transcription fallback.
 
-```dotenv
-VOICE_TRANSCRIBE_MODEL=provider/model
-```
+## 6. Optional Discord
 
-Whether transcription is fully local depends on that OpenClaw provider. Check
-the provider configuration before using client audio.
-
-## 7. Start the product
+Dashboard chat is the primary experience. To use the same dedicated agent in
+Discord, run this from the project folder:
 
 ```bash
-bash scripts/serve.sh
+python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
-The first run installs project dependencies and builds the dashboard. When
-you see the startup banner, open
-[http://localhost:8080](http://localhost:8080).
+Replace `ACCOUNT` with the account identifier required by OpenClaw. The
+printed binding command is safe to use later too. CRM writes from Discord are
+still proposed for review in the dashboard before they apply.
 
-Leave that Terminal window open while using the CRM. Press **Control-C** to
-stop it.
+## 7. Recovery
 
-## 8. Verify the main features
+- **Endpoint disabled / 404:** repeat step 2 and restart OpenClaw.
+- **Unauthorized:** add the matching `AGENT_GATEWAY_TOKEN` to `.env`, then
+  restart `bash scripts/serve.sh`.
+- **Chat verified, CRM capability failed:** rerun
+  `python3 scripts/setup_openclaw.py`; it validates the agent and skill setup.
+- **OpenClaw unreachable:** make sure its gateway is listening on port 18789
+  and `AGENT_GATEWAY_URL` is correct in `.env`.
+- **Slow responses:** choose a smaller model. The 16 GB minimum does not mean
+  every model will run quickly.
 
-In a second Terminal:
+## Target-hardware acceptance record
 
-```bash
-cd ~/Documents/open-intelligence-crm
-python3 scripts/doctor.py
-python3 scripts/doctor.py --live-agent
-```
+Do not check these boxes until someone has completed the run on this machine.
 
-Then check these in the browser:
+- [ ] OpenClaw version:
+- [ ] Model/provider:
+- [ ] macOS version:
+- [ ] Memory:
+- [ ] Date and operator:
+- [ ] `--live-agent --live-crm` reports CRM capability verified
+- [ ] Dashboard chat proposes a reviewed CRM write
+- [ ] Voice note reaches the review screen
+- [ ] Optional Discord binding, if used, reaches the same agent
 
-1. The header says the local agent endpoint is enabled or verified.
-2. Ask the agent to add a disposable test lead, then confirm it appears in
-   **Leads**.
-3. Ask it to update the lead and schedule a reminder.
-4. Check availability and book a disposable appointment.
-5. Open **Add voice note**, record a short note, review its transcript, and
-   cancel. Confirm no lead was added.
-6. Repeat and explicitly add the lead.
-7. Close one disposable lead as **Won** and another as **Lost**. Only the win
-   should count in the dashboard close rate.
-8. Open **Daily summary**. Appointments and follow-ups must match the CRM.
-   If market research has not been published, it must say that instead of
-   showing sample news.
-
-This is the target-hardware acceptance checklist. Automated tests verify the
-software boundary, but microphone permissions, model choice, and inference
-speed must be checked on the actual Mac.
-
-## Daily briefing and market summary
-
-The morning CRM section is always rebuilt from real appointments, lead rows,
-and due reminders. The `daily-command-center` skill may add bounded
-preparation suggestions for real appointments; it cannot replace names,
-times, scores, or other CRM facts.
-
-Market news is separate. It appears only after an agent workflow posts a
-daily summary whose articles have valid source URLs. With no published
-summary, the dashboard shows an honest empty state.
-
-## Network access from another device
-
-The safest option is a private network such as Tailscale. Set `HOST` to the
-Mac's private Tailscale address, not `0.0.0.0`, and set a long random value in
-both:
-
-```dotenv
-OHI_API_TOKEN=replace-with-a-long-random-secret
-VITE_API_TOKEN=replace-with-the-same-secret
-```
-
-Also add the exact dashboard origin to `CORS_ORIGINS` when needed. Restart
-`scripts/serve.sh` after changing `.env`.
-
-Do not expose the CRM or OpenClaw gateway directly to the public internet.
-
-## Back up and update
-
-Stop the app with **Control-C**, then copy the database:
-
-```bash
-cp backend/data/crm.db ~/Desktop/openhouse-crm-backup.db
-```
-
-Update only after making a backup:
-
-```bash
-git pull
-bash scripts/serve.sh
-```
-
-## Optional Gmail and Google Calendar
-
-These integrations use Composio and the internet. They are off by default.
-When enabled, the necessary client data is sent to the configured services.
-See [the general local-AI guide](LOCAL-AI.md#optional-internet-services).
-
-## If something fails
-
-- **Endpoint disabled**: repeat step 3 and follow OpenClaw's restart hint.
-- **Unauthorized**: set the matching `AGENT_GATEWAY_TOKEN`.
-- **OpenClaw unreachable**: confirm its gateway is running on port 18789.
-- **Voice failed**: run the direct transcription command in step 6.
-- **No CRM skill actions**: verify the three skill folders and
-  `CRM_API_URL`.
-- **No market summary**: configure the summary/research workflow; missing
-  content is intentionally not replaced with a fabricated sample.
-- **Port already in use**: choose another `PORT` in `.env`, restart, and use
-  the new localhost URL.
+For private-network access, advanced configuration, or further troubleshooting,
+see [LOCAL-AI.md](LOCAL-AI.md).

@@ -1,126 +1,97 @@
 # GB10 setup
 
-This is the worked example for the original Dell Pro Max GB10 deployment.
-For Apple silicon, use [MAC-MINI-SETUP.md](MAC-MINI-SETUP.md). For other
-hosts, use [LOCAL-AI.md](LOCAL-AI.md).
+This optional guide uses the same supported setup on a Dell Pro Max GB10. It
+is not required for the CRM. For an Apple-silicon Mac mini, use
+[MAC-MINI-SETUP.md](MAC-MINI-SETUP.md); for Linux or another host, use
+[LOCAL-AI.md](LOCAL-AI.md).
 
-Target layout:
+## Before you start
 
-```text
-private browser
-  → GB10 :8080  CRM dashboard + API + SQLite
-      → localhost:18789  OpenClaw gateway
-          → configured local model
-      ← crm-db-operations tools call localhost:8080/api
-```
+Install Git, Python 3.11 or newer, Node.js 20 or newer, and OpenClaw. Configure
+a tool-capable model in OpenClaw. The model choice controls memory use, speed,
+and quality. Record what you used in the acceptance checklist below instead of
+assuming a particular model or hardware combination is verified.
 
-The original model server used port 8000, so the CRM uses port 8080.
-
-## One-time setup
-
-1. Install OpenClaw and configure the local tool-capable model.
-2. Enable the Chat Completions endpoint:
-
-   ```bash
-   openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
-   openclaw config validate
-   ```
-
-3. Install the skills:
-
-   ```bash
-   mkdir -p ~/.openclaw/skills
-   cp -R skills/crm-db-operations ~/.openclaw/skills/
-   cp -R skills/business-card-scanner ~/.openclaw/skills/
-   cp -R skills/daily-command-center ~/.openclaw/skills/
-   cp -R skills/daily-brief ~/.openclaw/skills/
-   ```
-
-4. Give the OpenClaw process:
-
-   ```text
-   CRM_API_URL=http://localhost:8080/api
-   ```
-
-5. Copy the application settings:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   Set:
-
-   ```dotenv
-   AGENT_MODE=openclaw
-   AGENT_GATEWAY_URL=http://localhost:18789
-   AGENT_CHAT_PATH=/v1/chat/completions
-   PORT=8080
-   ```
-
-6. Test voice on the actual GB10:
-
-   ```bash
-   openclaw infer audio transcribe --file /path/to/test.m4a --json
-   ```
-
-   If needed, set `VOICE_TRANSCRIBE_MODEL=provider/model` in `.env`.
-
-## Start
+Enable the chat endpoint once:
 
 ```bash
+openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
+openclaw config validate
+```
+
+## Install and run
+
+```bash
+git clone https://github.com/tobywashere/open-house-intelligence-crm.git open-intelligence-crm
+cd open-intelligence-crm
+cp .env.example .env
+```
+
+Open `.env` and change `AGENT_MODE=mock` to `AGENT_MODE=openclaw`. Then run:
+
+```bash
+python3 scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
-Open `http://localhost:8080` on the machine.
-
-For Tailscale access, bind `HOST` to the GB10's exact Tailscale address and
-set the same long secret in `OHI_API_TOKEN` and `VITE_API_TOKEN`. Do not bind
-the CRM or OpenClaw gateway publicly.
-
-## Verify
+In a second Terminal, start in the directory where you cloned the project,
+then run:
 
 ```bash
-python3 scripts/doctor.py
-python3 scripts/doctor.py --live-agent
+cd open-intelligence-crm
+python3 scripts/doctor.py --live-agent --live-crm
 ```
 
-Then verify:
+Open [http://localhost:8080](http://localhost:8080). The helper creates the
+dedicated `openhouse-crm` agent with the `crm-db-operations` skill and uses
+`AGENT_ID=openhouse-crm` in the CRM configuration. It gives that dedicated
+agent only `exec`; the executable allowlist contains the CRM wrapper and daily
+brief runner, while general web, browser, and file tools are denied. It records
+the installed OpenClaw version and checks required CLI and policy capabilities
+before changing configuration, then reads the tool policy back and refuses to
+report success unless `exec` is the only allowed tool.
 
-1. Natural-language create, update, reminder, and booking.
-2. Card scan review before create.
-3. Voice transcript and field review before any write.
-4. Explicit won/lost close behavior.
-5. Morning schedule matches actual CRM appointments.
-6. Missing market research stays missing rather than displaying sample news.
+The expected live result is **CRM capability: crm_verified**. If the result is
+only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the
+recovery notes in [LOCAL-AI.md](LOCAL-AI.md#recovery). Do not trust a generic
+assistant answer as proof that it can access CRM tools.
 
-If the gateway is reachable but chat does not work, test
-`POST /v1/chat/completions` directly. A `404` means the endpoint is disabled;
-`401`/`403` means the gateway token does not match.
+## Optional Discord
 
-If chat always returns the canned “The agent didn't answer in time” fallback
-despite `agent_connected:true`, check the endpoint first: that health field
-only proves the gateway process is reachable. If the agent answers but invents
-CRM data, verify that the `crm-db-operations` skill is loaded from the expected
-OpenClaw workspace. If `agent_connected:false`, check
-`AGENT_GATEWAY_URL` (default `http://localhost:18789`) and confirm that the
-gateway process is running.
+Dashboard chat is the primary experience. Bind Discord only when you need it:
 
-## Optional Google integrations
-
-Gmail and Google Calendar use Composio and the internet:
-
-```dotenv
-INTEGRATIONS_MODE=live
-COMPOSIO_TRANSPORT=api
-COMPOSIO_API_KEY=replace-with-project-key
-COMPOSIO_USER_ID=default
-GCAL_TIMEZONE=America/Los_Angeles
+```bash
+python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
-Leave `INTEGRATIONS_MODE=off` for a local-only or stage-safe deployment.
-Enable `INTEGRATIONS_POLLER=on` separately only if automatic reading of the
-connected mailbox is intended.
+It uses the same dedicated agent. Agent-created leads, notes, reminders,
+bookings, and other CRM writes still wait for dashboard approval.
 
-The header reports integrations as off, configured, verified, or failed.
-Non-idempotent sends and calendar creates are not automatically replayed
-after an ambiguous timeout.
+## What to verify
+
+- A natural-language lead, note, reminder, and booking each appear in
+  **Pending approvals** before changing CRM data.
+- A rejected booking or reminder does not make an external calendar call.
+- Voice transcription reaches an editable review screen before any lead write.
+- A deterministic fallback is visibly labeled for review.
+- Daily schedule facts match the CRM and missing market information stays
+  unavailable instead of being fabricated.
+- Market items require a source URL, publication date, summary, and geographic area.
+  Incomplete information stays unavailable.
+
+## Target-hardware acceptance record
+
+These are intentionally unchecked. Fill them out after an actual GB10 run.
+
+- [ ] OpenClaw version:
+- [ ] Model/provider:
+- [ ] Linux distribution/version:
+- [ ] Memory:
+- [ ] Date and operator:
+- [ ] `--live-agent --live-crm` reports CRM capability verified
+- [ ] Dashboard chat proposes a reviewed CRM write
+- [ ] Voice note reaches the review screen
+- [ ] Optional Discord binding, if used, reaches the same agent
+
+Keep the gateway and CRM on a private interface. Do not commit `.env`, tokens,
+client data, recordings, or the SQLite database.

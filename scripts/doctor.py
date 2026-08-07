@@ -24,17 +24,31 @@ class Check:
     detail: str
 
 
-def _request_json(url: str, method: str = "GET") -> dict:
+def _request_json(
+    url: str,
+    method: str = "GET",
+    timeout: float = 5,
+) -> dict:
     headers = {"Accept": "application/json"}
     token = os.environ.get("OHI_API_TOKEN")
     if token:
         headers["X-API-Token"] = token
     request = urllib.request.Request(url, method=method, headers=headers)
-    with urllib.request.urlopen(request, timeout=5) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
-def run_checks(base_url: str, live_agent: bool) -> list[Check]:
+def run_checks(
+    base_url: str,
+    live_agent: bool = False,
+    live_crm: bool = False,
+    live_timeout: float | None = None,
+) -> list[Check]:
+    operation_timeout = (
+        live_timeout
+        if live_timeout is not None
+        else float(os.environ.get("AGENT_TIMEOUT_SECONDS", "120")) + 5
+    )
     checks = [
         Check(
             "PASS" if sys.version_info >= (3, 11) else "FAIL",
@@ -76,7 +90,9 @@ def run_checks(base_url: str, live_agent: bool) -> list[Check]:
     try:
         health = _request_json(health_url)
         status = (health.get("agent_status") or {}).get("status", "unknown")
-        level = "PASS" if status in {"mock", "endpoint_enabled", "verified"} else "FAIL"
+        level = "PASS" if status in {
+            "mock", "endpoint_enabled", "chat_verified", "crm_verified", "degraded"
+        } else "FAIL"
         checks.append(Check(level, "Agent endpoint", status))
     except (OSError, ValueError, urllib.error.URLError) as exc:
         checks.append(Check("FAIL", "Application API", f"{health_url}: {exc.__class__.__name__}"))
@@ -87,17 +103,35 @@ def run_checks(base_url: str, live_agent: bool) -> list[Check]:
             result = _request_json(
                 base_url.rstrip("/") + "/health/agent-check",
                 method="POST",
+                timeout=operation_timeout,
             )
             status = result.get("status", "unknown")
             checks.append(
                 Check(
-                    "PASS" if status == "verified" else "FAIL",
-                    "Live agent completion",
+                    "PASS" if status == "crm_verified" else "WARN" if status == "chat_verified" else "FAIL",
+                    "Live chat completion",
                     status,
                 )
             )
         except (OSError, ValueError, urllib.error.URLError) as exc:
-            checks.append(Check("FAIL", "Live agent completion", exc.__class__.__name__))
+            checks.append(Check("FAIL", "Live chat completion", exc.__class__.__name__))
+    if live_crm:
+        try:
+            result = _request_json(
+                base_url.rstrip("/") + "/health/crm-check",
+                method="POST",
+                timeout=operation_timeout,
+            )
+            status = result.get("status", "unknown")
+            checks.append(
+                Check(
+                    "PASS" if status == "crm_verified" else "FAIL",
+                    "CRM capability",
+                    status,
+                )
+            )
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            checks.append(Check("FAIL", "CRM capability", exc.__class__.__name__))
     return checks
 
 
@@ -115,9 +149,28 @@ def main() -> int:
         action="store_true",
         help="send one harmless completion to verify the configured OpenClaw chat endpoint",
     )
+    parser.add_argument(
+        "--live-crm",
+        action="store_true",
+        help="ask OpenClaw to make one audited, read-only CRM capability call",
+    )
+    parser.add_argument(
+        "--live-timeout",
+        type=float,
+        default=None,
+        help=(
+            "seconds allowed for each live agent check "
+            "(default: AGENT_TIMEOUT_SECONDS plus 5)"
+        ),
+    )
     args = parser.parse_args()
 
-    checks = run_checks(args.base_url, args.live_agent)
+    checks = run_checks(
+        args.base_url,
+        args.live_agent,
+        args.live_crm,
+        args.live_timeout,
+    )
     for check in checks:
         print(f"{check.level:4}  {check.name}: {check.detail}")
     return 1 if any(check.level == "FAIL" for check in checks) else 0

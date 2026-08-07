@@ -5,10 +5,15 @@ description: Read and write the Open House real-estate CRM lead database through
 
 # Open House CRM — lead database skill
 
-You are Annie's local real-estate CRM assistant, running on the GB10 with a
-local model. This skill is your only way to read or write the client-lead
+You are Annie's local real-estate CRM assistant, running through a dedicated
+OpenClaw agent. This skill is your only way to read or write the client-lead
 database. It exists so the model never touches SQL directly and every action
 is auditable.
+
+The dedicated agent intentionally has only `exec`, with gateway execution
+restricted to this skill's wrapper and the deterministic daily-brief runner.
+It has no general web, network, browser, or filesystem tools. Do not try to
+work around that boundary; use the named CRM operations below.
 
 ## Rules
 
@@ -37,7 +42,8 @@ is auditable.
    the user clearly says the opportunity was **won** or **lost**. If they only
    say "close it," ask which outcome applies; never guess. Do not set
    `status="closed"` through `update_lead`.
-9. `create_lead`, `update_lead`, `close_lead`, `delete_lead`, and `merge_leads`
+9. `create_lead`, `update_lead`, `add_note`, `book_appointment`,
+   `schedule_followup`, `close_lead`, `delete_lead`, and `merge_leads`
    are **queued for operator approval**, not applied immediately — the
    backend records your proposed change and a human approves or denies it
    from the dashboard. A successful call to one of these returns
@@ -47,18 +53,25 @@ is auditable.
    is awaiting the operator's review (e.g. "I've queued that lead for your
    approval"), not that it's done. There's nothing to retry or poll for; the
    operator decides on their own time.
+10. `score_lead` and `draft_followup` share a processing pass. The returned
+   score/reason and draft are useful candidates, but any generated score,
+   score reason, or newly extracted lead fields are queued together for
+   operator approval. Do not tell the user the score or extracted fields were
+   saved until the operator approves the proposal.
 
 ## Setup
 
 These tools are a thin HTTP client (`tools.py`, stdlib only, no pip install
 needed) over the backend REST API. The backend (FastAPI + SQLite) must be
-running and reachable — for the demo it runs on the same GB10 box.
+running and reachable on the same local machine.
 
 ```bash
-# CRM_API_URL is already set in the gateway service environment (GB10: http://localhost:8080/api).
-# Do NOT export it yourself — :8000 on the GB10 is the vLLM server, not the CRM.
-python3 -c "import sys; sys.path.insert(0,'.'); import tools; print(tools.list_leads()[:1])"
+{baseDir}/cli.py list_leads --args '{"sort":"priority"}'
 ```
+
+`CRM_API_URL` is supplied by the OpenClaw skill configuration. Do not export it
+inside a chat command. The setup helper defaults it to
+`http://localhost:8080/api`.
 
 If the backend is bound beyond localhost (`HOST` set to a Tailscale/LAN IP)
 and `OHI_API_TOKEN` is set on it, set the same value as `OHI_API_TOKEN` in
@@ -66,78 +79,44 @@ this skill's environment too — `tools.py` reads it and sends it as the
 `X-API-Token` header on every call. Without it, every call 401s once the
 backend's guard is on.
 
-```python
-import os, sys
-sys.path.insert(0, os.path.expanduser("~/.openclaw/skills/crm-db-operations"))
-import tools
-
-lead = tools.create_lead(raw_text="Met at open house, Bellevue, $1.1M budget", source="form")
+```bash
+{baseDir}/cli.py create_lead --args '{"raw_text":"Met at open house, Bellevue, $1.1M budget","source":"form"}'
 ```
 
-Every call raises `tools.CRMError(status, message)` on failure (400/404/409/etc).
-Catch it and turn it into a clarifying question or an apology to the user —
-never let a raw stack trace reach the chat.
+The wrapper catches CRM API failures and exits `2` with a JSON error on stderr.
+Turn that error into a clarifying question or a short apology to the user.
+Never expose a raw stack trace in chat.
 
 ## Tool catalog
 
 | Tool | Signature | Returns | Use it when... |
 |---|---|---|---|
-| `create_lead` | `(raw_text=None, source="note", *, name=, phone=, email=, budget=, area=, timeline=, intent=)` | created lead | A new person appears — a form fill, text, note, or referral. Pass `raw_text` for anything unstructured; the backend extracts fields. `source` must be one of `form`\|`text`\|`note`\|`referral`\|`email` — any other value gets a hard 422. |
-| `update_lead` | `(lead_id, **fields)` | updated lead | Any known field changes — status, phone, budget, etc. Resolve `lead_id` first. |
-| `close_lead` | `(lead_id, outcome, reason=None)` | closed lead | User explicitly confirms an opportunity was `won` or `lost`. Ambiguous "close it" requests require a question first. |
+| `create_lead` | `(raw_text=None, source="note", *, name=, phone=, email=, budget=, area=, timeline=, intent=)` | pending proposal | A new person appears — a form fill, text, note, or referral. Pass `raw_text` for anything unstructured; the backend extracts fields. `source` must be one of `form`\|`text`\|`note`\|`referral`\|`email` — any other value gets a hard 422. |
+| `update_lead` | `(lead_id, **fields)` | pending proposal | Any known field changes — status, phone, budget, etc. Resolve `lead_id` first. |
+| `add_note` | `(lead_id, content)` | pending proposal | Add a factual note to an existing lead after resolving the lead ID. Blank notes are rejected. |
+| `close_lead` | `(lead_id, outcome, reason=None)` | pending proposal | User explicitly confirms an opportunity was `won` or `lost`. Ambiguous "close it" requests require a question first. |
 | `find_duplicate_leads` | `(lead_id)` | `[{lead, match_on}]` | Before merging, or when you suspect this person already has a profile (same phone/email, or a very similar name). |
-| `merge_leads` | `(primary_id, duplicate_id)` | merged lead | User confirms two profiles are the same person. Primary's blanks get filled from the duplicate; primary wins conflicts; duplicate is deleted. |
+| `merge_leads` | `(primary_id, duplicate_id)` | pending proposal | User confirms two profiles are the same person. Primary's blanks get filled from the duplicate; primary wins conflicts; duplicate is deleted. |
 | `get_lead_context` | `(lead_id)` | lead + `events[]` + `appointments[]` | Before answering "what do we know about X", before drafting a message, before deciding next action. |
 | `list_leads` | `(sort="priority", status=None, neglected=None)` | `[lead]` | "Who should I follow up with", "show me Bellevue buyers" (filter client-side on the returned fields), inbox-style questions. |
 | `score_lead` | `(lead_id)` | `{lead_id, score, score_reason}` | After enough new info lands on a lead to re-score it (new note, new field). Deterministic formula server-side; only the reason is written by you upstream (already filled in by the backend's driver). |
 | `draft_followup` | `(lead_id)` | draft message text | User asks you to reach out to someone, or after scoring a hot lead. |
 | `check_availability` | `(date: "YYYY-MM-DD")` | `[{start_ts, end_ts}]` free slots | Before booking anything — always check first. |
 | `list_appointments` | `()` | `[{id, lead_id, start_ts, end_ts, location, created_at, lead_name}]`, all appointments, ordered by `start_ts` | Finding who has an appointment today (or any date) — filter the returned list client-side on `start_ts`. Used by `daily-command-center` Step 0.2 before deciding whose `get_lead_context` to pull. |
-| `book_appointment` | `(lead_id, start_ts, end_ts, location=None)` | appointment | User agrees to a specific time. Raises 409 on conflict — re-check availability and offer alternatives. Lead status auto-flips to `meeting_booked`. |
-| `schedule_followup` | `(lead_id, due_ts, note=None)` | reminder | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
+| `book_appointment` | `(lead_id, start_ts, end_ts, location=None)` | pending proposal | User agrees to a specific time. Raises 409 on an existing conflict. Approval re-checks the slot, then books and changes the lead to `meeting_booked`. |
+| `schedule_followup` | `(lead_id, due_ts, note=None)` | pending proposal | User wants a reminder ("remind me Friday to..."), or you just flagged someone as neglected and want to close the loop. |
 | `find_neglected_leads` | `()` | `[lead]` newly flagged | Scheduled/cron check, or "who haven't I talked to" questions. Evaluates every open lead against the 2-day-idle rule right now. |
-| `generate_dashboard_insights` | `()` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. These are real counts — narrate them, don't replace them. `avg_response_minutes` can be `null` (no lead has a first-response event yet) — say "not enough data yet" rather than reporting it as `0` or omitting the field silently. |
-| `delete_lead` | `(lead_id, reason="")` | `{deleted, lead_id, name}` | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm the deleted lead's name back to the user afterwards. |
+| `generate_dashboard_insights` | `(probe_nonce?)` | `{active_leads, high_priority, followups_due, appointments_booked, avg_response_minutes, agent_mode, cloud_llm_requests}` | Morning summaries, "how's the pipeline looking" questions. Omit `probe_nonce` for ordinary use; pass it only when the application's capability-check prompt supplies one. These are real counts — narrate them, don't replace them. `avg_response_minutes` can be `null` (no lead has a first-response event yet) — say "not enough data yet" rather than reporting it as `0` or omitting the field silently. |
+| `delete_lead` | `(lead_id, reason="")` | pending proposal | **Destructive.** Only call when the user explicitly asked to delete a specific lead — never to "clean up" on your own initiative. Confirm that deletion was queued for review, not completed. |
 | `post_briefing` | `(payload: dict)` | validated advice payload | Publish preparation advice for real appointments. The backend rebuilds all displayed facts from CRM rows and ignores replacement schedule/name/time/score fields. |
 | `get_research_settings` | `()` | configured URLs and keywords | Before generating a daily market summary, so the report follows the operator's current source configuration. |
 | `get_insights` | `(date: "YYYY-MM-DD")` | stored CRM insight inputs | When the daily brief needs CRM-grounded context for the requested day. |
-| `get_summary` | `(date: "YYYY-MM-DD")` | persisted daily summary | Verify that a publish landed, or read the report currently displayed by the dashboard. |
-| `post_summary` | `(payload: dict)` | persisted, validated summary | Publish a source-backed daily report. Always read it back with `get_summary` and verify `generated_at`. |
+| `get_summary` | `(date: "YYYY-MM-DD")` | persisted daily summary | Read the report currently displayed by the dashboard. Publication is intentionally available only through the validating `daily-brief` runner. |
 | `search_knowledge` | `(query: str, k=3)` | `[{doc, heading, breadcrumb, score, text}]`, ranked, may be `[]` | Market conditions, taxes, financing mechanics, pricing, or neighborhood/school-district questions — anything the CRM's own records don't cover. Cite `heading` when you use a hit. Not for scheduling/reminders/CRM-record questions. |
 
 Full request/response shapes and the underlying REST endpoints are frozen in
 [`docs/CONTRACT.md`](../../docs/CONTRACT.md) — this file is the model-facing
 view of that same contract; if they ever disagree, the contract wins.
-
-## Curl equivalents (for debugging without the Python client)
-
-```bash
-BASE="${CRM_API_URL:-http://localhost:8080/api}"
-
-curl -s -X POST "$BASE/leads" -H 'content-type: application/json' \
-  -d '{"raw_text":"Met at open house, Bellevue, budget $1.1M","source":"form"}'
-
-curl -s "$BASE/leads/1"                                  # get_lead_context
-curl -s "$BASE/leads/1/duplicates"                       # find_duplicate_leads
-curl -s -X PATCH "$BASE/leads/1" -d '{"status":"contacted"}' -H 'content-type: application/json'
-curl -s -X POST "$BASE/leads/1/close" -H 'content-type: application/json' \
-  -d '{"outcome":"won","reason":"Contract signed"}'
-curl -s -X POST "$BASE/leads/1/process"                   # score_lead + draft_followup
-curl -s "$BASE/availability?date=2026-07-28"              # check_availability
-curl -s "$BASE/appointments"                              # list_appointments
-curl -s -X POST "$BASE/appointments" -H 'content-type: application/json' \
-  -d '{"lead_id":1,"start_ts":"2026-07-28T18:00:00","end_ts":"2026-07-28T18:45:00"}'
-curl -s -X POST "$BASE/demo/advance-time" -d '{"days":0}' -H 'content-type: application/json'  # find_neglected_leads
-curl -s "$BASE/metrics"                                   # generate_dashboard_insights
-curl -s -X POST "$BASE/briefing" -H 'content-type: application/json' \
-  -d '{"date":"2026-07-28","greeting":"Good morning"}'    # post_briefing (shape in docs/BRIEFING-UI.md)
-curl -s "$BASE/research-settings"                         # get_research_settings
-curl -s "$BASE/insights?date=2026-07-28"                 # get_insights
-curl -s "$BASE/summary?date=2026-07-28"                  # get_summary
-curl -s -X POST "$BASE/summary" -H 'content-type: application/json' \
-  -d @daily-summary.json                                  # post_summary
-curl -s "$BASE/knowledge/search?q=Amazon+RSU+vesting&k=3"  # search_knowledge
-```
 
 ## Maintaining the database
 

@@ -84,6 +84,31 @@ def test_hook_failure_never_breaks_request(client, monkeypatch):
     assert any(t.endswith("(failed)") for t in _audit_tools(client))
 
 
+def test_reminder_hook_reports_integration_failure(client, monkeypatch):
+    from app.integrations import hooks
+    from app.integrations.composio_client import IntegrationError
+
+    lead = make_lead(client)
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "k")
+    monkeypatch.setattr(
+        hooks.cc,
+        "execute",
+        lambda *_: (_ for _ in ()).throw(IntegrationError("network down")),
+    )
+
+    delivered = hooks.on_reminder_created(
+        {
+            "id": 91,
+            "lead_id": lead["id"],
+            "due_ts": "2026-08-20T09:00:00",
+            "note": "Call",
+        }
+    )
+
+    assert delivered is hooks.HookOutcome.FAILED
+
+
 def test_hook_blanket_guard_non_integration_error(client, monkeypatch):
     """Verify hooks never raise even when _create_event raises non-IntegrationError."""
     def boom(*args, **kwargs):

@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 from datetime import date as _date
 
 from ..calendar_adapter import calendar
+from ..approvals import is_agent_write, queue_pending_change
 from ..db import audit, get_conn
 from ..integrations import composio_client as cc
 from ..integrations.poller import busy_blocks as integrations_busy
@@ -64,34 +65,74 @@ def list_appointments():
 
 
 @router.post("/appointments")
-def book_appointment(body: AppointmentIn):
-    with get_conn() as conn:
-        lead = fetch_lead(conn, body.lead_id)
-        if calendar.has_conflict(conn, body.start_ts, body.end_ts):
-            raise HTTPException(409, "slot conflicts with an existing appointment")
-        # Validate status transition before creating appointment
-        if lead["status"] != "meeting_booked" and "meeting_booked" not in ALLOWED_TRANSITIONS[lead["status"]]:
-            raise HTTPException(400, f"cannot book: invalid status transition {lead['status']} -> meeting_booked")
-        cur = conn.execute(
-            "INSERT INTO appointments (lead_id, start_ts, end_ts, location) VALUES (?,?,?,?)",
-            (body.lead_id, body.start_ts, body.end_ts, body.location),
+def book_appointment(body: AppointmentIn, request: Request = None):
+    if is_agent_write(request):
+        with get_conn() as conn:
+            lead = _validate_appointment(conn, body)
+        summary = (
+            f"Book appointment for #{body.lead_id} ({lead.get('name')}) "
+            f"from {body.start_ts} to {body.end_ts}"
         )
-        conn.execute(
-            f"UPDATE leads SET status = 'meeting_booked', last_activity_at = ({NOW}) "
-            "WHERE id = ?", (body.lead_id,))
-        conn.execute(
-            "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
-            (body.lead_id, "status_change", f"Meeting booked for {body.start_ts}"),
+        if body.location:
+            summary += f" at {body.location}"
+        return queue_pending_change(
+            "book_appointment", body.lead_id, body.model_dump(), summary
         )
-        appt = dict(conn.execute(
-            "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
-        audit(conn, "agent", "book_appointment", body.model_dump(),
-              {"appointment_id": appt["id"]}, body.lead_id)
+    return _apply_book_appointment(body, actor="user")
+
+
+def _validate_appointment(conn, body: AppointmentIn) -> dict:
+    lead = fetch_lead(conn, body.lead_id)
+    if calendar.has_conflict(conn, body.start_ts, body.end_ts):
+        raise HTTPException(409, "slot conflicts with an existing appointment")
+    if (
+        lead["status"] != "meeting_booked"
+        and "meeting_booked" not in ALLOWED_TRANSITIONS[lead["status"]]
+    ):
+        raise HTTPException(
+            400,
+            f"cannot book: invalid status transition {lead['status']} -> meeting_booked",
+        )
+    return lead
+
+
+def _apply_book_appointment(
+    body: AppointmentIn, actor: str = "agent", *, run_hook: bool = True, conn=None
+) -> dict:
+    if conn is not None and run_hook:
+        raise ValueError("caller-owned booking transactions cannot run external hooks")
+
+    if conn is None:
+        with get_conn() as owned_conn:
+            lead, appt = _book_appointment_in_conn(owned_conn, body, actor)
+    else:
+        lead, appt = _book_appointment_in_conn(conn, body, actor)
     # book_appointment is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the
     # event loop — no run_in_threadpool wrapping needed here.
-    hooks.on_tour_booked(lead, appt)
+    if run_hook:
+        hooks.on_tour_booked(lead, appt)
     return appt
+
+
+def _book_appointment_in_conn(conn, body: AppointmentIn, actor: str) -> tuple[dict, dict]:
+    lead = _validate_appointment(conn, body)
+    cur = conn.execute(
+        "INSERT INTO appointments (lead_id, start_ts, end_ts, location) VALUES (?,?,?,?)",
+        (body.lead_id, body.start_ts, body.end_ts, body.location),
+    )
+    conn.execute(
+        f"UPDATE leads SET status = 'meeting_booked', last_activity_at = ({NOW}) "
+        "WHERE id = ?", (body.lead_id,))
+    conn.execute(
+        "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
+        (body.lead_id, "status_change", f"Meeting booked for {body.start_ts}"),
+    )
+    appt = dict(conn.execute(
+        "SELECT * FROM appointments WHERE id = ?", (cur.lastrowid,)).fetchone())
+    audit(conn, actor, "book_appointment", body.model_dump(),
+          {"appointment_id": appt["id"]}, body.lead_id)
+    return lead, appt
 
 
 @router.get("/appointments/{appt_id}/ics")

@@ -147,6 +147,34 @@ def test_voice_prepare_finds_existing_phone_duplicate(client, monkeypatch):
     assert duplicate["match_on"] == "phone"
 
 
+def test_voice_prepare_labels_deterministic_extraction_without_leaking_marker(
+    client, monkeypatch
+):
+    class FakeTranscriber:
+        def transcribe(self, path: Path) -> str:
+            return "Met Priya Shah at an open house."
+
+    class FallbackDriver:
+        async def extract(self, raw_text: str) -> dict:
+            return {
+                "name": "Priya Shah",
+                "intent": "buy",
+                "preferences": [],
+                "missing_fields": ["email"],
+                "_fallback_used": "deterministic_parser",
+            }
+
+    monkeypatch.setattr(voice, "get_transcriber", lambda: FakeTranscriber())
+    monkeypatch.setattr(voice, "get_driver", lambda: FallbackDriver())
+
+    response = client.post("/api/voice-note/prepare", json=voice_payload())
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert "_fallback_used" not in result["draft"]
+    assert any("deterministic parser" in warning.lower() for warning in result["warnings"])
+
+
 def test_voice_prepare_rejects_mismatched_claimed_content_type(client):
     response = client.post(
         "/api/voice-note/prepare",

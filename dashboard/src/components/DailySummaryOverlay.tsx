@@ -80,7 +80,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
     const before = summary?.generated_at
     try {
       await api.chat(
-        'Intra-day briefing refresh requested. Use the daily-brief skill and run exactly: python3 skills/daily-brief/scripts/run_daily_brief.py. Do not attempt a direct arbitrary API call. Reply only after the command prints JSON with "ok": true and "published": true.',
+        'Intra-day briefing refresh requested. Use the daily-brief skill in Mode 1 and follow its installed {baseDir} runner instruction. Do not use general Python, a repository-relative path, WebFetch, temporary files, or a direct API call. Reply only after the runner prints JSON with "ok": true and "published": true.',
         `summary-trigger-${Date.now()}`,
       )
     } catch {
@@ -90,7 +90,7 @@ export function DailySummaryOverlay({ onClose }: { onClose: () => void }) {
     }
     toast('↻ Asked the agent for a fresh briefing — this takes a minute…')
     const today = localDateKey()
-    // a full research pass takes ~3 min on the GB10 — poll for 5 before giving up
+    // A full local research pass can take a few minutes; poll for five before giving up.
     for (let i = 0; i < 60 && alive.current; i++) {
       await new Promise((r) => setTimeout(r, 5000))
       try {

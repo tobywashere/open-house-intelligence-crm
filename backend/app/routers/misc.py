@@ -1,10 +1,14 @@
+import json
 import os
-from dataclasses import asdict
+import uuid
+from dataclasses import asdict, replace
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
+from ..agent.status import AgentProbe, record_crm_capability
+from ..approvals import is_agent_write, queue_pending_change
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
 from ..integrations import hooks
@@ -37,21 +41,50 @@ class ReminderIn(BaseModel):
 
 
 @router.post("/reminders")
-def create_reminder(body: ReminderIn):
-    with get_conn() as conn:
-        fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
-        cur = conn.execute(
-            "INSERT INTO reminders (lead_id, due_ts, note) VALUES (?,?,?)",
-            (body.lead_id, body.due_ts, body.note),
+def create_reminder(body: ReminderIn, request: Request = None):
+    if is_agent_write(request):
+        with get_conn() as conn:
+            lead = fetch_lead(conn, body.lead_id)
+        summary = (
+            f"Schedule follow-up for #{body.lead_id} ({lead.get('name')}) "
+            f"at {body.due_ts}"
         )
-        audit(conn, "agent", "schedule_followup", body.model_dump(), {}, body.lead_id)
-        reminder = dict(conn.execute(
-            "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
+        if body.note:
+            summary += f": {body.note}"
+        return queue_pending_change(
+            "schedule_followup", body.lead_id, body.model_dump(), summary
+        )
+    return _apply_create_reminder(body, actor="user")
+
+
+def _apply_create_reminder(
+    body: ReminderIn, actor: str = "agent", *, run_hook: bool = True, conn=None
+) -> dict:
+    if conn is not None and run_hook:
+        raise ValueError("caller-owned reminder transactions cannot run external hooks")
+
+    if conn is None:
+        with get_conn() as owned_conn:
+            reminder = _create_reminder_in_conn(owned_conn, body, actor)
+    else:
+        reminder = _create_reminder_in_conn(conn, body, actor)
     # create_reminder is a sync `def` endpoint: FastAPI already runs the
     # whole handler in the AnyIO threadpool, so this call can't freeze the
     # event loop — no run_in_threadpool wrapping needed here.
-    hooks.on_reminder_created(reminder)
+    if run_hook:
+        hooks.on_reminder_created(reminder)
     return reminder
+
+
+def _create_reminder_in_conn(conn, body: ReminderIn, actor: str) -> dict:
+    fetch_lead(conn, body.lead_id)  # 404 instead of an FK IntegrityError 500
+    cur = conn.execute(
+        "INSERT INTO reminders (lead_id, due_ts, note) VALUES (?,?,?)",
+        (body.lead_id, body.due_ts, body.note),
+    )
+    audit(conn, actor, "schedule_followup", body.model_dump(), {}, body.lead_id)
+    return dict(conn.execute(
+        "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,)).fetchone())
 
 
 @router.get("/reminders")
@@ -122,7 +155,15 @@ def audit_log(limit: int = Query(50, ge=1, le=500)):
 
 
 @router.get("/metrics")
-def metrics():
+def metrics(
+    request: Request,
+    probe_nonce: str | None = Query(
+        None,
+        min_length=16,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9-]+$",
+    ),
+):
     with get_conn() as conn:
         leads = [row_to_dict(r) for r in conn.execute(
             "SELECT * FROM leads WHERE status != 'closed'")]
@@ -141,18 +182,27 @@ def metrics():
         # julianday() arithmetic isn't bit-exact (e.g. 10.000000409781933 for
         # an intended 10.0) — round to a sane display precision.
         avg_response_minutes = round(raw_avg, 1) if raw_avg is not None else None
-    return {
-        "active_leads": len(leads),
-        "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
-        "followups_due": sum(1 for l in leads if l["is_neglected"]),
-        "appointments_booked": appts,
-        "avg_response_minutes": avg_response_minutes,
-        "agent_mode": os.environ.get("AGENT_MODE", "mock"),
-        # Composio tool calls (Gmail/Calendar) on the live path — NOT
-        # local-LLM inference requests. The openclaw driver's calls are
-        # deliberately excluded: they never leave the box.
-        "cloud_llm_requests": composio_client.request_count(),
-    }
+        result = {
+            "active_leads": len(leads),
+            "high_priority": sum(1 for l in leads if is_high_priority(l.get("score"))),
+            "followups_due": sum(1 for l in leads if l["is_neglected"]),
+            "appointments_booked": appts,
+            "avg_response_minutes": avg_response_minutes,
+            "agent_mode": os.environ.get("AGENT_MODE", "mock"),
+            # Composio tool calls (Gmail/Calendar) on the live path — NOT
+            # local-LLM inference requests. The openclaw driver's calls are
+            # deliberately excluded: they never leave the box.
+            "cloud_llm_requests": composio_client.request_count(),
+        }
+        if is_agent_write(request):
+            audit(
+                conn,
+                "agent",
+                "generate_dashboard_insights",
+                {"probe_nonce": probe_nonce} if probe_nonce else {},
+                result,
+            )
+    return result
 
 
 @router.get("/health")
@@ -162,7 +212,7 @@ async def health():
     return {
         "ok": True,
         "agent_mode": driver.name,
-        "agent_connected": probe.status in {"mock", "endpoint_enabled", "verified"},
+        "agent_connected": probe.gateway_reachable,
         "agent_status": asdict(probe),
     }
 
@@ -171,3 +221,89 @@ async def health():
 async def agent_check():
     driver = get_driver()
     return asdict(await driver.live_check())
+
+
+@router.post("/health/crm-check")
+async def crm_check():
+    driver = get_driver()
+    if driver.name == "mock":
+        raise HTTPException(409, "CRM capability check requires the OpenClaw agent")
+
+    with get_conn() as conn:
+        before = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS id FROM audit_log"
+        ).fetchone()["id"]
+
+    probe_nonce = uuid.uuid4().hex
+    try:
+        await driver.request_crm_capability(
+            f"crm-check-{probe_nonce}",
+            probe_nonce,
+        )
+    except Exception:
+        record_crm_capability(False, "capability request failed")
+        return asdict(_capability_result(
+            await driver.probe(),
+            verified=False,
+            detail="capability request failed",
+        ))
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input FROM audit_log "
+            "WHERE id > ? AND actor = 'agent' "
+            "AND tool = 'generate_dashboard_insights'",
+            (before,),
+        ).fetchall()
+    found = any(_audit_has_nonce(row["input"], probe_nonce) for row in rows)
+
+    detail = None if found else "no audited CRM call"
+    record_crm_capability(found, detail)
+    return asdict(_capability_result(
+        await driver.probe(),
+        verified=found,
+        detail=detail,
+    ))
+
+
+def _audit_has_nonce(raw_input: str, probe_nonce: str) -> bool:
+    try:
+        payload = json.loads(raw_input)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("probe_nonce") == probe_nonce
+
+
+def _capability_result(
+    probe: AgentProbe,
+    *,
+    verified: bool,
+    detail: str | None,
+) -> AgentProbe:
+    if not probe.gateway_reachable or not probe.endpoint_enabled:
+        return replace(probe, crm_verified=False)
+    if verified:
+        if probe.last_chat_ok is False:
+            return replace(
+                probe,
+                status="degraded",
+                crm_verified=True,
+            )
+        return replace(
+            probe,
+            status="crm_verified",
+            crm_verified=True,
+            detail=None,
+        )
+    if probe.last_chat_ok is True:
+        status = "chat_verified"
+    elif probe.last_chat_ok is False:
+        status = "failed"
+    else:
+        status = "endpoint_enabled"
+    return replace(
+        probe,
+        status=status,
+        crm_verified=False,
+        detail=detail,
+    )

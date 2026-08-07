@@ -1,9 +1,9 @@
 """Generic infra for gating agent-initiated lead writes behind human approval.
 
-Only the agent's HTTP tool client (skills/crm-db-operations/tools.py) sends
-`X-Actor: agent` — the dashboard's fetch calls (dashboard/src/api.ts) never
-set it, so their writes are unaffected and keep applying immediately. See
-docs/CONTRACT.md's pending-changes section for the full contract.
+The agent's HTTP tool client (skills/crm-db-operations/tools.py) sends
+`X-Actor: agent`; automatic mailbox intake calls the same queue explicitly.
+The dashboard's fetch calls (dashboard/src/api.ts) never set the header, so
+manual writes remain immediate. See docs/CONTRACT.md for the full contract.
 """
 import json
 
@@ -14,28 +14,66 @@ from .db import get_conn
 
 
 def is_agent_write(request: Request | None) -> bool:
-    # request is None for in-process callers (e.g. the Gmail poller's direct
-    # create_lead(LeadIn(...)) call, which has no HTTP request at all) —
-    # those are out of scope for this gate and always apply immediately.
+    # In-process automation has no Request from which to derive an actor and
+    # must opt into queue_pending_change explicitly, as the mailbox poller does.
     return request is not None and request.headers.get("X-Actor") == "agent"
 
 
-def queue_pending_change(operation: str, lead_id: int | None, payload: dict, summary: str) -> JSONResponse:
-    """Records the proposed write and returns the 202 the agent's tool call sees
-    instead of the lead — the caller must NOT also apply the mutation."""
-    with get_conn() as conn:
+def insert_pending_change(
+    conn,
+    operation: str,
+    lead_id: int | None,
+    payload: dict,
+    summary: str,
+    *,
+    dedupe_key: str | None = None,
+) -> dict:
+    """Insert a proposal using the caller's transaction.
+
+    The caller owns commit/rollback. This lets automation atomically pair a
+    proposal with its audit row without holding the database lock during slow
+    extraction.
+    """
+    serialized = json.dumps(payload, default=str)
+    if dedupe_key is None:
         cur = conn.execute(
-            "INSERT INTO pending_changes (operation, lead_id, payload, summary) VALUES (?,?,?,?)",
-            (operation, lead_id, json.dumps(payload, default=str), summary),
+            "INSERT INTO pending_changes (operation, lead_id, payload, summary) "
+            "VALUES (?,?,?,?)",
+            (operation, lead_id, serialized, summary),
         )
         pending_id = cur.lastrowid
-    return JSONResponse(
-        status_code=202,
-        content={
-            "pending": True,
-            "id": pending_id,
-            "operation": operation,
-            "summary": summary,
-            "status": "pending",
-        },
-    )
+        status = "pending"
+    else:
+        conn.execute(
+            "INSERT OR IGNORE INTO pending_changes "
+            "(operation, lead_id, payload, summary, dedupe_key) VALUES (?,?,?,?,?)",
+            (operation, lead_id, serialized, summary, dedupe_key),
+        )
+        row = conn.execute(
+            "SELECT id, operation, lead_id, summary, status FROM pending_changes "
+            "WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if not row:
+            raise RuntimeError("deduplicated pending change was not persisted")
+        if row["operation"] != operation or row["lead_id"] != lead_id:
+            raise RuntimeError("pending change dedupe key conflicts with another proposal")
+        pending_id = row["id"]
+        summary = row["summary"]
+        status = row["status"]
+    return {
+        "pending": True,
+        "id": pending_id,
+        "operation": operation,
+        "summary": summary,
+        "status": status,
+    }
+
+
+def queue_pending_change(
+    operation: str, lead_id: int | None, payload: dict, summary: str
+) -> JSONResponse:
+    """Record a proposed write and return the agent-facing 202 response."""
+    with get_conn() as conn:
+        content = insert_pending_change(conn, operation, lead_id, payload, summary)
+    return JSONResponse(status_code=202, content=content)

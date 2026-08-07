@@ -1,14 +1,138 @@
 """Agent-initiated lead writes (X-Actor: agent) must queue for approval
 instead of applying; the dashboard's untagged calls must be unaffected."""
+import asyncio
+import threading
+
+import pytest
+
 from tests.conftest import make_lead
 
 AGENT = {"X-Actor": "agent"}
+
+ATOMIC_OPERATIONS = [
+    ("create_lead", "create_lead"),
+    ("update_lead", "update_lead"),
+    ("add_event", "add_event"),
+    ("book_appointment", "book_appointment"),
+    ("schedule_followup", "schedule_followup"),
+    ("close_lead", "close_lead"),
+    ("merge_leads", "merge_leads"),
+    ("delete_lead", "delete_lead"),
+]
 
 
 def _pending(client, status="pending"):
     res = client.get(f"/api/pending-changes?status={status}")
     assert res.status_code == 200, res.text
     return res.json()
+
+
+def _audit_rows(client, tool):
+    return [row for row in client.get("/api/audit?limit=100").json() if row["tool"] == tool]
+
+
+def _business_snapshot():
+    """All state an approval mutation is allowed to change, excluding its queue row."""
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        return {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")]
+            for table in ("leads", "events", "appointments", "reminders", "audit_log")
+        }
+
+
+def _queue_atomicity_case(client, operation):
+    if operation == "create_lead":
+        queued = client.post(
+            "/api/leads",
+            json={"name": "Atomic Create", "source": "form"},
+            headers=AGENT,
+        )
+    elif operation == "merge_leads":
+        primary = make_lead(client, name="Atomic Primary", email="primary@example.com")
+        duplicate = make_lead(client, name="Atomic Duplicate", email="duplicate@example.com")
+        client.post(
+            f"/api/leads/{duplicate['id']}/events",
+            json={"type": "note", "content": "Move this note on merge"},
+        )
+        client.post(
+            "/api/reminders",
+            json={
+                "lead_id": duplicate["id"],
+                "due_ts": "2026-08-18T09:00:00",
+                "note": "Move this reminder on merge",
+            },
+        )
+        queued = client.post(
+            "/api/leads/merge",
+            json={"primary_id": primary["id"], "duplicate_id": duplicate["id"]},
+            headers=AGENT,
+        )
+    else:
+        lead = make_lead(client, name=f"Atomic {operation}")
+        if operation == "update_lead":
+            queued = client.patch(
+                f"/api/leads/{lead['id']}",
+                json={"area": "Kirkland"},
+                headers=AGENT,
+            )
+        elif operation == "add_event":
+            queued = client.post(
+                f"/api/leads/{lead['id']}/events",
+                json={"type": "note", "content": "Atomic note"},
+                headers=AGENT,
+            )
+        elif operation == "book_appointment":
+            queued = client.post(
+                "/api/appointments",
+                json={
+                    "lead_id": lead["id"],
+                    "start_ts": "2026-08-18T10:00:00",
+                    "end_ts": "2026-08-18T10:45:00",
+                },
+                headers=AGENT,
+            )
+        elif operation == "schedule_followup":
+            queued = client.post(
+                "/api/reminders",
+                json={
+                    "lead_id": lead["id"],
+                    "due_ts": "2026-08-18T11:00:00",
+                    "note": "Atomic reminder",
+                },
+                headers=AGENT,
+            )
+        elif operation == "close_lead":
+            queued = client.post(
+                f"/api/leads/{lead['id']}/close",
+                json={"outcome": "won", "reason": "Atomic close"},
+                headers=AGENT,
+            )
+        elif operation == "delete_lead":
+            client.post(
+                f"/api/leads/{lead['id']}/events",
+                json={"type": "note", "content": "Must survive rollback"},
+            )
+            client.post(
+                "/api/reminders",
+                json={
+                    "lead_id": lead["id"],
+                    "due_ts": "2026-08-18T12:00:00",
+                    "note": "Must survive rollback",
+                },
+            )
+            queued = client.request(
+                "DELETE",
+                f"/api/leads/{lead['id']}",
+                json={"reason": "Atomic delete"},
+                headers=AGENT,
+            )
+        else:  # pragma: no cover - parameter list below is the supported catalog
+            raise AssertionError(f"unsupported test operation {operation}")
+    assert queued.status_code == 202, queued.text
+    assert queued.json()["operation"] == operation
+    return queued.json()
 
 
 def test_dashboard_create_is_unaffected(client):
@@ -146,6 +270,35 @@ def test_agent_create_lead_from_raw_text_resolves_fields_at_queue_time(client):
     assert approved.json()["budget"] == 850_000
 
 
+def test_agent_create_fallback_warns_for_review_without_leaking_marker(client, monkeypatch):
+    from app.routers import leads as leads_router
+
+    class FallbackDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Jordan Ellis",
+                "area": "Kirkland",
+                "budget": 850_000,
+                "preferences": [],
+                "missing_fields": ["phone"],
+                "_fallback_used": "deterministic_parser",
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: FallbackDriver())
+    queued = client.post(
+        "/api/leads",
+        json={"raw_text": "Met Jordan Ellis in Kirkland", "source": "note"},
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    assert "backup parser" in queued.json()["summary"].lower()
+    pending = _pending(client)[0]
+    assert "backup parser" in pending["summary"].lower()
+    assert "_fallback_used" not in str(queued.json())
+    assert "_fallback_used" not in str(pending)
+
+
 def test_approve_with_edited_fields_overrides_the_queued_payload(client):
     """The operator can edit a field in the dialog before approving —
     the applied write must reflect the edit, not the agent's original value."""
@@ -161,6 +314,81 @@ def test_approve_with_edited_fields_overrides_the_queued_payload(client):
     assert approved.json()["budget"] == 900_000
     assert approved.json()["area"] == "Bellevue"
     assert approved.json()["name"] == "Jordan Ellis", "unedited fields must pass through unchanged"
+
+
+def test_approve_create_lead_persists_operator_edited_preferences(client, monkeypatch):
+    """Preferences shown in the dialog must round-trip from the edited fields,
+    rather than silently preserving the agent's hidden original value."""
+    from app.routers import leads as leads_router
+
+    class PreferencesDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Jordan Ellis",
+                "preferences": ["pool", "large yard"],
+                "missing_fields": [],
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: PreferencesDriver())
+    queued = client.post(
+        "/api/leads",
+        json={"raw_text": "Met Jordan Ellis at an open house", "source": "note"},
+        headers=AGENT,
+    )
+    pending_id = queued.json()["id"]
+
+    approved = client.post(
+        f"/api/pending-changes/{pending_id}/approve",
+        json={"fields": {"preferences": ["quiet street", "home office"]}},
+    )
+
+    assert approved.status_code == 200
+    assert approved.json()["preferences"] == ["quiet street", "home office"]
+    stored = client.get(f"/api/leads/{approved.json()['id']}").json()
+    assert stored["preferences"] == ["quiet street", "home office"]
+
+
+def test_approve_create_lead_can_explicitly_clear_preferences(client, monkeypatch):
+    from app.routers import leads as leads_router
+
+    class PreferencesDriver:
+        async def extract(self, raw_text):
+            return {
+                "name": "Jordan Ellis",
+                "preferences": ["pool"],
+                "missing_fields": [],
+            }
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: PreferencesDriver())
+    queued = client.post(
+        "/api/leads",
+        json={"raw_text": "Met Jordan Ellis", "source": "note"},
+        headers=AGENT,
+    )
+
+    approved = client.post(
+        f"/api/pending-changes/{queued.json()['id']}/approve",
+        json={"fields": {"preferences": []}},
+    )
+
+    assert approved.status_code == 200
+    assert approved.json()["preferences"] == []
+
+
+def test_approve_create_lead_rejects_unknown_or_internal_fields(client):
+    queued = client.post(
+        "/api/leads",
+        json={"name": "Safe Lead", "source": "note"},
+        headers=AGENT,
+    )
+
+    approved = client.post(
+        f"/api/pending-changes/{queued.json()['id']}/approve",
+        json={"fields": {"id": 987654}},
+    )
+
+    assert approved.status_code == 422
+    assert client.get("/api/leads/987654").status_code == 404
 
 
 def test_approve_update_lead_with_edited_fields(client):
@@ -188,3 +416,353 @@ def test_direct_edits_still_apply_instantly_alongside_agent_writes(client):
     assert direct.status_code == 200
     assert direct.json()["area"] == "Redmond"
     assert direct.json()["budget"] == 500_000, "the agent's queued budget change must not have leaked in"
+
+
+def test_agent_note_queues_and_approval_applies(client):
+    lead = make_lead(client)
+    queued = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Requested Saturday tour"},
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    assert queued.json()["operation"] == "add_event"
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["events"] == []
+    assert unchanged["status"] == lead["status"]
+    assert unchanged["last_activity_at"] == lead["last_activity_at"]
+    assert _audit_rows(client, "add_event") == []
+
+    approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
+    assert approved.status_code == 200
+    assert approved.json()["content"] == "Requested Saturday tour"
+
+
+def test_agent_booking_does_not_run_hook_before_approval(client, monkeypatch):
+    from app.routers import calendar as calendar_router
+
+    lead = make_lead(client)
+    calls = []
+    monkeypatch.setattr(
+        calendar_router.hooks,
+        "on_tour_booked",
+        lambda *args, **_kwargs: calls.append(args),
+    )
+    queued = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-08-08T10:00:00",
+            "end_ts": "2026-08-08T10:45:00",
+        },
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    assert calls == []
+    assert client.get("/api/appointments").json() == []
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["status"] == lead["status"]
+    assert unchanged["last_activity_at"] == lead["last_activity_at"]
+    assert unchanged["events"] == []
+    assert _audit_rows(client, "book_appointment") == []
+
+    approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
+    assert approved.status_code == 200
+    assert len(calls) == 1
+
+
+def test_agent_reminder_denial_has_no_local_or_external_effect(client, monkeypatch):
+    from app.routers import misc
+
+    lead = make_lead(client)
+    original_status = lead["status"]
+    original_activity = lead["last_activity_at"]
+    calls = []
+    monkeypatch.setattr(misc.hooks, "on_reminder_created", lambda value: calls.append(value))
+    queued = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-09T09:00:00", "note": "Call"},
+        headers=AGENT,
+    )
+
+    assert queued.status_code == 202
+    denied = client.post(f"/api/pending-changes/{queued.json()['id']}/deny")
+    assert denied.status_code == 200
+    assert client.get("/api/reminders").json() == []
+    assert calls == []
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["status"] == original_status
+    assert unchanged["last_activity_at"] == original_activity
+    assert unchanged["events"] == []
+    assert _audit_rows(client, "schedule_followup") == []
+
+
+def test_booking_conflict_during_approval_leaves_change_pending(client, monkeypatch):
+    from app.routers import calendar as calendar_router
+
+    first = make_lead(client, name="First Buyer")
+    second = make_lead(client, name="Second Buyer")
+    calls = []
+    monkeypatch.setattr(calendar_router.hooks, "on_tour_booked", lambda *args: calls.append(args))
+    payload = {
+        "start_ts": "2026-08-10T10:00:00",
+        "end_ts": "2026-08-10T10:45:00",
+    }
+    queued = client.post(
+        "/api/appointments",
+        json={"lead_id": first["id"], **payload},
+        headers=AGENT,
+    )
+    assert queued.status_code == 202
+
+    direct = client.post(
+        "/api/appointments",
+        json={"lead_id": second["id"], **payload},
+    )
+    assert direct.status_code == 200
+    assert len(calls) == 1
+
+    approved = client.post(f"/api/pending-changes/{queued.json()['id']}/approve")
+    assert approved.status_code == 409
+    assert [item["id"] for item in _pending(client)] == [queued.json()["id"]]
+    unchanged = client.get(f"/api/leads/{first['id']}").json()
+    assert unchanged["status"] == first["status"]
+    assert unchanged["last_activity_at"] == first["last_activity_at"]
+    assert unchanged["events"] == []
+    assert len(calls) == 1
+    operation_rows = _audit_rows(client, "book_appointment")
+    assert len(operation_rows) == 1
+    assert operation_rows[0]["lead_id"] == second["id"]
+
+
+def test_edited_blank_note_is_rejected_and_remains_pending(client):
+    lead = make_lead(client)
+    queued = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Valid proposal"},
+        headers=AGENT,
+    )
+
+    approved = client.post(
+        f"/api/pending-changes/{queued.json()['id']}/approve",
+        json={"fields": {"content": "   "}},
+    )
+
+    assert approved.status_code == 422
+    assert [item["id"] for item in _pending(client)] == [queued.json()["id"]]
+    unchanged = client.get(f"/api/leads/{lead['id']}").json()
+    assert unchanged["events"] == []
+    assert unchanged["last_activity_at"] == lead["last_activity_at"]
+    assert _audit_rows(client, "add_event") == []
+
+
+def test_concurrent_approvals_apply_reminder_once(client, monkeypatch):
+    from app.routers import pending_changes as pending_router
+
+    lead = make_lead(client)
+    queued = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-15T09:00:00", "note": "Call"},
+        headers=AGENT,
+    ).json()
+    original_operation = pending_router._operation
+    barrier = threading.Barrier(2)
+
+    def gated_operation(operation):
+        model_cls, apply_fn, needs_lead_id = original_operation(operation)
+        if operation != "schedule_followup":
+            return model_cls, apply_fn, needs_lead_id
+
+        def gated_apply(body, **kwargs):
+            try:
+                barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+            return apply_fn(body, **kwargs)
+
+        return model_cls, gated_apply, needs_lead_id
+
+    monkeypatch.setattr(pending_router, "_operation", gated_operation)
+    statuses = []
+
+    def approve():
+        from fastapi import HTTPException
+
+        try:
+            asyncio.run(pending_router.approve_pending(queued["id"]))
+            statuses.append(200)
+        except HTTPException as exc:
+            statuses.append(exc.status_code)
+
+    workers = [threading.Thread(target=approve) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert sorted(statuses) == [200, 400]
+    reminders = client.get("/api/reminders").json()
+    assert len(reminders) == 1
+    assert reminders[0]["note"] == "Call"
+    assert len(_audit_rows(client, "schedule_followup")) == 1
+    assert len(_audit_rows(client, "approve_pending_change")) == 1
+
+
+def test_booking_hook_exception_cannot_leave_applied_proposal_pending(client, monkeypatch):
+    from app.routers import calendar as calendar_router
+
+    lead = make_lead(client)
+    queued = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-08-16T10:00:00",
+            "end_ts": "2026-08-16T10:45:00",
+        },
+        headers=AGENT,
+    ).json()
+    monkeypatch.setattr(
+        calendar_router.hooks,
+        "on_tour_booked",
+        lambda *args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("calendar unavailable")
+        ),
+    )
+
+    approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert approved.status_code == 200
+    assert len(client.get("/api/appointments").json()) == 1
+    assert _pending(client) == []
+    assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
+    assert len(_audit_rows(client, "book_appointment")) == 1
+    failures = _audit_rows(client, "gcal_create_event (failed)")
+    assert len(failures) == 1
+    assert failures[0]["actor"] == "user"
+    assert failures[0]["lead_id"] == lead["id"]
+
+
+def test_create_lead_hook_failure_audit_uses_new_lead_id(client, monkeypatch):
+    from app.routers import leads as leads_router
+
+    queued = client.post(
+        "/api/leads",
+        json={"name": "Hook Failure", "source": "form"},
+        headers=AGENT,
+    ).json()
+    monkeypatch.setattr(
+        leads_router.hooks,
+        "on_lead_created",
+        lambda *args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("mail unavailable")
+        ),
+    )
+
+    approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert approved.status_code == 200
+    failures = _audit_rows(client, "lead_created_hook (failed)")
+    assert len(failures) == 1
+    assert failures[0]["lead_id"] == approved.json()["id"]
+
+
+def test_reminder_hook_exception_cannot_leave_applied_proposal_pending(client, monkeypatch):
+    from app.routers import misc
+
+    lead = make_lead(client)
+    queued = client.post(
+        "/api/reminders",
+        json={"lead_id": lead["id"], "due_ts": "2026-08-17T09:00:00", "note": "Call"},
+        headers=AGENT,
+    ).json()
+    monkeypatch.setattr(
+        misc.hooks,
+        "on_reminder_created",
+        lambda *args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("calendar unavailable")
+        ),
+    )
+
+    approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert approved.status_code == 200
+    assert len(client.get("/api/reminders").json()) == 1
+    assert _pending(client) == []
+    assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
+    assert len(_audit_rows(client, "schedule_followup")) == 1
+    failures = _audit_rows(client, "gcal_create_event (failed)")
+    assert len(failures) == 1
+    assert failures[0]["actor"] == "user"
+    assert failures[0]["lead_id"] == lead["id"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "tool"),
+    ATOMIC_OPERATIONS,
+)
+def test_crash_after_business_mutation_rolls_back_every_approval_operation(
+    client, monkeypatch, operation, tool
+):
+    """A failure between mutation and finalization must leave no partial write.
+
+    Removing the caller-owned transaction from any apply helper makes this
+    fail for that operation because its CRM rows and agent audit survive.
+    """
+    from app.routers import pending_changes as pending_router
+
+    queued = _queue_atomicity_case(client, operation)
+    before = _business_snapshot()
+    operation_audits = len(_audit_rows(client, tool))
+    approval_audits = len(_audit_rows(client, "approve_pending_change"))
+
+    def crash_before_finalization(*_args, **_kwargs):
+        raise RuntimeError("simulated crash before approval finalization")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pending_router, "_finish_claim", crash_before_finalization)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert _business_snapshot() == before
+    assert [item["id"] for item in _pending(client)] == [queued["id"]]
+    assert _pending(client)[0]["result"] is None
+
+    retried = client.post(f"/api/pending-changes/{queued['id']}/approve")
+    assert retried.status_code == 200, retried.text
+    assert len(_audit_rows(client, tool)) == operation_audits + 1
+    assert len(_audit_rows(client, "approve_pending_change")) == approval_audits + 1
+    assert [item["id"] for item in _pending(client, "approved")] == [queued["id"]]
+
+
+@pytest.mark.parametrize(("operation", "tool"), ATOMIC_OPERATIONS)
+def test_crash_after_claim_rolls_back_every_operation_and_allows_one_retry(
+    client, monkeypatch, operation, tool
+):
+    from app.routers import pending_changes as pending_router
+
+    queued = _queue_atomicity_case(client, operation)
+    before = _business_snapshot()
+    operation_audits = len(_audit_rows(client, tool))
+    approval_audits = len(_audit_rows(client, "approve_pending_change"))
+
+    def crash_after_claim(*_args, **_kwargs):
+        raise RuntimeError("simulated crash after claim")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            pending_router, "_apply_pending_mutation", crash_after_claim, raising=False
+        )
+        with pytest.raises(RuntimeError, match="simulated crash after claim"):
+            client.post(f"/api/pending-changes/{queued['id']}/approve")
+
+    assert _business_snapshot() == before
+    assert [item["id"] for item in _pending(client)] == [queued["id"]]
+
+    retried = client.post(f"/api/pending-changes/{queued['id']}/approve")
+    assert retried.status_code == 200, retried.text
+    second_retry = client.post(f"/api/pending-changes/{queued['id']}/approve")
+    assert second_retry.status_code == 400
+    assert len(_audit_rows(client, tool)) == operation_audits + 1
+    assert len(_audit_rows(client, "approve_pending_change")) == approval_audits + 1
