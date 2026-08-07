@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -5,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..agent import get_driver
 from ..approvals import insert_pending_change, is_agent_write, queue_pending_change
@@ -57,6 +58,24 @@ class LeadPatch(BaseModel):
     is_neglected: int | None = Field(None, ge=0, le=1)
     persona: str | None = None
     relationship_summary: str | None = None
+
+
+class ResolvedLeadCreate(BaseModel):
+    """Operator-reviewed create payload allowed to reach the SQL insert seam."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    raw_text: str | None = None
+    source: Literal["form", "text", "note", "referral", "email"] = "note"
+    phone: str | None = None
+    email: str | None = None
+    budget: int | None = None
+    area: str | None = None
+    timeline: str | None = None
+    intent: str | None = None
+    preferences: list[str] | None = None
+    missing_fields: list[str] | None = None
 
 
 class EventIn(BaseModel):
@@ -620,16 +639,21 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
               {"draft": draft}, lead_id)
         proposal = None
         if proposed_fields:
+            if source_event:
+                dedupe_key = f"lead-process:{lead_id}:event:{source_event['id']}"
+            else:
+                serialized_candidate = json.dumps(
+                    proposed_fields, sort_keys=True, default=str
+                ).encode()
+                digest = hashlib.sha256(serialized_candidate).hexdigest()
+                dedupe_key = f"lead-process:{lead_id}:candidate:{digest}"
             proposal = insert_pending_change(
                 conn,
                 "update_lead",
                 lead_id,
                 proposed_fields,
                 _summarize_update_fields(lead, proposed_fields),
-                dedupe_key=(
-                    f"lead-process:{lead_id}:event:{source_event['id']}"
-                    if source_event else None
-                ),
+                dedupe_key=dedupe_key,
             )
     return {
         "lead": response_lead,

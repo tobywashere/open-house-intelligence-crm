@@ -1091,12 +1091,12 @@ def _parse_args(
     parser.add_argument("--crm-api-url")
     parser.add_argument("--bind-discord", metavar="ACCOUNT")
     args = parser.parse_args(argv)
-    if (
-        args.agent_id is not None
-        and configured_agent_id is not None
-        and configured_agent_id.strip()
-        and args.agent_id != default_agent_id
-    ):
+    if configured_agent_id is not None and not configured_agent_id.strip():
+        parser.error(
+            "AGENT_ID must not be blank; set AGENT_ID=openhouse-crm in .env "
+            "so setup and runtime target the dedicated CRM agent"
+        )
+    if args.agent_id is not None and args.agent_id.strip() != default_agent_id:
         parser.error(
             f"--agent-id {args.agent_id!r} conflicts with runtime "
             f"AGENT_ID={default_agent_id!r}; set AGENT_ID={args.agent_id} in .env "

@@ -66,8 +66,8 @@ python3 scripts/doctor.py --live-agent --live-crm
 The helper is safe to rerun. It creates or validates the agent selected by
 `AGENT_ID` in `.env`, installs the shipped skills in that agent's workspace,
 and validates that `crm-db-operations` is eligible. If you pass `--agent-id`,
-set `AGENT_ID` to the same value in `.env`; setup rejects conflicting nonblank
-values so the helper and CRM runtime cannot select different agents.
+set `AGENT_ID` to the same nonblank value in `.env`; setup rejects blank or
+conflicting values so the helper and CRM runtime cannot select different agents.
 It restricts command execution to the shipped CRM wrapper and daily-brief
 runner, rather than allowing a general shell command.
 

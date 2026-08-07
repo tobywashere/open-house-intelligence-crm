@@ -649,18 +649,25 @@ def test_setup_rejects_agent_id_that_conflicts_with_runtime_env(
     assert "set AGENT_ID=setup-only-crm in .env" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("runtime_agent_id", [None, ""])
-def test_setup_allows_explicit_agent_id_without_a_runtime_agent_id(
-    tmp_path, monkeypatch, runtime_agent_id
-):
-    if runtime_agent_id is None:
-        monkeypatch.delenv("AGENT_ID", raising=False)
-    else:
-        monkeypatch.setenv("AGENT_ID", runtime_agent_id)
+def test_setup_rejects_unpersisted_agent_id_override(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("AGENT_ID", raising=False)
 
-    options = parse_args(["--agent-id", "custom-crm"], repo=tmp_path)
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--agent-id", "custom-crm"], repo=tmp_path)
 
-    assert options.agent_id == "custom-crm"
+    assert exc_info.value.code == 2
+    assert "set AGENT_ID=custom-crm in .env" in capsys.readouterr().err
+
+
+def test_setup_rejects_blank_runtime_agent_id(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".env").write_text("AGENT_ID=\n")
+    monkeypatch.delenv("AGENT_ID", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args([], repo=tmp_path)
+
+    assert exc_info.value.code == 2
+    assert "AGENT_ID must not be blank" in capsys.readouterr().err
 
 
 def test_setup_defaults_prefer_exported_values_and_explicit_cli_args(tmp_path, monkeypatch):

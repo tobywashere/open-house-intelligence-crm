@@ -119,7 +119,7 @@ def _finish_claim(conn, pending_id: int, row: dict, result: dict) -> None:
 def _validate_pending_mutation(row: dict, payload: dict):
     """Validate edited fields before entering the generic mutation seam."""
     if row["operation"] == "create_lead":
-        return payload
+        return leads_router.ResolvedLeadCreate(**payload)
     model_cls, apply_fn, needs_lead_id = _operation(row["operation"])
     return model_cls(**payload), apply_fn, needs_lead_id
 
@@ -127,7 +127,9 @@ def _validate_pending_mutation(row: dict, payload: dict):
 def _apply_pending_mutation(conn, row: dict, validated):
     """Apply any supported operation through the shared caller-owned transaction."""
     if row["operation"] == "create_lead":
-        return leads_router._apply_resolved_create_in_conn(conn, validated)
+        return leads_router._apply_resolved_create_in_conn(
+            conn, validated.model_dump(exclude_none=True)
+        )
     parsed_body, apply_fn, needs_lead_id = validated
     kwargs = {"conn": conn}
     if row["operation"] in {"book_appointment", "schedule_followup"}:

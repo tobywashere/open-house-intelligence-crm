@@ -323,10 +323,12 @@ def test_score_lead_returns_candidate_without_persisting_before_approval(live_se
 
     with patch.object(crm, "BASE_URL", f"{live_server}/api"):
         candidate = crm.score_lead(lead_id)
+        repeated_candidate = crm.score_lead(lead_id)
 
     persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
     assert candidate["score"] > 0
     assert candidate["score_reason"]
+    assert repeated_candidate == candidate
     assert persisted["score"] is None
     assert persisted["score_reason"] is None
     pending = httpx.get(f"{live_server}/api/pending-changes").json()

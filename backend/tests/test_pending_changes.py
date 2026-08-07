@@ -375,6 +375,22 @@ def test_approve_create_lead_can_explicitly_clear_preferences(client, monkeypatc
     assert approved.json()["preferences"] == []
 
 
+def test_approve_create_lead_rejects_unknown_or_internal_fields(client):
+    queued = client.post(
+        "/api/leads",
+        json={"name": "Safe Lead", "source": "note"},
+        headers=AGENT,
+    )
+
+    approved = client.post(
+        f"/api/pending-changes/{queued.json()['id']}/approve",
+        json={"fields": {"id": 987654}},
+    )
+
+    assert approved.status_code == 422
+    assert client.get("/api/leads/987654").status_code == 404
+
+
 def test_approve_update_lead_with_edited_fields(client):
     lead = make_lead(client, budget=900_000, area="Bellevue")
     res = client.patch(f"/api/leads/{lead['id']}", json={"budget": 1_100_000}, headers=AGENT)
