@@ -670,6 +670,15 @@ def test_setup_rejects_blank_runtime_agent_id(tmp_path, monkeypatch, capsys):
     assert "AGENT_ID must not be blank" in capsys.readouterr().err
 
 
+def test_setup_normalizes_matching_explicit_agent_id(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("AGENT_ID=custom-crm\n")
+    monkeypatch.delenv("AGENT_ID", raising=False)
+
+    options = parse_args(["--agent-id", " custom-crm "], repo=tmp_path)
+
+    assert options.agent_id == "custom-crm"
+
+
 def test_setup_defaults_prefer_exported_values_and_explicit_cli_args(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
         "CRM_API_URL=http://dotenv.example/api\nPORT=9123\n"

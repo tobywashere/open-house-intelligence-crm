@@ -1103,7 +1103,9 @@ def _parse_args(
             "so setup and runtime target the same agent"
         )
     return SetupOptions(
-        agent_id=args.agent_id if args.agent_id is not None else default_agent_id,
+        agent_id=(
+            args.agent_id.strip() if args.agent_id is not None else default_agent_id
+        ),
         workspace=args.workspace.expanduser(),
         crm_api_url=args.crm_api_url or _default_crm_api_url(),
         bind_discord=args.bind_discord,
