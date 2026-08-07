@@ -1072,11 +1072,17 @@ def _parse_args(
     argv: list[str] | None = None, *, repo: Path | None = None
 ) -> SetupOptions:
     _load_repo_env(repo or Path(__file__).resolve().parents[1])
+    configured_agent_id = os.environ.get("AGENT_ID")
+    default_agent_id = (
+        configured_agent_id.strip()
+        if configured_agent_id is not None
+        else "openhouse-crm"
+    )
     parser = argparse.ArgumentParser(
         description="Safely configure a dedicated OpenClaw CRM agent"
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--agent-id", default="openhouse-crm")
+    parser.add_argument("--agent-id")
     parser.add_argument(
         "--workspace",
         type=Path,
@@ -1085,8 +1091,19 @@ def _parse_args(
     parser.add_argument("--crm-api-url")
     parser.add_argument("--bind-discord", metavar="ACCOUNT")
     args = parser.parse_args(argv)
+    if (
+        args.agent_id is not None
+        and configured_agent_id is not None
+        and configured_agent_id.strip()
+        and args.agent_id != default_agent_id
+    ):
+        parser.error(
+            f"--agent-id {args.agent_id!r} conflicts with runtime "
+            f"AGENT_ID={default_agent_id!r}; set AGENT_ID={args.agent_id} in .env "
+            "so setup and runtime target the same agent"
+        )
     return SetupOptions(
-        agent_id=args.agent_id,
+        agent_id=args.agent_id if args.agent_id is not None else default_agent_id,
         workspace=args.workspace.expanduser(),
         crm_api_url=args.crm_api_url or _default_crm_api_url(),
         bind_discord=args.bind_discord,

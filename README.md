@@ -66,11 +66,13 @@ Open [http://localhost:8080](http://localhost:8080). The last command is the
 important proof: it checks that chat works **and** that the agent actually made
 one safe, read-only CRM tool call.
 
-The setup helper creates the dedicated `openhouse-crm` agent, installs the
-`crm-db-operations` skill into that agent's workspace, and limits its command
-access to the CRM wrapper and daily-brief runner. `exec` is the agent's only
-allowed tool; general web, browser, and file tools are denied. Its configuration
-uses `AGENT_ID=openhouse-crm`.
+The setup helper reads `AGENT_ID` from `.env`, creates that dedicated agent,
+installs the `crm-db-operations` skill into its workspace, and limits its
+command access to the CRM wrapper and daily-brief runner. `exec` is the agent's
+only allowed tool; general web, browser, and file tools are denied. The default
+is `AGENT_ID=openhouse-crm`. If you use `--agent-id`, set `AGENT_ID` to the same
+value in `.env`; setup rejects a conflict so the CRM runtime cannot silently
+target a different agent.
 
 The helper prints the installed OpenClaw version for troubleshooting. Support
 is capability-based, not tied to a guessed version number: setup checks the

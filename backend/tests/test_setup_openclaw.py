@@ -627,6 +627,42 @@ def test_setup_defaults_load_repo_env_port_and_token_without_leaking(tmp_path, m
             os.environ.pop(key, None)
 
 
+def test_setup_defaults_to_the_runtime_agent_id_from_repo_env(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("AGENT_ID=custom-crm\n")
+    monkeypatch.delenv("AGENT_ID", raising=False)
+
+    options = parse_args([], repo=tmp_path)
+
+    assert options.agent_id == "custom-crm"
+
+
+def test_setup_rejects_agent_id_that_conflicts_with_runtime_env(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / ".env").write_text("AGENT_ID=runtime-crm\n")
+    monkeypatch.delenv("AGENT_ID", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--agent-id", "setup-only-crm"], repo=tmp_path)
+
+    assert exc_info.value.code == 2
+    assert "set AGENT_ID=setup-only-crm in .env" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("runtime_agent_id", [None, ""])
+def test_setup_allows_explicit_agent_id_without_a_runtime_agent_id(
+    tmp_path, monkeypatch, runtime_agent_id
+):
+    if runtime_agent_id is None:
+        monkeypatch.delenv("AGENT_ID", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_ID", runtime_agent_id)
+
+    options = parse_args(["--agent-id", "custom-crm"], repo=tmp_path)
+
+    assert options.agent_id == "custom-crm"
+
+
 def test_setup_defaults_prefer_exported_values_and_explicit_cli_args(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
         "CRM_API_URL=http://dotenv.example/api\nPORT=9123\n"
