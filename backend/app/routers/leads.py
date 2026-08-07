@@ -606,25 +606,36 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
             "Try again after OpenClaw is ready, then review the result.",
         )
 
+    proposed_fields = {**fills, "score": score, "score_reason": reason}
+    proposed_fields = {
+        key: value for key, value in proposed_fields.items() if lead.get(key) != value
+    }
+    response_lead = {**candidate, "score": score, "score_reason": reason}
+
     with get_conn() as conn:
-        conn.execute("UPDATE leads SET score = ?, score_reason = ? WHERE id = ?",
-                     (score, reason, lead_id))
         audit(conn, "agent", "score_lead", {"lead_id": lead_id},
-              {"score": score, "reason": reason}, lead_id)
+              {"score": score, "reason": reason, "pending": bool(proposed_fields)},
+              lead_id)
         audit(conn, "agent", "draft_followup", {"lead_id": lead_id},
               {"draft": draft}, lead_id)
         proposal = None
-        if fills:
+        if proposed_fields:
             proposal = insert_pending_change(
                 conn,
                 "update_lead",
                 lead_id,
-                fills,
-                _summarize_update_fields(lead, fills),
-                dedupe_key=f"lead-process:{lead_id}:event:{source_event['id']}",
+                proposed_fields,
+                _summarize_update_fields(lead, proposed_fields),
+                dedupe_key=(
+                    f"lead-process:{lead_id}:event:{source_event['id']}"
+                    if source_event else None
+                ),
             )
-        lead = fetch_lead(conn, lead_id)
-    return {"lead": lead, "followup_draft": draft, "pending_change": proposal}
+    return {
+        "lead": response_lead,
+        "followup_draft": draft,
+        "pending_change": proposal,
+    }
 
 
 @router.delete("/{lead_id}")

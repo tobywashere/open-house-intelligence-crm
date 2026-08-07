@@ -304,3 +304,77 @@ def test_close_lead_tool_records_explicit_won_outcome(live_server):
 def test_close_lead_tool_rejects_ambiguous_outcome_before_request():
     with pytest.raises(ValueError, match="won.*lost"):
         crm.close_lead(1, "unknown")
+
+
+def test_score_lead_returns_candidate_without_persisting_before_approval(live_server):
+    created = httpx.post(
+        f"{live_server}/api/leads",
+        json={
+            "name": "Score Candidate",
+            "source": "note",
+            "email": "score@example.com",
+            "budget": 900_000,
+            "timeline": "6 weeks",
+            "intent": "buy",
+        },
+    )
+    assert created.status_code == 200, created.text
+    lead_id = created.json()["id"]
+
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        candidate = crm.score_lead(lead_id)
+
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert candidate["score"] > 0
+    assert candidate["score_reason"]
+    assert persisted["score"] is None
+    assert persisted["score_reason"] is None
+    pending = httpx.get(f"{live_server}/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"]["score"] == candidate["score"]
+    assert pending[0]["payload"]["score_reason"] == candidate["score_reason"]
+
+    approved = httpx.post(
+        f"{live_server}/api/pending-changes/{pending[0]['id']}/approve"
+    )
+    assert approved.status_code == 200, approved.text
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert persisted["score"] == candidate["score"]
+    assert persisted["score_reason"] == candidate["score_reason"]
+
+
+def test_draft_followup_does_not_persist_candidate_score_before_approval(live_server):
+    created = httpx.post(
+        f"{live_server}/api/leads",
+        json={
+            "name": "Draft Candidate",
+            "source": "note",
+            "email": "draft@example.com",
+            "budget": 850_000,
+            "area": "Kirkland",
+            "timeline": "2 months",
+            "intent": "buy",
+        },
+    )
+    assert created.status_code == 200, created.text
+    lead_id = created.json()["id"]
+
+    with patch.object(crm, "BASE_URL", f"{live_server}/api"):
+        draft = crm.draft_followup(lead_id)
+
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert "Draft" in draft
+    assert persisted["score"] is None
+    assert persisted["score_reason"] is None
+    pending = httpx.get(f"{live_server}/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"]["score"] > 0
+    assert pending[0]["payload"]["score_reason"]
+
+    approved = httpx.post(
+        f"{live_server}/api/pending-changes/{pending[0]['id']}/approve"
+    )
+    assert approved.status_code == 200, approved.text
+    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
+    assert persisted["score"] == pending[0]["payload"]["score"]
+    assert persisted["score_reason"] == pending[0]["payload"]["score_reason"]

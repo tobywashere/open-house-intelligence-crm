@@ -179,6 +179,52 @@ def test_failed_hook_stays_retryable_and_retry_does_not_replay_approval(
     assert len(approval_audits) == 1
 
 
+def test_lead_created_retry_resumes_after_calendar_when_gmail_failed(
+    client, monkeypatch
+):
+    from app.integrations import hook_outbox, hooks
+
+    queued = client.post(
+        "/api/leads",
+        json={
+            "name": "Partial Delivery",
+            "email": "partial@example.com",
+            "source": "form",
+        },
+        headers=AGENT,
+    )
+    assert queued.status_code == 202, queued.text
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued.json()["id"])
+
+    calls = []
+    gmail_attempts = 0
+
+    def calendar_then_flaky_gmail(slug, _args):
+        nonlocal gmail_attempts
+        calls.append(slug)
+        if slug == "GOOGLECALENDAR_CREATE_EVENT":
+            return {"response_data": {"id": "event-once"}}
+        if slug == "GMAIL_CREATE_EMAIL_DRAFT":
+            gmail_attempts += 1
+            if gmail_attempts == 1:
+                raise hooks.cc.IntegrationError("gmail temporarily unavailable")
+            return {"response_data": {"id": "draft-after-retry"}}
+        raise AssertionError(f"unexpected Composio tool: {slug}")
+
+    monkeypatch.setattr(hooks.cc, "execute", calendar_then_flaky_gmail)
+    outbox_id = _outbox_rows()[0]["id"]
+
+    assert hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0) is False
+    assert _outbox_rows()[0]["status"] == "failed"
+    assert hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0) is True
+
+    delivered = _outbox_rows()[0]
+    assert delivered["status"] == "delivered"
+    assert delivered["attempts"] == 2
+    assert calls.count("GOOGLECALENDAR_CREATE_EVENT") == 1
+    assert calls.count("GMAIL_CREATE_EMAIL_DRAFT") == 2
+
+
 def test_concurrent_drains_claim_one_delivery(client, monkeypatch):
     from app.integrations import hook_outbox, hooks
 

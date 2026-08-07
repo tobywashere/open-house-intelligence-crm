@@ -53,6 +53,11 @@ work around that boundary; use the named CRM operations below.
    is awaiting the operator's review (e.g. "I've queued that lead for your
    approval"), not that it's done. There's nothing to retry or poll for; the
    operator decides on their own time.
+10. `score_lead` and `draft_followup` share a processing pass. The returned
+   score/reason and draft are useful candidates, but any generated score,
+   score reason, or newly extracted lead fields are queued together for
+   operator approval. Do not tell the user the score or extracted fields were
+   saved until the operator approves the proposal.
 
 ## Setup
 

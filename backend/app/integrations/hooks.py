@@ -8,6 +8,7 @@ live Composio call (15-30s). Callers in async endpoints MUST wrap these in
 run_in_threadpool (see fastapi.concurrency) or they will freeze the whole
 event loop; sync (`def`) endpoints already run in FastAPI's AnyIO threadpool
 and may call them directly."""
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -16,6 +17,9 @@ from zoneinfo import ZoneInfo
 
 from ..db import audit, get_conn
 from . import composio_client as cc
+
+
+_LEAD_CALL_SUMMARY_PREFIX = "📞 Call new lead: "
 
 
 class HookOutcome(Enum):
@@ -93,6 +97,26 @@ def _audit_hook_failure(tool: str, lead_id: int | None, exc: Exception) -> None:
         logging.exception("could not persist %s failure audit", tool)
 
 
+def _lead_call_event_was_created(lead_id: int) -> bool:
+    """Return whether the durable audit proves the live calendar step succeeded."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input FROM audit_log WHERE lead_id = ? "
+            "AND tool = 'gcal_create_event' ORDER BY id DESC",
+            (lead_id,),
+        ).fetchall()
+    for row in rows:
+        try:
+            summary = json.loads(row["input"]).get("summary")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            continue
+        if isinstance(summary, str) and summary.startswith(
+            _LEAD_CALL_SUMMARY_PREFIX
+        ):
+            return True
+    return False
+
+
 def _on_tour_booked_impl(
     lead: dict, appt: dict, *, force_simulated: bool = False
 ) -> HookOutcome:
@@ -138,14 +162,17 @@ def _on_lead_created_impl(
     start = (datetime.now(ZoneInfo(_tz())) + timedelta(minutes=30)).replace(
         second=0, microsecond=0, tzinfo=None)
     live = False if force_simulated else cc.is_live()
-    event_outcome, _event_id = _create_event(lead["id"], {
-        "calendar_id": "primary",
-        "summary": f"📞 Call new lead: {lead['name']}",
-        "description": _lead_details(lead),
-        "start_datetime": start.isoformat(),
-        "event_duration_minutes": 30,
-        "timezone": _tz(),
-    }, live=live)
+    if live and _lead_call_event_was_created(lead["id"]):
+        event_outcome = HookOutcome.LIVE_DELIVERED
+    else:
+        event_outcome, _event_id = _create_event(lead["id"], {
+            "calendar_id": "primary",
+            "summary": f"{_LEAD_CALL_SUMMARY_PREFIX}{lead['name']}",
+            "description": _lead_details(lead),
+            "start_datetime": start.isoformat(),
+            "event_duration_minutes": 30,
+            "timezone": _tz(),
+        }, live=live)
     if not lead.get("email"):
         return event_outcome
     first = lead["name"].split()[0]

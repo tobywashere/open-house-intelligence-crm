@@ -67,9 +67,10 @@ atomic-claim state that prevents two approval workers from replaying the same
 proposal. If validation or a conflict check fails before mutation, the row
 returns to `pending` for correction, retry, or denial.
 
-`dedupe_key` is internal and omitted from API responses. Automated extraction
+`dedupe_key` is internal and omitted from API responses. Automated processing
 uses a stable lead-and-source-event key so retries and concurrent processing
-cannot create two update proposals for the same raw input.
+cannot create two combined extracted-field/score proposals for the same raw
+input.
 
 Rows are created only when one of the reviewed CRM write endpoints is called
 with header `X-Actor: agent`, sent by `skills/crm-db-operations/tools.py`.
@@ -150,7 +151,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 7 operations' `payload` is their normal request body |
 | `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any live external-hook intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. The managed outbox worker wakes after commit and continuously retries pending, failed, or stale live delivery. Off-mode approvals remain forced simulations and are never queued for later live delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim. The dashboard exposes every normal `create_lead` business value, including `preferences[]`; an edited list overrides the queued list and `preferences: []` clears it |
 | `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
-| `POST /leads/{id}/process?source_event_id=` | `{}` → `{lead, followup_draft, pending_change}` | optional `source_event_id` must belong to this lead; omit it for the deterministic newest event. Extraction runs even when fields are populated. Normalized, nonblank changes to phone/email/budget/area/timeline/intent are queued once per exact source event as an editable `update_lead` proposal; absent or blank extraction never clears a field. Only derived score/reason and audits apply immediately. A labeled fallback returns 409 with no mutation or proposal |
+| `POST /leads/{id}/process?source_event_id=` | `{}` → `{lead, followup_draft, pending_change}` | `lead` is the useful in-memory candidate, not proof of persisted state. Optional `source_event_id` must belong to this lead; omit it for the deterministic newest event. Extraction runs even when fields are populated. Normalized, nonblank changes to phone/email/budget/area/timeline/intent plus changed derived `score`/`score_reason` are queued together as one editable `update_lead` proposal, once per exact source event; absent or blank extraction never clears a field. The persisted lead is unchanged until approval. Processing audits apply immediately. A labeled fallback returns 409 with no lead mutation or proposal |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |
 | `POST /appointments` ⏸ | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; agent-tagged calls queue, then re-check the slot on approval before setting status `meeting_booked` |
 | `GET /appointments` | → `[appt]` | |
@@ -263,9 +264,10 @@ hook.
 Replies from known leads are logged automatically, then processed using that
 exact Gmail event ID. Normalized contact or qualification values that differ
 from populated CRM fields follow the same editable `update_lead` approval
-boundary; blank extraction never clears existing data. Only the derived
-score/reason and draft audit are immediate. Retrying the same Gmail event
-reuses its proposal while different events keep separate proposals.
+boundary together with the derived score/reason; blank extraction never clears
+existing data. The score and draft processing audits are immediate, but the
+lead fields are not. Retrying the same Gmail event reuses its proposal while
+different events keep separate proposals.
 
 | Tool | Endpoint |
 |---|---|
@@ -278,8 +280,8 @@ reuses its proposal while different events keep separate proposals.
 | `get_lead_context(id)` | `GET /leads/{id}` |
 | `list_leads(sort, status, neglected)` | `GET /leads?sort=&status=&neglected=` (additive, recorded 2026-07-27) |
 | `delete_lead(lead_id, reason)` ⏸ | `DELETE /leads/{id}` (additive, recorded 2026-07-27) |
-| `score_lead(id)` | `POST /leads/{id}/process` (score part) |
-| `draft_followup(id)` | `POST /leads/{id}/process` (draft part) |
+| `score_lead(id)` | `POST /leads/{id}/process` (returns the candidate score/reason; generated lead-field changes await approval) |
+| `draft_followup(id)` | `POST /leads/{id}/process` (returns the draft; generated lead-field changes await approval) |
 | `check_availability(date)` | `GET /availability?date=` |
 | `list_appointments()` | `GET /appointments` — all appointments across all leads, ordered by `start_ts`, each row joined with `lead_name` (additive, recorded 2026-07-28); used by `daily-command-center` Step 0.2 to find today's schedule before pulling per-lead context |
 | `book_appointment(lead_id, start_ts, end_ts, location)` ⏸ | `POST /appointments` |

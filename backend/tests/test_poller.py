@@ -523,7 +523,8 @@ def test_process_proposes_changes_to_every_populated_business_field(client, monk
     assert current["area"] == "Seattle"
     assert current["timeline"] == "6 months"
     assert current["intent"] == "browse"
-    assert current["score"] is not None
+    assert current["score"] is None
+    assert current["score_reason"] is None
 
     pending = client.get("/api/pending-changes").json()
     assert len(pending) == 1
@@ -534,6 +535,8 @@ def test_process_proposes_changes_to_every_populated_business_field(client, monk
         "area": "Kirkland",
         "timeline": "2 months",
         "intent": "buy",
+        "score": response.json()["lead"]["score"],
+        "score_reason": response.json()["lead"]["score_reason"],
     }
 
     approved = client.post(
@@ -548,6 +551,8 @@ def test_process_proposes_changes_to_every_populated_business_field(client, monk
     assert applied["area"] == "Kirkland"
     assert applied["timeline"] == "2 months"
     assert applied["intent"] == "buy"
+    assert applied["score"] == response.json()["lead"]["score"]
+    assert applied["score_reason"] == response.json()["lead"]["score_reason"]
 
 
 def test_process_omits_normalized_unchanged_and_blank_extraction(client, monkeypatch):
@@ -587,14 +592,18 @@ def test_process_omits_normalized_unchanged_and_blank_extraction(client, monkeyp
     assert response.status_code == 200, response.text
     pending = client.get("/api/pending-changes").json()
     assert len(pending) == 1
-    assert pending[0]["payload"] == {"area": "Redmond"}
+    assert pending[0]["payload"] == {
+        "area": "Redmond",
+        "score": response.json()["lead"]["score"],
+        "score_reason": response.json()["lead"]["score_reason"],
+    }
     current = client.get(f"/api/leads/{lead['id']}").json()
     assert current["area"] == "Bellevue"
     assert current["timeline"] == "6 weeks"
     assert current["intent"] == "buy"
 
 
-def test_process_queues_extracted_fields_but_persists_derived_score(client, monkeypatch):
+def test_process_queues_extracted_fields_and_derived_score_until_approval(client, monkeypatch):
     lead = make_lead(
         client,
         phone=None,
@@ -623,8 +632,10 @@ def test_process_queues_extracted_fields_but_persists_derived_score(client, monk
     assert current["area"] is None
     assert current["timeline"] is None
     assert current["intent"] == "unknown"
-    assert current["score"] is not None
-    assert current["score_reason"].startswith("Derived score")
+    assert current["score"] is None
+    assert current["score_reason"] is None
+    assert response.json()["lead"]["score"] > 0
+    assert response.json()["lead"]["score_reason"].startswith("Derived score")
     assert response.json()["followup_draft"].startswith("Hi Test")
 
     pending = client.get("/api/pending-changes").json()
@@ -638,6 +649,8 @@ def test_process_queues_extracted_fields_but_persists_derived_score(client, monk
         "area": "Kirkland",
         "timeline": "2 months",
         "intent": "buy",
+        "score": response.json()["lead"]["score"],
+        "score_reason": response.json()["lead"]["score_reason"],
     }
 
     approved = client.post(
@@ -651,6 +664,8 @@ def test_process_queues_extracted_fields_but_persists_derived_score(client, monk
     assert applied["area"] == "Redmond"
     assert applied["timeline"] == "2 months"
     assert applied["intent"] == "buy"
+    assert applied["score"] == response.json()["lead"]["score"]
+    assert applied["score_reason"] == response.json()["lead"]["score_reason"]
 
 
 def test_process_uses_highest_event_id_when_timestamps_tie(client, monkeypatch):
@@ -712,7 +727,7 @@ def test_process_rejects_source_event_owned_by_another_lead(client):
     assert client.get("/api/pending-changes").json() == []
 
 
-def test_known_lead_reply_queues_fields_once_and_updates_score_now(client, monkeypatch):
+def test_known_lead_reply_queues_fields_and_score_once(client, monkeypatch):
     lead = make_lead(
         client,
         phone=None,
@@ -744,11 +759,13 @@ def test_known_lead_reply_queues_fields_once_and_updates_score_now(client, monke
     assert current["area"] is None
     assert current["timeline"] is None
     assert current["intent"] == "unknown"
-    assert current["score"] is not None
-    assert current["score_reason"].startswith("Derived score")
+    assert current["score"] is None
+    assert current["score_reason"] is None
     pending = client.get("/api/pending-changes").json()
     assert len(pending) == 1
     assert pending[0]["operation"] == "update_lead"
+    assert pending[0]["payload"]["score"] > 0
+    assert pending[0]["payload"]["score_reason"].startswith("Derived score")
     tools = [row["tool"] for row in client.get("/api/audit?limit=50").json()]
     assert "score_lead" in tools
     assert "draft_followup" in tools
@@ -794,7 +811,8 @@ def test_concurrent_processing_deduplicates_same_source_proposal(client, monkeyp
     current = client.get(f"/api/leads/{lead['id']}").json()
     assert current["budget"] is None
     assert current["timeline"] is None
-    assert current["score"] is not None
+    assert current["score"] is None
+    assert pending[0]["payload"]["score"] > 0
 
 
 def test_concurrent_distinct_source_events_create_distinct_proposals(client, monkeypatch):
