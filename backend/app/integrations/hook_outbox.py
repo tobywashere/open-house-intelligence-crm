@@ -9,6 +9,7 @@ a request but before the delivered state commits. The current Composio Calendar
 and Gmail actions do not expose a compatible idempotency-key parameter, so a
 stale claim is retried with the stable key retained for diagnosis and auditing.
 """
+import json
 import logging
 import os
 import threading
@@ -179,54 +180,91 @@ def _claim(
 def _load_hook_arguments(row: dict) -> tuple:
     """Resolve references in a short transaction; never hold it during a hook."""
     with get_conn() as conn:
-        if row["hook_type"] == "lead_created":
-            lead = conn.execute(
-                "SELECT * FROM leads WHERE id = ?", (row["object_id"],)
-            ).fetchone()
-            if not lead:
-                raise ObsoleteHookError("lead no longer exists")
-            return (row_to_dict(lead),)
-        if row["hook_type"] == "tour_booked":
-            appt = conn.execute(
-                "SELECT * FROM appointments WHERE id = ?", (row["object_id"],)
-            ).fetchone()
-            if not appt:
-                raise ObsoleteHookError("appointment no longer exists")
-            lead = conn.execute(
-                "SELECT * FROM leads WHERE id = ?", (appt["lead_id"],)
-            ).fetchone()
-            if not lead:
-                raise ObsoleteHookError("appointment lead no longer exists")
-            _reconcile_lead_reference(conn, row, int(appt["lead_id"]))
-            return row_to_dict(lead), dict(appt)
-        if row["hook_type"] == "reminder_created":
-            reminder = conn.execute(
-                "SELECT * FROM reminders WHERE id = ?", (row["object_id"],)
-            ).fetchone()
-            if not reminder:
-                raise ObsoleteHookError("reminder no longer exists")
-            lead = conn.execute(
-                "SELECT 1 FROM leads WHERE id = ?", (reminder["lead_id"],)
-            ).fetchone()
-            if not lead:
-                raise ObsoleteHookError("reminder lead no longer exists")
-            _reconcile_lead_reference(conn, row, int(reminder["lead_id"]))
-            return (dict(reminder),)
+        return _load_hook_arguments_in_conn(conn, row)
+
+
+def _load_hook_arguments_in_conn(conn, row: dict) -> tuple:
+    """Resolve hook references using the caller's existing transaction."""
+    if row["hook_type"] == "lead_created":
+        lead = conn.execute(
+            "SELECT * FROM leads WHERE id = ?", (row["object_id"],)
+        ).fetchone()
+        if not lead:
+            raise ObsoleteHookError("lead no longer exists")
+        return (row_to_dict(lead),)
+    if row["hook_type"] == "tour_booked":
+        appt = conn.execute(
+            "SELECT * FROM appointments WHERE id = ?", (row["object_id"],)
+        ).fetchone()
+        if not appt:
+            raise ObsoleteHookError("appointment no longer exists")
+        lead = conn.execute(
+            "SELECT * FROM leads WHERE id = ?", (appt["lead_id"],)
+        ).fetchone()
+        if not lead:
+            raise ObsoleteHookError("appointment lead no longer exists")
+        _reconcile_lead_reference(conn, row, int(appt["lead_id"]))
+        return row_to_dict(lead), dict(appt)
+    if row["hook_type"] == "reminder_created":
+        reminder = conn.execute(
+            "SELECT * FROM reminders WHERE id = ?", (row["object_id"],)
+        ).fetchone()
+        if not reminder:
+            raise ObsoleteHookError("reminder no longer exists")
+        lead = conn.execute(
+            "SELECT 1 FROM leads WHERE id = ?", (reminder["lead_id"],)
+        ).fetchone()
+        if not lead:
+            raise ObsoleteHookError("reminder lead no longer exists")
+        _reconcile_lead_reference(conn, row, int(reminder["lead_id"]))
+        return (dict(reminder),)
     raise HookDeliveryError(f"unknown hook type {row['hook_type']}")
 
 
 def _reconcile_lead_reference(conn, row: dict, lead_id: int) -> None:
-    """Track merge reassignment while the claim is still locally owned."""
+    """Track merge reassignment while the selected row still matches."""
     if row.get("lead_id") == lead_id:
         return
     updated = conn.execute(
         f"UPDATE hook_outbox SET lead_id = ?, updated_at = ({NOW}) "
-        "WHERE id = ? AND status = 'processing' AND claim_token = ?",
-        (lead_id, row["id"], row["claim_token"]),
+        "WHERE id = ? AND status = ? AND claim_token IS ?",
+        (lead_id, row["id"], row["status"], row["claim_token"]),
     )
     if updated.rowcount != 1:
         raise HookDeliveryError("hook claim was lost during merge reconciliation")
     row["lead_id"] = lead_id
+
+
+def _failed_delivery_error(row: dict) -> str | None:
+    delivery_key = row.get("idempotency_key")
+    if not delivery_key or row.get("lead_id") is None:
+        return None
+    delivery_steps = {
+        f"{delivery_key}:calendar",
+        f"{delivery_key}:gmail-draft",
+    }
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input, output FROM audit_log WHERE lead_id = ? "
+            "ORDER BY id DESC",
+            (row["lead_id"],),
+        ).fetchall()
+    for audit_row in rows:
+        try:
+            audit_input = json.loads(audit_row["input"])
+            audit_output = json.loads(audit_row["output"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(audit_input, dict) or not isinstance(audit_output, dict):
+            continue
+        exact_delivery = (
+            audit_input.get("delivery_step") in delivery_steps
+            or audit_input.get("delivery_key") == delivery_key
+        )
+        error = audit_output.get("error")
+        if exact_delivery and isinstance(error, str) and error.strip():
+            return _sanitized_error(HookDeliveryError(error))
+    return None
 
 
 def _invoke_hook(row: dict, args: tuple) -> None:
@@ -259,7 +297,9 @@ def _invoke_hook(row: dict, args: tuple) -> None:
     if outcome is hooks.HookOutcome.SIMULATED:
         raise HookDeliveryError("live hook returned simulated delivery")
     if outcome is hooks.HookOutcome.FAILED:
-        raise HookDeliveryError("hook reported failure")
+        raise HookDeliveryError(
+            _failed_delivery_error(row) or "hook reported failure"
+        )
     if outcome is not hooks.HookOutcome.LIVE_DELIVERED:
         raise HookDeliveryError(f"hook returned invalid outcome {outcome!r}")
 
@@ -363,44 +403,30 @@ def _audit_terminal_failure(conn, row: dict, error: str) -> None:
 
 def _mark_exhausted(row: dict, exc: Exception) -> bool:
     """Atomically terminalize the locally owned claim and its audit."""
+    with get_conn() as conn:
+        return _mark_exhausted_in_conn(conn, row, exc)
+
+
+def _mark_exhausted_in_conn(conn, row: dict, exc: Exception) -> bool:
     error = _sanitized_error(exc)
-    with get_conn() as conn:
-        updated = conn.execute(
-            f"UPDATE hook_outbox SET status = 'exhausted', last_error = ?, "
-            "claim_token = NULL, claimed_at = NULL, next_attempt_at = NULL, "
-            f"updated_at = ({NOW}) "
-            "WHERE id = ? AND status = 'processing' AND claim_token = ?",
-            (error, row["id"], row["claim_token"]),
-        )
-        if updated.rowcount != 1:
-            return False
-        _audit_terminal_failure(conn, row, error)
+    updated = conn.execute(
+        f"UPDATE hook_outbox SET status = 'exhausted', last_error = ?, "
+        "claim_token = NULL, claimed_at = NULL, next_attempt_at = NULL, "
+        f"updated_at = ({NOW}) "
+        "WHERE id = ? AND status = ? AND claim_token IS ?",
+        (error, row["id"], row["status"], row["claim_token"]),
+    )
+    if updated.rowcount != 1:
+        return False
+    _audit_terminal_failure(conn, row, error)
     return True
-
-
-def _stale_claim_at_limit(
-    outbox_id: int, stale_after_seconds: int, max_attempts: int
-) -> dict | None:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM hook_outbox WHERE id = ? AND status = 'processing' "
-            "AND attempts >= ? AND (claimed_at IS NULL OR claimed_at <= "
-            "strftime('%Y-%m-%dT%H:%M:%S','now','localtime', ?))",
-            (
-                outbox_id,
-                max(int(max_attempts), 1),
-                _stale_modifier(stale_after_seconds),
-            ),
-        ).fetchone()
-    return dict(row) if row else None
 
 
 def _exhaust_stale_claim_at_limit(
     outbox_id: int, stale_after_seconds: int, max_attempts: int
 ) -> bool:
-    """Terminalize an eligible final claim without creating another attempt."""
+    """Cancel or exhaust an eligible final claim in one transaction."""
     safe_max_attempts = max(int(max_attempts), 1)
-    error = "maximum delivery attempts reached after stale claim"
     with get_conn() as conn:
         selected = conn.execute(
             "SELECT * FROM hook_outbox WHERE id = ? AND attempts >= ? AND "
@@ -416,46 +442,51 @@ def _exhaust_stale_claim_at_limit(
         if not selected:
             return False
         row = dict(selected)
-        updated = conn.execute(
-            f"UPDATE hook_outbox SET status = 'exhausted', last_error = ?, "
-            "claim_token = NULL, claimed_at = NULL, next_attempt_at = NULL, "
-            f"updated_at = ({NOW}) WHERE id = ? AND status = ?",
-            (error, row["id"], row["status"]),
+        try:
+            _load_hook_arguments_in_conn(conn, row)
+        except ObsoleteHookError as exc:
+            return _mark_cancelled_in_conn(conn, row, exc)
+        return _mark_exhausted_in_conn(
+            conn,
+            row,
+            HookDeliveryError(
+                "maximum delivery attempts reached after stale claim"
+            ),
         )
-        if updated.rowcount != 1:
-            return False
-        _audit_terminal_failure(conn, row, error)
-    return True
 
 
 def _mark_cancelled(row: dict, exc: Exception) -> bool:
     """Atomically record one terminal cancellation and its audit evidence."""
-    reason = _sanitized_error(exc)
     with get_conn() as conn:
-        updated = conn.execute(
-            f"UPDATE hook_outbox SET status = 'cancelled', last_error = ?, "
-            f"claim_token = NULL, claimed_at = NULL, next_attempt_at = NULL, "
-            f"updated_at = ({NOW}) "
-            "WHERE id = ? AND status = 'processing' AND claim_token = ?",
-            (reason, row["id"], row["claim_token"]),
-        )
-        if updated.rowcount != 1:
-            return False
-        lead_exists = conn.execute(
-            "SELECT 1 FROM leads WHERE id = ?", (row["lead_id"],)
-        ).fetchone()
-        audit(
-            conn,
-            "user",
-            _CANCELLATION_TOOL[row["hook_type"]],
-            {
-                "pending_id": row["pending_change_id"],
-                "outbox_id": row["id"],
-                "idempotency_key": row["idempotency_key"],
-            },
-            {"reason": reason, "retryable": False, "status": "cancelled"},
-            row["lead_id"] if lead_exists else None,
-        )
+        return _mark_cancelled_in_conn(conn, row, exc)
+
+
+def _mark_cancelled_in_conn(conn, row: dict, exc: Exception) -> bool:
+    reason = _sanitized_error(exc)
+    updated = conn.execute(
+        f"UPDATE hook_outbox SET status = 'cancelled', last_error = ?, "
+        "claim_token = NULL, claimed_at = NULL, next_attempt_at = NULL, "
+        f"updated_at = ({NOW}) "
+        "WHERE id = ? AND status = ? AND claim_token IS ?",
+        (reason, row["id"], row["status"], row["claim_token"]),
+    )
+    if updated.rowcount != 1:
+        return False
+    lead_exists = conn.execute(
+        "SELECT 1 FROM leads WHERE id = ?", (row["lead_id"],)
+    ).fetchone()
+    audit(
+        conn,
+        "user",
+        _CANCELLATION_TOOL[row["hook_type"]],
+        {
+            "pending_id": row["pending_change_id"],
+            "outbox_id": row["id"],
+            "idempotency_key": row["idempotency_key"],
+        },
+        {"reason": reason, "retryable": False, "status": "cancelled"},
+        row["lead_id"] if lead_exists else None,
+    )
     return True
 
 
@@ -483,41 +514,13 @@ def dispatch_hook(
     """Claim and attempt one row. Expected delivery failures never raise."""
     safe_max_attempts = max(int(max_attempts), 1)
     try:
-        stale_final_claim = _stale_claim_at_limit(
-            outbox_id, stale_after_seconds, safe_max_attempts
-        )
-    except Exception:
-        logging.exception(
-            "could not inspect stale final claim for hook outbox row %s",
-            outbox_id,
-        )
-        return False
-    if stale_final_claim is not None:
-        try:
-            _load_hook_arguments(stale_final_claim)
-        except ObsoleteHookError as exc:
-            try:
-                _mark_cancelled(stale_final_claim, exc)
-            except Exception:
-                logging.exception(
-                    "could not persist cancelled state for hook outbox row %s",
-                    outbox_id,
-                )
-            return False
-        except Exception:
-            logging.exception(
-                "could not validate stale final claim for hook outbox row %s",
-                outbox_id,
-            )
-            return False
-    try:
         if _exhaust_stale_claim_at_limit(
             outbox_id, stale_after_seconds, safe_max_attempts
         ):
             return False
     except Exception:
         logging.exception(
-            "could not persist exhausted state for hook outbox row %s",
+            "could not persist final state for hook outbox row %s",
             outbox_id,
         )
         return False

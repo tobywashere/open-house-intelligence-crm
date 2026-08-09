@@ -182,24 +182,46 @@ def _migrate_hook_outbox_terminal_statuses(conn: sqlite3.Connection) -> None:
     if all(status in compact for status in ("'cancelled'", "'exhausted'")):
         return
 
-    conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_delivery")
-    conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_retry")
-    conn.execute("ALTER TABLE hook_outbox RENAME TO hook_outbox_before_terminal")
-    conn.execute(HOOK_OUTBOX_DDL)
-    old_columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(hook_outbox_before_terminal)")
-    }
-    columns = ", ".join(
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(hook_outbox)")
-        if row["name"] in old_columns
-    )
-    conn.execute(
-        f"INSERT INTO hook_outbox ({columns}) SELECT {columns} "
-        "FROM hook_outbox_before_terminal"
-    )
-    conn.execute("DROP TABLE hook_outbox_before_terminal")
+    stranded = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name = 'hook_outbox_before_terminal'"
+    ).fetchone()
+    if stranded:
+        raise RuntimeError(
+            "hook_outbox temporary migration table already exists; "
+            "restore or remove it before retrying startup"
+        )
+
+    savepoint = "migrate_hook_outbox_terminal_statuses"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_delivery")
+        conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_retry")
+        conn.execute(
+            "ALTER TABLE hook_outbox RENAME TO hook_outbox_before_terminal"
+        )
+        conn.execute(HOOK_OUTBOX_DDL)
+        old_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(hook_outbox_before_terminal)"
+            )
+        }
+        columns = ", ".join(
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(hook_outbox)")
+            if row["name"] in old_columns
+        )
+        conn.execute(
+            f"INSERT INTO hook_outbox ({columns}) SELECT {columns} "
+            "FROM hook_outbox_before_terminal"
+        )
+        conn.execute("DROP TABLE hook_outbox_before_terminal")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
 
 
 # Every timestamp column in schema.sql (Task 7's one convention: naive local

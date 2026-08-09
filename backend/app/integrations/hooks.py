@@ -47,6 +47,20 @@ def _signoff() -> str:
     return f"\n\nBest,\n{name}" if name else ""
 
 
+def _sanitized_error(exc: Exception) -> str:
+    message = str(exc) or type(exc).__name__
+    for env_name in (
+        "COMPOSIO_API_KEY",
+        "OHI_API_TOKEN",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_API_TOKEN",
+    ):
+        secret = os.environ.get(env_name)
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return message[:500]
+
+
 def _lead_details(lead: dict) -> str:
     budget = f"${lead['budget']:,}" if lead.get("budget") else "—"
     return (f"Phone: {lead.get('phone') or '—'}\n"
@@ -87,7 +101,7 @@ def _create_event(
     except cc.IntegrationError as e:
         with get_conn() as conn:
             audit(conn, "user", "gcal_create_event (failed)", audit_input,
-                  {"error": str(e)}, lead_id)
+                  {"error": _sanitized_error(e)}, lead_id)
         return HookOutcome.FAILED, None
     with get_conn() as conn:
         audit(conn, "user", "gcal_create_event", audit_input,
@@ -95,11 +109,25 @@ def _create_event(
     return HookOutcome.LIVE_DELIVERED, event_id
 
 
-def _audit_hook_failure(tool: str, lead_id: int | None, exc: Exception) -> None:
+def _audit_hook_failure(
+    tool: str,
+    lead_id: int | None,
+    exc: Exception,
+    *,
+    delivery_key: str | None = None,
+) -> None:
     """Log hook failure without allowing an audit outage to break the caller."""
     try:
+        audit_input = {"delivery_key": delivery_key} if delivery_key else {}
         with get_conn() as conn:
-            audit(conn, "user", f"{tool} (failed)", {}, {"error": str(exc)}, lead_id)
+            audit(
+                conn,
+                "user",
+                f"{tool} (failed)",
+                audit_input,
+                {"error": _sanitized_error(exc)},
+                lead_id,
+            )
     except Exception:
         logging.exception("could not persist %s failure audit", tool)
 
@@ -215,7 +243,12 @@ def on_tour_booked(
             delivery_key=delivery_key,
         )
     except Exception as e:
-        _audit_hook_failure("gcal_create_event", lead.get("id"), e)
+        _audit_hook_failure(
+            "gcal_create_event",
+            lead.get("id"),
+            e,
+            delivery_key=delivery_key,
+        )
         return HookOutcome.FAILED
 
 
@@ -281,7 +314,7 @@ def _on_lead_created_impl(
     except cc.IntegrationError as e:
         with get_conn() as conn:
             audit(conn, "user", "gmail_create_draft (failed)", audit_input,
-                  {"error": str(e)}, lead["id"])
+                  {"error": _sanitized_error(e)}, lead["id"])
         return HookOutcome.FAILED
     with get_conn() as conn:
         audit(
@@ -313,7 +346,12 @@ def on_lead_created(
             delivery_key=delivery_key,
         )
     except Exception as e:
-        _audit_hook_failure("lead_created_hook", lead.get("id"), e)
+        _audit_hook_failure(
+            "lead_created_hook",
+            lead.get("id"),
+            e,
+            delivery_key=delivery_key,
+        )
         return HookOutcome.FAILED
 
 
@@ -378,5 +416,10 @@ def on_reminder_created(
             delivery_key=delivery_key,
         )
     except Exception as e:
-        _audit_hook_failure("gcal_create_event", reminder.get("lead_id"), e)
+        _audit_hook_failure(
+            "gcal_create_event",
+            reminder.get("lead_id"),
+            e,
+            delivery_key=delivery_key,
+        )
         return HookOutcome.FAILED
