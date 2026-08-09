@@ -68,9 +68,11 @@ proposal. If validation or a conflict check fails before mutation, the row
 returns to `pending` for correction, retry, or denial.
 
 `dedupe_key` is internal and omitted from API responses. Automated processing
-uses a stable lead-and-source-event key so retries and concurrent processing
-cannot create two combined extracted-field/score proposals for the same raw
-input.
+uses the lead, exact source event, and a digest of the proposed structured
+fields. The digest excludes `score_reason`, because a wording-only explanation
+change is not a different CRM write. Concurrent or repeated processing reuses
+the same proposal when its structured values are identical. A meaningfully
+changed structured proposal for the same event may enter review separately.
 
 Rows are created only when one of the reviewed CRM write endpoints is called
 with header `X-Actor: agent`, sent by `skills/crm-db-operations/tools.py`.
@@ -80,7 +82,7 @@ Dashboard actions without that header continue to apply immediately. See §2,
 ### `hook_outbox` — durable post-approval integration delivery
 `id, pending_change_id UNIQUE, idempotency_key UNIQUE, hook_type
 (lead_created|tour_booked|reminder_created), object_id, lead_id, status
-(pending|processing|failed|delivered|cancelled), attempts, last_error, claim_token,
+(pending|processing|failed|delivered|cancelled|exhausted), attempts, last_error, claim_token,
 claimed_at, delivery_mode (live|simulated), next_attempt_at, created_at,
 updated_at, delivered_at`.
 
@@ -99,22 +101,31 @@ stopped and joined during shutdown. It drains every eligible 100-row batch,
 wakes immediately after a committed enqueue, and otherwise checks every five
 seconds. Each claim and state update is a short transaction; no database lock
 is held during a provider call. Failed rows retry with exponential backoff from
-five seconds up to five minutes, and processing claims older than five minutes
-can be recovered. A live row is terminally delivered only when the hook reports
-an explicit real provider success. Disabled or misconfigured integrations and
-simulated, failed, or unknown hook outcomes remain observable and retryable.
-If the referenced lead, appointment, or reminder has been irreversibly removed,
-the row becomes terminally `cancelled`, clears its lease and retry time, keeps a
-sanitized reason, and records one non-retryable cancellation audit. A worker
-never selects cancelled rows. After a merge, appointment and reminder delivery
-is reconstructed from the surviving reassigned object and its current lead;
-a lead-created intent for a merged-away lead is obsolete and is cancelled.
+five seconds up to five minutes. The claim itself counts as an attempt. The
+row becomes terminal `exhausted` after five claimed attempts have not completed
+delivery, clears its lease and retry time, and records a non-retryable audit. A
+recovered stale fifth claim can therefore exhaust without another provider
+call. The worker never selects
+`exhausted` or `cancelled` rows. An operator can inspect and manually requeue an
+exhausted row through the endpoints in section 2. `last_error` and failure
+audits keep a short actionable error while redacting configured credentials.
 
-Delivery is **at least once**. The stable `pending-change:<id>` key prevents two
-live workers from owning the same current claim and appears in failure audits,
-but the current Composio Gmail and Google Calendar actions do not accept a
-compatible provider idempotency key. A process crash after the provider accepts
-an action but before the local delivered update can therefore cause a retry.
+Processing claims older than five minutes can be recovered. A live row is
+terminally delivered only when the hook reports an explicit real provider
+success. If the referenced lead, appointment, or reminder has been
+irreversibly removed, the row becomes terminally `cancelled`, clears its lease
+and retry time, keeps a sanitized reason, and records one non-retryable
+cancellation audit. After a merge, appointment and reminder delivery is
+reconstructed from the surviving reassigned object and its current lead. A
+lead-created intent for a merged-away lead is obsolete and is cancelled.
+
+Each provider step has its own replay checkpoint. Lead creation completes its
+Calendar step before attempting its Gmail draft. If Gmail later fails, a retry
+skips the completed Calendar step and retries Gmail. Appointments and reminders
+also reuse a stored Google Calendar event ID, or recover it from the exact
+successful step audit, instead of replaying an ordinary completed step.
+
+Delivery is at least once. Step checkpoints prevent ordinary partial-failure replays, but a provider action can still be duplicated if the process stops after the provider accepts it and before the local checkpoint commits.
 
 ### `chat_messages`
 `id, session_id, role (user|agent), content, created_at`
@@ -149,9 +160,9 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /leads/{id}/duplicates` | → `[{lead, match_on}]` | exact phone/email, fuzzy name |
 | `POST /leads/merge` ⏸ | `{primary_id, duplicate_id}` → merged lead | moves events, deletes duplicate |
 | `GET /pending-changes?status=pending` | → `[pending_changes row]` | additive, recorded 2026-07-28; newest first; `status` defaults to `pending` (also accepts `approved`/`denied`); `payload`/`result` are returned as parsed JSON objects, not strings (additive, recorded 2026-07-29) — `payload` for `create_lead` holds already-resolved fields (`name`, `raw_text`, `source`, `phone`, `email`, `budget`, `area`, `timeline`, `intent`, `preferences[]`, `missing_fields[]`), extracted at queue time so the dialog has real values to show/edit rather than a raw note; the other 7 operations' `payload` is their normal request body |
-| `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any live external-hook intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. The managed outbox worker wakes after commit and continuously retries pending, failed, or stale live delivery. Off-mode approvals remain forced simulations and are never queued for later live delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim. The dashboard exposes every normal `create_lead` business value, including `preferences[]`; an edited list overrides the queued list and `preferences: []` clears it |
+| `POST /pending-changes/{id}/approve` | `{fields?}` → the applied lead/result | additive, recorded 2026-07-28; one `BEGIN IMMEDIATE` transaction claims and validates the proposal, replays the write, records the operation and user audits, marks it approved, and inserts any live external-hook intent; **400** if not currently `pending`; validation/conflict failure rolls the whole transaction back to the unchanged `pending` proposal. The managed outbox worker wakes after commit and retries pending, failed, or stale live delivery, with exhaustion once five claimed attempts have not completed delivery. Off-mode approvals remain forced simulations and are never queued for later live delivery. Delivery is at least once as documented in §1. Optional `fields` (additive, recorded 2026-07-29) is merged over the stored `payload` before applying; omit or send `{}` to approve verbatim. The dashboard exposes every normal `create_lead` business value, including `preferences[]`; an edited list overrides the queued list and `preferences: []` clears it |
 | `POST /pending-changes/{id}/deny` | `{reason?}` → the `pending_changes` row, `status: "denied"` | additive, recorded 2026-07-28; no mutation to the underlying lead |
-| `POST /leads/{id}/process?source_event_id=` | `{}` → `{lead, followup_draft, pending_change}` | `lead` is the useful in-memory candidate, not proof of persisted state. Optional `source_event_id` must belong to this lead; omit it for the deterministic newest event. Extraction runs even when fields are populated. Normalized, nonblank changes to phone/email/budget/area/timeline/intent plus changed derived `score`/`score_reason` are queued together as one editable `update_lead` proposal, once per exact source event; absent or blank extraction never clears a field. The persisted lead is unchanged until approval. Processing audits apply immediately. A labeled fallback returns 409 with no lead mutation or proposal |
+| `POST /leads/{id}/process?source_event_id=` | `{}` → `{lead, followup_draft, pending_change}` | `lead` is the useful in-memory candidate, not proof of persisted state. Optional `source_event_id` must belong to this lead; omit it for the deterministic newest event. Extraction runs even when fields are populated. Normalized, nonblank changes to phone/email/budget/area/timeline/intent plus changed derived `score`/`score_reason` are queued together as one editable `update_lead` proposal; absent or blank extraction never clears a field. Source-event dedupe combines the exact event with a digest of the proposed structured fields and score, excluding `score_reason`. Rewording only that explanation reuses the existing proposal, while changed structured fields or score can create a new review. The persisted lead is unchanged until approval. Processing audits apply immediately. A labeled fallback returns 409 with no lead mutation or proposal |
 | `GET /availability?date=YYYY-MM-DD` | → `[{start_ts, end_ts}]` | free slots, conflicts removed |
 | `POST /appointments` ⏸ | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; agent-tagged calls queue, then re-check the slot on approval before setting status `meeting_booked` |
 | `GET /appointments` | → `[appt]` | |
@@ -164,13 +175,13 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `POST /voice-note/prepare` | `{filename, content_type, data: base64}` → `{transcript, draft, duplicates, warnings}` | local transcription and extraction only; validates audio signature/20 MB limit, deletes temporary audio, and never writes a lead |
 | `POST /reminders` ⏸ | `{lead_id, due_ts, note}` → reminder | agent-tagged calls queue for review |
 | `GET /reminders?due=1` | → `[reminder + lead_name]` | dashboard polls this for the reminder banner |
-| `PATCH /reminders/{id}` | → reminder | marks done |
+| `PATCH /reminders/{id}` | → reminder | marks done; **403** when attributed to `X-Actor: agent`, because completion is user-only |
 | `GET /audit?limit=50` | → `[audit rows]` | newest first |
 | `GET /metrics` | → dashboard tile numbers | ordinary reads do not audit; an `X-Actor: agent` request audits `generate_dashboard_insights`, including optional `probe_nonce` |
 | `GET /health` | → `{ok, agent_mode, agent_connected, agent_status}` | status is one of `mock`, `endpoint_enabled`, `chat_verified`, `crm_verified`, `degraded`, `endpoint_disabled`, `unauthorized`, `unreachable`, or `failed` |
 | `POST /health/agent-check` | → `agent_status` | sends one harmless completion; success proves chat, not CRM tool access |
 | `POST /health/crm-check` | → `agent_status` | asks the selected OpenClaw agent for read-only `generate_dashboard_insights` with a fresh nonce; only a new agent-tagged `/metrics` audit row with that nonce yields `crm_verified`; mock mode returns 409 |
-| `POST /demo/advance-time` | `{days}` → `{neglected: [lead]}` | backdates activity, runs neglect check |
+| `POST /demo/advance-time` | `{days}` → `{neglected: [lead]}` | `days: 0` only runs the current neglect check and remains agent-callable; positive backdating is user-only and returns **403** with `X-Actor: agent` |
 | `GET /briefing?date=YYYY-MM-DD` | → canonical CRM briefing JSON | always derives schedule, lead facts, and due actions from current rows; stored agent advice is optional |
 | `POST /briefing` | `{date, generated_at?, meeting_briefs:[{lead_id,prepare,recommendation}]}` → validated advice | factual replacement fields are ignored; unknown lead IDs are rejected |
 | `GET /insights?date=YYYY-MM-DD` | → insights JSON | **404** if none yet; shape in `docs/INSIGHTS.md` |
@@ -178,6 +189,8 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /summary?date=YYYY-MM-DD` | → daily summary JSON | **404** if none yet; shape in `docs/BRIEFING-UI.md` |
 | `POST /summary` | summary JSON (must include `date`) → same JSON | upsert by date |
 | `GET /integrations/status` | → `{mode, configured, last_operation, detail}` | distinguishes off/configured/verified/failed without exposing secrets |
+| `GET /integrations/outbox?status=exhausted` | → `[outbox row]` | operator view of jobs that stopped after five attempts; defaults to `exhausted`, accepts any documented outbox status, and returns sanitized `last_error` details |
+| `POST /integrations/outbox/{id}/retry` | → requeued outbox row | user-only manual recovery; resets an exhausted row to `pending` with zero attempts and wakes the worker. **403** for `X-Actor: agent`, **404** when the row does not exist, and **409** when the row is not exhausted |
 | `POST /email/send` | `{lead_id, subject, body}` → `{sent: true, simulated}` | additive, recorded 2026-07-27; recipient must be the lead's own `email` (400 otherwise); `simulated: true` when integrations aren't live; logs an `events` row + reminder + audit row; this is the only outbound-email path that is audited (see §3 preamble) |
 | `GET /knowledge/search?q=&k=` | → `[{doc, heading, breadcrumb, score, text}]` | additive, recorded 2026-07-28; local BM25 lexical search over `docs/knowledge/*.md` (`backend/app/knowledge/`), ranked highest-score-first, empty list if nothing clears `KNOWLEDGE_MIN_SCORE`; `q` required non-empty (422 otherwise), `k` bounded 1-10; debug/dashboard endpoint — the same retrieval also runs inside `POST /chat` (see §3) to ground agent replies in the operator's own market-intelligence doc; read-only, does **not** audit (see §3 preamble — it is not one of the two audited reads) |
 | `GET /knowledge/docs` | → `[{name, chunks, bytes}]` | additive, recorded 2026-07-28; the `*.md` files in `KNOWLEDGE_DIR`, sorted by name. `chunks` is counted from the **live** corpus, so a file present but unindexed honestly reports `0` rather than a count it doesn't have; `README.md` is excluded from indexing by convention (see `knowledge/index.py`) and so reports `0`. Read-only, does **not** audit (see §3 preamble) |
@@ -266,8 +279,11 @@ exact Gmail event ID. Normalized contact or qualification values that differ
 from populated CRM fields follow the same editable `update_lead` approval
 boundary together with the derived score/reason; blank extraction never clears
 existing data. The score and draft processing audits are immediate, but the
-lead fields are not. Retrying the same Gmail event reuses its proposal while
-different events keep separate proposals.
+lead fields are not. A repeated Gmail event retries processing after a failed
+or deferred attempt, but skips processing after the exact event has a successful
+`score_lead` audit. An identical structured proposal is reused even when only
+the explanation prose changes. Different structured values or different events
+keep separate proposals.
 
 | Tool | Endpoint |
 |---|---|

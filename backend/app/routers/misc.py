@@ -2,8 +2,10 @@ import json
 import os
 import uuid
 from dataclasses import asdict, replace
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
 from ..agent import get_driver
@@ -11,7 +13,7 @@ from ..agent.status import AgentProbe, record_crm_capability
 from ..approvals import is_agent_write, queue_pending_change
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
-from ..integrations import hooks
+from ..integrations import hook_outbox, hooks
 from ..integrations import composio_client
 from .leads import fetch_lead
 from ..scoring import is_high_priority
@@ -19,6 +21,15 @@ from ..scoring import is_high_priority
 router = APIRouter(tags=["misc"])
 
 NEGLECT_AFTER_DAYS = 2
+
+OutboxStatus = Literal[
+    "pending",
+    "processing",
+    "failed",
+    "delivered",
+    "cancelled",
+    "exhausted",
+]
 
 
 class AdvanceTimeIn(BaseModel):
@@ -98,7 +109,9 @@ def list_reminders(due: int | None = None):
 
 
 @router.patch("/reminders/{reminder_id}")
-def complete_reminder(reminder_id: int):
+def complete_reminder(reminder_id: int, request: Request):
+    if is_agent_write(request):
+        raise HTTPException(403, "This action requires a dashboard user")
     with get_conn() as conn:
         conn.execute("UPDATE reminders SET done = 1 WHERE id = ?", (reminder_id,))
         row = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
@@ -129,8 +142,10 @@ def run_neglect_check(conn) -> list[dict]:
 
 
 @router.post("/demo/advance-time")
-def advance_time(body: AdvanceTimeIn):
+def advance_time(body: AdvanceTimeIn, request: Request):
     """Demo helper: backdate all activity so the neglect check fires on stage."""
+    if is_agent_write(request) and body.days != 0:
+        raise HTTPException(403, "This action requires a dashboard user")
     with get_conn() as conn:
         if body.days:
             conn.execute(
@@ -152,6 +167,23 @@ def audit_log(limit: int = Query(50, ge=1, le=500)):
             "SELECT a.*, l.name AS lead_name FROM audit_log a "
             "LEFT JOIN leads l ON l.id = a.lead_id "
             "ORDER BY a.id DESC LIMIT ?", (limit,))]
+
+
+@router.get("/integrations/outbox")
+def integration_outbox(status: OutboxStatus = "exhausted"):
+    return hook_outbox.list_hook_outbox(status)
+
+
+@router.post("/integrations/outbox/{outbox_id}/retry")
+def retry_integration_outbox(outbox_id: int, request: Request):
+    if is_agent_write(request):
+        raise HTTPException(403, "only a user can retry an exhausted integration")
+    try:
+        return hook_outbox.retry_exhausted(outbox_id)
+    except hook_outbox.HookOutboxNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except hook_outbox.HookRetryConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/metrics")
@@ -229,10 +261,7 @@ async def crm_check():
     if driver.name == "mock":
         raise HTTPException(409, "CRM capability check requires the OpenClaw agent")
 
-    with get_conn() as conn:
-        before = conn.execute(
-            "SELECT COALESCE(MAX(id), 0) AS id FROM audit_log"
-        ).fetchone()["id"]
+    before = await run_in_threadpool(_latest_audit_id)
 
     probe_nonce = uuid.uuid4().hex
     try:
@@ -248,14 +277,8 @@ async def crm_check():
             detail="capability request failed",
         ))
 
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT input FROM audit_log "
-            "WHERE id > ? AND actor = 'agent' "
-            "AND tool = 'generate_dashboard_insights'",
-            (before,),
-        ).fetchall()
-    found = any(_audit_has_nonce(row["input"], probe_nonce) for row in rows)
+    inputs = await run_in_threadpool(_crm_probe_inputs_after, before)
+    found = any(_audit_has_nonce(raw_input, probe_nonce) for raw_input in inputs)
 
     detail = None if found else "no audited CRM call"
     record_crm_capability(found, detail)
@@ -264,6 +287,24 @@ async def crm_check():
         verified=found,
         detail=detail,
     ))
+
+
+def _latest_audit_id() -> int:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS id FROM audit_log"
+        ).fetchone()["id"]
+
+
+def _crm_probe_inputs_after(before: int) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input FROM audit_log "
+            "WHERE id > ? AND actor = 'agent' "
+            "AND tool = 'generate_dashboard_insights'",
+            (before,),
+        ).fetchall()
+    return [row["input"] for row in rows]
 
 
 def _audit_has_nonce(raw_input: str, probe_nonce: str) -> bool:

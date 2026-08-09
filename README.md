@@ -159,8 +159,11 @@ agent configuration and the same review-before-apply CRM rules.
 
 - **Endpoint disabled or 404:** rerun the endpoint-enable command above and
   follow OpenClaw's restart instructions.
-- **Unauthorized:** put the matching gateway token in `AGENT_GATEWAY_TOKEN`
-  in `.env`, then restart `bash scripts/serve.sh`.
+- **OpenClaw gateway unauthorized:** put its matching token in
+  `AGENT_GATEWAY_TOKEN` in `.env`, then restart `bash scripts/serve.sh`.
+- **CRM API unauthorized:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in
+  `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
+  API commands must also send that value in `X-API-Token`.
 - **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
   It checks the dedicated agent, eligible `crm-db-operations` skill, and its
   restricted tool access. See [recovery steps](docs/LOCAL-AI.md#recovery).
@@ -168,6 +171,9 @@ agent configuration and the same review-before-apply CRM rules.
   and that `AGENT_GATEWAY_URL` in `.env` is correct.
 - **Voice transcription failed:** run the exact command in
   [the local-AI guide](docs/LOCAL-AI.md#voice-notes).
+- **Gmail or Calendar stopped retrying:** failed jobs try five times, then stop
+  for review. Use the two beginner recovery commands in
+  [the local-AI guide](docs/LOCAL-AI.md#if-gmail-or-calendar-stops-retrying).
 - **No daily market summary:** this is an honest empty state, not an error the
   CRM should hide with made-up content.
 

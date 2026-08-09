@@ -25,6 +25,11 @@ configure_openclaw = setup_openclaw.configure_openclaw
 sync_skills = setup_openclaw.sync_skills
 parse_args = setup_openclaw._parse_args
 
+TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
+TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
+LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
+LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
+
 
 def make_options(tmp_path, *, dry_run=False, bind_discord=None):
     return SetupOptions(
@@ -74,46 +79,105 @@ def gateway_approval_payload(
 
 
 class FakeCLI:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, *, config_path=None, legacy_token=None):
         self.calls = []
         self.mutating_calls = []
         self.responses = responses or {}
         self.created_agent = None
+        self.config_path = config_path
+        self.config_values = {}
+        self.legacy_token = legacy_token
 
     def run(self, args, *, mutate=False):
         self.calls.append(args)
+        key = tuple(args)
+        response = self.responses.get(key)
         if mutate:
             self.mutating_calls.append(args)
+        if response is not None and response.returncode != 0:
+            return response
+        if mutate:
             if args[1:3] == ["agents", "add"]:
                 self.created_agent = {
                     "id": args[3],
                     "workspace": args[args.index("--workspace") + 1],
                 }
-        key = tuple(args)
-        if key in self.responses:
-            return self.responses[key]
+            elif args[1:3] == ["config", "set"]:
+                path = args[3]
+                if "--ref-provider" in args:
+                    self.config_values[path] = {
+                        "source": args[args.index("--ref-source") + 1],
+                        "provider": args[args.index("--ref-provider") + 1],
+                        "id": args[args.index("--ref-id") + 1],
+                    }
+                elif "--strict-json" in args:
+                    self.config_values[path] = json.loads(args[-2])
+            elif args[1:3] == ["config", "unset"]:
+                if args[3] == LEGACY_TOKEN_CONFIG_PATH:
+                    self.legacy_token = None
+                self.config_values.pop(args[3], None)
+        if response is not None:
+            return response
         if args[-1:] == ["--help"]:
             return CommandResult(
                 0,
                 "Commands:\n"
                 "  agents\n  add\n  list\n  bind\n  config\n  get\n  set\n"
-                "  validate\n  skills\n  check\n  approvals\n  allowlist\n"
+                "  unset\n  file\n  validate\n  skills\n  check\n  approvals\n  allowlist\n"
                 "  exec-policy\n  show\n  sandbox\n  explain\n  gateway\n"
                 "  restart\n"
                 "Options:\n"
                 "  --workspace PATH\n  --non-interactive\n  --json\n"
                 "  --agent ID\n  --bind TARGET\n  --strict-json VALUE\n"
+                "  --ref-provider NAME\n  --ref-source SOURCE\n  --ref-id ID\n"
+                "  --dry-run\n"
                 "  --gateway",
                 "",
             )
         if args == ["openclaw", "--version"]:
             return CommandResult(0, "OpenClaw 2026.8.1\n", "")
+        if args == ["openclaw", "config", "file"]:
+            if self.config_path is None:
+                return CommandResult(1, "", "test config path not set")
+            return CommandResult(0, f"{self.config_path}\n", "")
         if args == ["openclaw", "agents", "list", "--json"]:
             return CommandResult(
                 0, json.dumps({"agents": [self.created_agent] if self.created_agent else []}), ""
             )
         if args == ["openclaw", "config", "get", "agents.list", "--json"]:
             return CommandResult(0, json.dumps([self.created_agent] if self.created_agent else []), "")
+        if args == [
+            "openclaw",
+            "config",
+            "get",
+            TOKEN_CONFIG_PATH,
+            "--json",
+        ]:
+            return CommandResult(
+                0, json.dumps(self.config_values.get(TOKEN_CONFIG_PATH)), ""
+            )
+        if args == [
+            "openclaw",
+            "config",
+            "get",
+            TOKEN_ENTRY_CONFIG_PATH,
+            "--json",
+        ]:
+            entry = {"apiKey": self.config_values.get(TOKEN_CONFIG_PATH)}
+            if self.legacy_token is not None:
+                entry["env"] = {"OHI_API_TOKEN": self.legacy_token}
+            return CommandResult(0, json.dumps(entry), "")
+        if args == [
+            "openclaw",
+            "config",
+            "get",
+            LEGACY_TOKEN_ENV_PATH,
+            "--json",
+        ]:
+            env = {}
+            if self.legacy_token is not None:
+                env["OHI_API_TOKEN"] = self.legacy_token
+            return CommandResult(0, json.dumps(env), "")
         if (
             args[1:3] == ["config", "get"]
             and args[3].startswith("agents.list[")
@@ -161,8 +225,13 @@ class FakeCLI:
 
 
 @pytest.fixture
-def fake_cli():
-    return FakeCLI()
+def fake_cli(tmp_path):
+    return FakeCLI(config_path=tmp_path / "openclaw.json")
+
+
+@pytest.fixture(autouse=True)
+def isolated_openclaw_state_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path / "openclaw-state"))
 
 
 def test_missing_agent_plan_creates_only_dedicated_agent(tmp_path):
@@ -589,13 +658,40 @@ def test_dry_run_never_executes_mutating_commands(fake_cli, tmp_path):
     assert fake_cli.mutating_calls == []
 
 
-def test_output_redacts_api_token(fake_cli, tmp_path, monkeypatch):
+def test_crm_skill_declares_the_api_token_as_its_primary_environment_variable():
+    skill = (REPO_ROOT / "skills" / "crm-db-operations" / "SKILL.md").read_text()
+    frontmatter = skill.split("---", 2)[1]
+    metadata_lines = [
+        line for line in frontmatter.splitlines() if line.startswith("metadata:")
+    ]
+
+    assert len(metadata_lines) == 1
+
+    metadata = json.loads(metadata_lines[0].removeprefix("metadata:").strip())
+
+    assert metadata == {"openclaw": {"primaryEnv": "OHI_API_TOKEN"}}
+
+
+def test_setup_never_places_api_token_in_openclaw_argv_or_output(
+    fake_cli, tmp_path, monkeypatch
+):
     monkeypatch.setenv("OHI_API_TOKEN", "secret-value")
 
     result = configure_openclaw(make_options(tmp_path), cli=fake_cli)
 
+    assert result.ok, result.render()
+    assert all(
+        "secret-value" not in argument
+        for call in fake_cli.calls
+        for argument in call
+    )
+    assert all(
+        json.dumps("secret-value") not in argument
+        for call in fake_cli.calls
+        for argument in call
+    )
     assert "secret-value" not in result.render()
-    assert "<redacted>" in result.render()
+    assert json.dumps("secret-value") not in result.render()
 
 
 def test_setup_defaults_load_repo_env_port_and_token_without_leaking(tmp_path, monkeypatch):
@@ -610,18 +706,40 @@ def test_setup_defaults_load_repo_env_port_and_token_without_leaking(tmp_path, m
         options = parse_args(
             ["--workspace", str(tmp_path / "workspace")], repo=tmp_path
         )
-        cli = FakeCLI()
+        config_path = tmp_path / "state" / "openclaw.json"
+        config_path.parent.mkdir()
+        cli = FakeCLI(config_path=config_path)
         result = configure_openclaw(options, cli=cli)
 
         assert options.crm_api_url == "http://localhost:9123/api"
         token_calls = [
             call for call in cli.mutating_calls
-            if 'skills.entries["crm-db-operations"].env.OHI_API_TOKEN' in " ".join(call)
+            if TOKEN_CONFIG_PATH in call
         ]
         assert len(token_calls) == 1
-        assert json.loads(token_calls[0][-2]) == "secret-from-dotenv"
+        token_call = token_calls[0]
+        assert "secret-from-dotenv" not in token_call
+        assert json.dumps("secret-from-dotenv") not in token_call
+        assert token_call[-6:] == [
+            "--ref-provider",
+            "default",
+            "--ref-source",
+            "env",
+            "--ref-id",
+            "OHI_API_TOKEN",
+        ]
+        assert "--strict-json" not in token_call
+        assert "--json" not in token_call
+        dry_run_call = [*token_call, "--dry-run"]
+        assert dry_run_call in cli.calls
+        assert cli.calls.index(dry_run_call) < cli.calls.index(cli.mutating_calls[0])
+        assert cli.config_values[TOKEN_CONFIG_PATH] == {
+            "source": "env",
+            "provider": "default",
+            "id": "OHI_API_TOKEN",
+        }
         assert "secret-from-dotenv" not in result.render()
-        assert "<redacted>" in result.render()
+        assert json.dumps("secret-from-dotenv") not in result.render()
     finally:
         for key in ("CRM_API_URL", "PORT", "OHI_API_TOKEN", "AGENT_MODE"):
             os.environ.pop(key, None)
@@ -713,30 +831,36 @@ def test_setup_defaults_use_dotenv_crm_url_before_port(tmp_path, monkeypatch):
 def test_dotenv_token_is_redacted_from_dry_run_and_setup_error(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text("OHI_API_TOKEN=dotenv-secret\n")
     monkeypatch.delenv("OHI_API_TOKEN", raising=False)
+    monkeypatch.delenv("AGENT_ID", raising=False)
     try:
         options = parse_args(
             ["--workspace", str(tmp_path / "workspace")], repo=tmp_path
         )
         dry_run = configure_openclaw(
-            SetupOptions(**{**options.__dict__, "dry_run": True}), cli=FakeCLI()
+            SetupOptions(**{**options.__dict__, "dry_run": True}),
+            cli=FakeCLI(config_path=tmp_path / "dry-run" / "openclaw.json"),
         )
+        (tmp_path / "failed").mkdir()
         failed = configure_openclaw(
             options,
             cli=FakeCLI(
-                {("openclaw", "gateway", "restart"): CommandResult(1, "", "dotenv-secret")}
+                {("openclaw", "gateway", "restart"): CommandResult(1, "", "dotenv-secret")},
+                config_path=tmp_path / "failed" / "openclaw.json",
             ),
         )
 
         assert "dotenv-secret" not in dry_run.render()
         assert "dotenv-secret" not in failed.render()
-        assert "<redacted>" in dry_run.render()
         assert "<redacted>" in failed.render()
     finally:
         os.environ.pop("OHI_API_TOKEN", None)
 
 
-@pytest.mark.parametrize("token", ['quote"value', r"slash\\value", "line\nvalue\tend"])
-def test_output_redacts_raw_and_json_escaped_api_tokens(
+@pytest.mark.parametrize(
+    "token",
+    ['quote"value', r"slash\\value", "tab\tvalue", "space value", "hash#value"],
+)
+def test_setup_rejects_non_generated_token_characters_without_leaking(
     fake_cli, tmp_path, monkeypatch, token
 ):
     monkeypatch.setenv("OHI_API_TOKEN", token)
@@ -744,11 +868,665 @@ def test_output_redacts_raw_and_json_escaped_api_tokens(
     result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=fake_cli)
     rendered = result.render()
 
-    assert result.ok
+    assert not result.ok
+    assert fake_cli.mutating_calls == []
     assert token not in rendered
     assert json.dumps(token) not in rendered
     assert json.dumps(token)[1:-1] not in rendered
-    assert "<redacted>" in rendered
+    for call in fake_cli.calls:
+        for argument in call:
+            assert token not in argument
+            assert json.dumps(token) not in argument
+            assert json.dumps(token)[1:-1] not in argument
+
+
+def test_token_setup_requires_secretref_capability(tmp_path, monkeypatch):
+    monkeypatch.setenv("OHI_API_TOKEN", "must-not-leak")
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "set", "--help"): CommandResult(
+                0,
+                "Options:\n"
+                "  --strict-json VALUE\n"
+                "  --ref-provider NAME\n"
+                "  --ref-source SOURCE\n"
+                "  --ref-id ID",
+                "",
+            )
+        },
+        config_path=tmp_path / "openclaw.json",
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert "environment SecretRef" in result.render()
+    assert "must-not-leak" not in result.render()
+    assert json.dumps("must-not-leak") not in result.render()
+
+
+@pytest.mark.parametrize(
+    ("commands", "missing"),
+    [
+        (["get", "set", "unset", "validate"], "file"),
+        (["get", "set", "file", "validate"], "unset"),
+    ],
+)
+def test_token_setup_requires_config_file_and_unset_capabilities(
+    tmp_path, monkeypatch, commands, missing
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "must-not-leak")
+    help_text = "Commands:\n" + "".join(f"  {command}\n" for command in commands)
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "--help"): CommandResult(
+                0, help_text, ""
+            )
+        },
+        config_path=tmp_path / "openclaw.json",
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert missing in result.render()
+    assert "must-not-leak" not in result.render()
+
+
+def test_token_setup_requires_working_config_unset_help(tmp_path, monkeypatch):
+    monkeypatch.setenv("OHI_API_TOKEN", "must-not-leak")
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "unset", "--help"): CommandResult(
+                1, "", "unsupported"
+            )
+        },
+        config_path=tmp_path / "openclaw.json",
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert "config unset" in result.render()
+    assert "must-not-leak" not in result.render()
+
+
+def test_secretref_builder_validation_fails_before_any_mutation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "must-not-leak")
+    config_path = tmp_path / "state" / "openclaw.json"
+    validation = (
+        "openclaw",
+        "config",
+        "set",
+        TOKEN_CONFIG_PATH,
+        "--ref-provider",
+        "default",
+        "--ref-source",
+        "env",
+        "--ref-id",
+        "OHI_API_TOKEN",
+        "--dry-run",
+    )
+    cli = FakeCLI(
+        {validation: CommandResult(1, "", "unsupported SecretRef")},
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert not make_options(tmp_path).workspace.exists()
+    assert not config_path.parent.exists()
+    assert not Path(os.environ["OPENCLAW_STATE_DIR"]).exists()
+    assert "must-not-leak" not in result.render()
+
+
+def test_token_setup_writes_gateway_env_in_custom_state_dir_with_mode_0600(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    state_dir = tmp_path / "custom-state" / "nested"
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state_dir))
+    config_path = tmp_path / "config" / "openclaw.json"
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config_path))
+    config_path.parent.mkdir(parents=True)
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    env_path = state_dir / ".env"
+    assert result.ok, result.render()
+    assert env_path.read_text() == "OHI_API_TOKEN=gateway-secret\n"
+    assert env_path.stat().st_mode & 0o777 == 0o600
+    assert "gateway-secret" not in result.render()
+    assert not (config_path.parent / ".env").exists()
+
+
+def test_token_setup_defaults_gateway_env_under_openclaw_home(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    openclaw_home = tmp_path / "openclaw-home"
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+    config_path = tmp_path / "independent-config" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    env_path = openclaw_home / ".openclaw" / ".env"
+    assert result.ok, result.render()
+    assert env_path.read_text() == "OHI_API_TOKEN=gateway-secret\n"
+    assert not (config_path.parent / ".env").exists()
+
+
+@pytest.mark.parametrize("profile", ["default", "Default"])
+def test_default_profile_uses_default_state_dir(tmp_path, monkeypatch, profile):
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    openclaw_home = tmp_path / "openclaw-home"
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+    monkeypatch.setenv("OPENCLAW_PROFILE", profile)
+    config_path = tmp_path / "independent-config" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert (openclaw_home / ".openclaw" / ".env").read_text() == (
+        "OHI_API_TOKEN=gateway-secret\n"
+    )
+
+
+def test_token_setup_uses_named_profile_state_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    openclaw_home = tmp_path / "openclaw-home"
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+    monkeypatch.setenv("OPENCLAW_PROFILE", "team_beta")
+    config_path = tmp_path / "independent-config" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    env_path = openclaw_home / ".openclaw-team_beta" / ".env"
+    assert result.ok, result.render()
+    assert env_path.read_text() == "OHI_API_TOKEN=gateway-secret\n"
+    assert not (openclaw_home / ".openclaw" / ".env").exists()
+
+
+def test_explicit_state_dir_overrides_named_profile(tmp_path, monkeypatch):
+    state_dir = tmp_path / "explicit-state"
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state_dir))
+    openclaw_home = tmp_path / "openclaw-home"
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+    monkeypatch.setenv("OPENCLAW_PROFILE", "team_beta")
+    config_path = tmp_path / "independent-config" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert (state_dir / ".env").read_text() == "OHI_API_TOKEN=gateway-secret\n"
+    assert not (openclaw_home / ".openclaw-team_beta" / ".env").exists()
+
+
+@pytest.mark.parametrize("profile", ["../escape", "has space", "slash/name"])
+def test_unsafe_profile_fails_before_any_mutation(tmp_path, monkeypatch, profile):
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    openclaw_home = tmp_path / "openclaw-home"
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+    monkeypatch.setenv("OPENCLAW_PROFILE", profile)
+    cli = FakeCLI(config_path=tmp_path / "config" / "openclaw.json")
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert not openclaw_home.exists()
+    assert "OPENCLAW_PROFILE" in result.render()
+
+
+def test_gateway_env_is_provisioned_before_first_openclaw_mutation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "gateway-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+
+    class ProvisioningOrderCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            if mutate:
+                env_path = state_dir / ".env"
+                assert env_path.read_text() == "OHI_API_TOKEN=gateway-secret\n"
+                assert env_path.stat().st_mode & 0o777 == 0o600
+            return super().run(args, mutate=mutate)
+
+    cli = ProvisioningOrderCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+
+
+def test_late_read_only_validation_failure_does_not_create_gateway_env(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    approvals = (
+        "openclaw",
+        "approvals",
+        "get",
+        "--gateway",
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            approvals: CommandResult(
+                0,
+                json.dumps(gateway_approval_payload(entries=["/unexpected/tool"])),
+                "",
+            )
+        },
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "approval policy" in result.render()
+    assert not (state_dir / ".env").exists()
+    assert cli.mutating_calls == []
+
+
+def test_late_read_only_validation_failure_does_not_change_gateway_env(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    env_path = state_dir / ".env"
+    original = "OTHER=kept\nOHI_API_TOKEN=old-secret\n"
+    env_path.write_text(original)
+    env_path.chmod(0o640)
+    original_inode = env_path.stat().st_ino
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    approvals = (
+        "openclaw",
+        "approvals",
+        "get",
+        "--gateway",
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            approvals: CommandResult(
+                0,
+                json.dumps(gateway_approval_payload(entries=["/unexpected/tool"])),
+                "",
+            )
+        },
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert env_path.read_text() == original
+    assert env_path.stat().st_ino == original_inode
+    assert env_path.stat().st_mode & 0o777 == 0o640
+    assert cli.mutating_calls == []
+
+
+def test_token_env_upsert_preserves_other_lines_and_second_run_is_idempotent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    env_path = state_dir / ".env"
+    env_path.write_text(
+        'OTHER=value\nOHI_API_TOKEN="old-secret"\nTRAILING=kept\n'
+    )
+    env_path.chmod(0o644)
+    cli = FakeCLI(config_path=config_path)
+    options = make_options(tmp_path)
+
+    first = configure_openclaw(options, cli=cli)
+    first_inode = env_path.stat().st_ino
+    second = configure_openclaw(options, cli=cli)
+
+    assert first.ok, first.render()
+    assert second.ok, second.render()
+    assert env_path.read_text() == (
+        "OTHER=value\nOHI_API_TOKEN=new-secret\nTRAILING=kept\n"
+    )
+    assert env_path.stat().st_ino == first_inode
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_token_env_upsert_normalizes_supported_dotenv_assignment_spacing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    env_path = state_dir / ".env"
+    env_path.write_text(
+        "OTHER=value\n"
+        "  OHI_API_TOKEN = first-old\n"
+        "export OHI_API_TOKEN=second-old\n"
+        "\texport\tOHI_API_TOKEN \t= third-old\n"
+        "# OHI_API_TOKEN=commented\n"
+        "  # export OHI_API_TOKEN = also-commented\n"
+        "OHI_API_TOKEN invalid-without-equals\n"
+        "TRAILING=kept\n"
+    )
+    env_path.chmod(0o644)
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert env_path.read_text() == (
+        "OTHER=value\n"
+        "OHI_API_TOKEN=new-secret\n"
+        "# OHI_API_TOKEN=commented\n"
+        "  # export OHI_API_TOKEN = also-commented\n"
+        "OHI_API_TOKEN invalid-without-equals\n"
+        "TRAILING=kept\n"
+    )
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_unchanged_gateway_env_uses_descriptor_based_read_and_chmod(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "safe-token")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path)
+    options = make_options(tmp_path)
+    first = configure_openclaw(options, cli=cli)
+    assert first.ok, first.render()
+    env_path = state_dir / ".env"
+    path_operations = []
+    original_read_text = Path.read_text
+    original_chmod = Path.chmod
+
+    def track_read_text(path, *args, **kwargs):
+        if path == env_path:
+            path_operations.append("read_text")
+        return original_read_text(path, *args, **kwargs)
+
+    def track_chmod(path, *args, **kwargs):
+        if path == env_path:
+            path_operations.append("chmod")
+        return original_chmod(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", track_read_text)
+    monkeypatch.setattr(Path, "chmod", track_chmod)
+
+    second = configure_openclaw(options, cli=cli)
+
+    assert second.ok, second.render()
+    assert path_operations == []
+
+
+@pytest.mark.parametrize("token", ["abcXYZ0123", "abc._~+/=-", "a-b_c"])
+def test_gateway_env_accepts_generated_token_alphabet(
+    tmp_path, monkeypatch, token
+):
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert (state_dir / ".env").read_text() == f"OHI_API_TOKEN={token}\n"
+    assert token not in result.render()
+
+
+def test_token_setup_dry_run_does_not_write_gateway_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("OHI_API_TOKEN", "dry-run-secret")
+    config_path = tmp_path / "state" / "openclaw.json"
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.mutating_calls == []
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    assert not state_dir.exists()
+    assert str(state_dir / ".env") in result.render()
+    assert "0600" in result.render()
+
+
+def test_token_setup_refuses_gateway_env_symlink_before_mutation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "safe-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    outside = tmp_path / "outside.env"
+    outside.write_text("DO_NOT_TOUCH=yes\n")
+    (state_dir / ".env").symlink_to(outside)
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert outside.read_text() == "DO_NOT_TOUCH=yes\n"
+    assert "symlink" in result.render().lower()
+
+
+@pytest.mark.parametrize("token", ["line\nbreak", "carriage\rreturn"])
+def test_token_setup_rejects_unsafe_gateway_env_values_before_mutation(
+    tmp_path, monkeypatch, token
+):
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+    config_path = tmp_path / "state" / "openclaw.json"
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert not Path(os.environ["OPENCLAW_STATE_DIR"]).exists()
+    assert token not in result.render()
+
+
+def test_token_validator_rejects_nul_bytes():
+    validate_token = getattr(setup_openclaw, "_validate_api_token", None)
+
+    assert validate_token is not None
+    with pytest.raises(SetupConflict, match="dotenv-safe generated-token"):
+        validate_token("nul\x00byte")
+
+
+def test_setup_migrates_legacy_plaintext_token_after_secretref_readback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    cli = FakeCLI(config_path=config_path, legacy_token="old-secret")
+    options = make_options(tmp_path)
+
+    first = configure_openclaw(options, cli=cli)
+    second = configure_openclaw(options, cli=cli)
+
+    assert first.ok, first.render()
+    assert second.ok, second.render()
+    unset_calls = [
+        call
+        for call in cli.mutating_calls
+        if call[1:3] == ["config", "unset"]
+    ]
+    assert unset_calls == [["openclaw", "config", "unset", LEGACY_TOKEN_CONFIG_PATH]]
+    assert cli.legacy_token is None
+    assert cli.config_values[TOKEN_CONFIG_PATH] == {
+        "source": "env",
+        "provider": "default",
+        "id": "OHI_API_TOKEN",
+    }
+    for secret in ("old-secret", "new-secret"):
+        assert secret not in first.render()
+        assert secret not in second.render()
+        assert all(secret not in argument for call in cli.calls for argument in call)
+
+
+def test_clean_setup_inspects_existing_skill_entry_not_missing_env_path(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    missing_env = (
+        "openclaw",
+        "config",
+        "get",
+        LEGACY_TOKEN_ENV_PATH,
+        "--json",
+    )
+    cli = FakeCLI(
+        {missing_env: CommandResult(1, '{"error":"Config path not found"}', "")},
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert list(missing_env) not in cli.calls
+    assert [
+        "openclaw",
+        "config",
+        "get",
+        TOKEN_ENTRY_CONFIG_PATH,
+        "--json",
+    ] in cli.calls
+
+
+def test_legacy_token_inspection_failure_never_renders_the_old_secret(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    inspection = (
+        "openclaw",
+        "config",
+        "get",
+        TOKEN_ENTRY_CONFIG_PATH,
+        "--json",
+    )
+    cli = FakeCLI(
+        {inspection: CommandResult(1, "old-plaintext-secret", "")},
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "old-plaintext-secret" not in result.render()
+    assert "new-secret" not in result.render()
+
+
+def test_setup_rejects_inexact_secretref_readback_before_gateway_restart(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "safe-secret")
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    readback = (
+        "openclaw",
+        "config",
+        "get",
+        TOKEN_CONFIG_PATH,
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            readback: CommandResult(
+                0,
+                '{"source":"env","provider":"other","id":"OHI_API_TOKEN"}',
+                "",
+            )
+        },
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+    assert "SecretRef" in result.render()
+
+
+def test_setup_accepts_officially_redacted_secretref_id_readback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "safe-secret")
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    readback = (
+        "openclaw",
+        "config",
+        "get",
+        TOKEN_CONFIG_PATH,
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            readback: CommandResult(
+                0,
+                '{"source":"env","provider":"default",'
+                '"id":"__OPENCLAW_REDACTED__"}',
+                "",
+            )
+        },
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+
+
+def test_setup_success_requires_runtime_doctor_verification(fake_cli, tmp_path):
+    result = configure_openclaw(make_options(tmp_path), cli=fake_cli)
+
+    assert result.ok, result.render()
+    assert "configuration" in result.render().lower()
+    assert "scripts/doctor.py --live-agent --live-crm" in result.render()
 
 
 def test_failed_preflight_stops_before_sync_or_mutation(tmp_path):

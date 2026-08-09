@@ -99,8 +99,44 @@ CRM_API_URL=http://localhost:8080/api
 ```
 
 Set `AGENT_GATEWAY_TOKEN` only when the OpenClaw gateway requires it. Keep
-the token in `.env`, never in source control. The helper passes the CRM API URL
-and, when set, the private CRM API token to the skill configuration.
+tokens in `.env`, never in source control. The helper passes the CRM API URL to
+the skill configuration.
+
+### When CRM API authentication is enabled
+
+`OHI_API_TOKEN` protects the CRM API. The backend reads it from the project
+`.env`, and the dashboard uses the matching `VITE_API_TOKEN`. The OpenClaw
+agent needs the same API value, but the setup helper does not place that value
+in an OpenClaw command or configuration field.
+
+Instead, the helper:
+
+1. Stores `OHI_API_TOKEN` in OpenClaw's gateway `.env` file with permissions
+   set to `0600`, so only that local account can read or change it.
+2. Configures `skills.entries["crm-db-operations"].apiKey` as an environment
+   SecretRef whose ID is `OHI_API_TOKEN`.
+3. Uses the skill's `primaryEnv: OHI_API_TOKEN` metadata so OpenClaw supplies
+   the resolved value only while that skill runs.
+4. Removes the legacy plaintext
+   `skills.entries["crm-db-operations"].env.OHI_API_TOKEN` setting if a
+   previous setup stored the token directly in OpenClaw config.
+5. Restarts the OpenClaw gateway so the saved environment is loaded.
+
+The gateway file is `$OPENCLAW_STATE_DIR/.env` when `OPENCLAW_STATE_DIR` is
+set. Otherwise it is `~/.openclaw/.env`, or `~/.openclaw-PROFILE/.env` for a
+named `OPENCLAW_PROFILE`. `OPENCLAW_HOME` replaces `~` when configured. The
+helper refuses unsafe token characters, unsafe profile names, symbolic links,
+and non-file targets before it changes OpenClaw. If the gateway file already
+has multiple `OHI_API_TOKEN` lines, the helper normalizes them to one assignment.
+It completes the read-only agent, configuration, and approval checks before it
+writes that file, so a validation problem leaves the existing token untouched.
+If the installed CLI cannot create or read back the required SecretRef, setup
+stops and asks you to upgrade OpenClaw. It does not fall back to plaintext
+storage.
+
+These details follow OpenClaw's current official
+[skills configuration](https://docs.openclaw.ai/tools/skills-config) and
+[environment variable](https://docs.openclaw.ai/help/environment) guidance.
 
 The helper uses the following agent policy on purpose:
 
@@ -133,6 +169,10 @@ completion. `--live-crm` asks the selected agent for one audited, read-only
 `generate_dashboard_insights` capability call. The CRM check is successful
 only after the backend sees that new agent-tagged audit record. It does not
 trust the model's text alone.
+
+Run `bash scripts/serve.sh` first and leave it running. Setup output and unit
+tests are not runtime proof. The required proof is the second command above,
+with both `--live-agent` and `--live-crm`.
 
 Status meanings:
 
@@ -192,12 +232,68 @@ If the AI cannot extract a lead, draft a follow-up, or explain a score, the
 application may use a deterministic fallback. It is visibly labeled and must
 be reviewed. It is never represented as a verified local-AI response.
 
+## If Gmail or Calendar stops retrying
+
+Most temporary integration failures retry automatically. A job stops in an
+`exhausted` state after five claimed attempts have not completed delivery, so a
+broken provider cannot loop indefinitely. A recovered stale fifth claim may
+stop without another provider call because that claim already counted as an
+attempt. First list the stopped jobs:
+
+```bash
+export CRM_API_URL=http://localhost:8080/api
+curl "$CRM_API_URL/integrations/outbox?status=exhausted"
+```
+
+Find the job's `id` in that list. After correcting the problem shown in its
+sanitized `last_error`, replace `JOB_ID` below and requeue it:
+
+```bash
+curl -X POST "$CRM_API_URL/integrations/outbox/JOB_ID/retry"
+```
+
+If `OHI_API_TOKEN` is enabled, run these commands from the project folder to
+load your own `.env`, then include its token header:
+
+```bash
+bash -c '
+source scripts/load-env.sh
+load_repo_env .env
+CRM_API_URL="${CRM_API_URL:-http://localhost:8080/api}"
+curl -H "X-API-Token: $OHI_API_TOKEN" \
+  "$CRM_API_URL/integrations/outbox?status=exhausted"
+curl -X POST -H "X-API-Token: $OHI_API_TOKEN" \
+  "$CRM_API_URL/integrations/outbox/JOB_ID/retry"
+'
+```
+
+Keep `bash scripts/serve.sh` running so the worker can pick up the requeued job.
+A `403` means an agent tried to use this user-only retry, `404` means that job
+ID does not exist, and `409` means the job is not exhausted. When API
+authentication is enabled, a missing or incorrect `X-API-Token` returns `401`.
+
+Retries remember completed Calendar and Gmail steps, so an ordinary partial
+failure resumes at the unfinished step. Delivery is still at least once. A
+provider action can be repeated if the provider accepted it just before the
+CRM process stopped, but the CRM had not yet saved the local success
+checkpoint. Check the provider before manually retrying if that may have
+happened.
+
+Incoming Gmail replies use the exact Gmail message and CRM event as their
+checkpoint. Failed or deferred processing is tried again. Processing is skipped
+only after that exact event has a successful processing audit. Rewording only a
+score explanation does not create another proposal, while changed structured
+CRM fields can create a new proposal for review.
+
 ## Recovery
 
 - **404 / endpoint disabled:** rerun the endpoint-enable command and restart
   the gateway.
-- **401 / 403:** set the matching `AGENT_GATEWAY_TOKEN` in `.env`, then restart
-  the CRM.
+- **OpenClaw gateway 401 / 403:** set its matching token as
+  `AGENT_GATEWAY_TOKEN` in `.env`, then restart the CRM.
+- **CRM API 401:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in `.env`.
+  Include `X-API-Token` in direct API commands, rerun
+  `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
 - **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
   It checks the agent workspace, eligible skill, allowlist, and restart.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
@@ -207,20 +303,40 @@ be reviewed. It is never represented as a verified local-AI response.
 - **Voice failure:** run the direct transcription command above and verify the
   provider/model selected in OpenClaw.
 
-## Linux target acceptance record
+## Target hardware and live acceptance record
 
-These boxes are intentionally unchecked. Complete them after a real Linux
-OpenClaw run, rather than treating this documentation as a validation claim.
+These boxes are intentionally unchecked. Automated tests do not verify a Mac
+mini, model, OpenClaw gateway, provider account, or Discord account. Fill them
+in only after a person records a real run.
 
+- [ ] Operating system and version:
+- [ ] Hardware, including whether this is a Mac mini:
+- [ ] Memory: confirm at least 16 GB on a Mac mini.
 - [ ] OpenClaw version:
 - [ ] Model/provider:
-- [ ] Linux distribution/version:
-- [ ] Memory:
 - [ ] Date and operator:
-- [ ] `--live-agent --live-crm` reports CRM capability verified
-- [ ] Dashboard chat proposes a reviewed CRM write
-- [ ] Voice note reaches the review screen
-- [ ] Optional Discord binding, if used, reaches the same agent
+
+Verify the dashboard first, then Discord and external providers in this order:
+
+- [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
+- [ ] 2. Dashboard chat lists real CRM leads.
+- [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
+   approvals.
+- [ ] 4. Optional Discord binding lists the same real CRM leads through the
+   dedicated agent.
+- [ ] 5. Discord proposes a disposable write that appears in the same Pending
+   approvals.
+- [ ] 6. With live integrations enabled, approve one disposable booking and
+   verify one Google Calendar event.
+- [ ] 7. Approve one disposable lead with an email and verify one Calendar call
+   block plus one Gmail draft.
+
+Optional feature checks after the ordered acceptance run:
+
+- [ ] Voice note reaches the review screen.
+- [ ] Gmail account and result recorded:
+- [ ] Google Calendar account and result recorded:
+- [ ] Discord account and result recorded:
 
 For non-local access, bind the CRM to an exact private address, set matching
 `OHI_API_TOKEN` and `VITE_API_TOKEN`, and update `CORS_ORIGINS`. Do not expose

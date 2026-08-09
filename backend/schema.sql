@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS hook_outbox (
   delivery_mode TEXT NOT NULL DEFAULT 'simulated'
     CHECK (delivery_mode IN ('live','simulated')),
   status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending','processing','failed','delivered','cancelled')),
+    CHECK (status IN ('pending','processing','failed','delivered','cancelled','exhausted')),
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   claim_token TEXT,

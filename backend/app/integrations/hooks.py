@@ -47,6 +47,20 @@ def _signoff() -> str:
     return f"\n\nBest,\n{name}" if name else ""
 
 
+def _sanitized_error(exc: Exception) -> str:
+    message = str(exc) or type(exc).__name__
+    for env_name in (
+        "COMPOSIO_API_KEY",
+        "OHI_API_TOKEN",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_API_TOKEN",
+    ):
+        secret = os.environ.get(env_name)
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return message[:500]
+
+
 def _lead_details(lead: dict) -> str:
     budget = f"${lead['budget']:,}" if lead.get("budget") else "—"
     return (f"Phone: {lead.get('phone') or '—'}\n"
@@ -58,7 +72,11 @@ def _lead_details(lead: dict) -> str:
 
 
 def _create_event(
-    lead_id: int | None, args: dict, *, live: bool | None = None
+    lead_id: int | None,
+    args: dict,
+    *,
+    live: bool | None = None,
+    delivery_step: str | None = None,
 ) -> tuple[HookOutcome, str | None]:
     """Create a GCal event (or simulate) and report which one happened.
 
@@ -69,9 +87,12 @@ def _create_event(
     them once it expires). Each audit() below gets its own short-lived
     connection instead."""
     live = cc.is_live() if live is None else live
+    audit_input = dict(args)
+    if delivery_step:
+        audit_input["delivery_step"] = delivery_step
     if not live:
         with get_conn() as conn:
-            audit(conn, "user", "gcal_create_event (simulated)", args,
+            audit(conn, "user", "gcal_create_event (simulated)", audit_input,
                   {"simulated": True}, lead_id)
         return HookOutcome.SIMULATED, None
     try:
@@ -79,59 +100,124 @@ def _create_event(
         event_id = (data.get("response_data") or data).get("id")
     except cc.IntegrationError as e:
         with get_conn() as conn:
-            audit(conn, "user", "gcal_create_event (failed)", args,
-                  {"error": str(e)}, lead_id)
+            audit(conn, "user", "gcal_create_event (failed)", audit_input,
+                  {"error": _sanitized_error(e)}, lead_id)
         return HookOutcome.FAILED, None
     with get_conn() as conn:
-        audit(conn, "user", "gcal_create_event", args,
+        audit(conn, "user", "gcal_create_event", audit_input,
               {"event_id": event_id}, lead_id)
     return HookOutcome.LIVE_DELIVERED, event_id
 
 
-def _audit_hook_failure(tool: str, lead_id: int | None, exc: Exception) -> None:
+def _audit_hook_failure(
+    tool: str,
+    lead_id: int | None,
+    exc: Exception,
+    *,
+    delivery_key: str | None = None,
+) -> None:
     """Log hook failure without allowing an audit outage to break the caller."""
     try:
+        audit_input = {"delivery_key": delivery_key} if delivery_key else {}
         with get_conn() as conn:
-            audit(conn, "user", f"{tool} (failed)", {}, {"error": str(exc)}, lead_id)
+            audit(
+                conn,
+                "user",
+                f"{tool} (failed)",
+                audit_input,
+                {"error": _sanitized_error(exc)},
+                lead_id,
+            )
     except Exception:
         logging.exception("could not persist %s failure audit", tool)
 
 
-def _lead_call_event_was_created(lead_id: int) -> bool:
-    """Return whether the durable audit proves the live calendar step succeeded."""
+def _step_was_delivered(tool: str, lead_id: int, step_key: str | None) -> bool:
+    """Return whether audit history proves this exact delivery step succeeded."""
+    if not step_key:
+        return False
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT input FROM audit_log WHERE lead_id = ? "
+            "SELECT input FROM audit_log WHERE lead_id = ? AND tool = ? "
+            "ORDER BY id DESC",
+            (lead_id, tool),
+        ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["input"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict) and payload.get("delivery_step") == step_key:
+            return True
+    return False
+
+
+def _delivered_event_id(lead_id: int, step_key: str | None) -> str | None:
+    """Return the provider event ID saved for an exact Calendar delivery step."""
+    if not step_key:
+        return None
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input, output FROM audit_log WHERE lead_id = ? "
             "AND tool = 'gcal_create_event' ORDER BY id DESC",
             (lead_id,),
         ).fetchall()
     for row in rows:
         try:
-            summary = json.loads(row["input"]).get("summary")
-        except (json.JSONDecodeError, TypeError, AttributeError):
+            audit_input = json.loads(row["input"])
+            audit_output = json.loads(row["output"])
+        except (json.JSONDecodeError, TypeError):
             continue
-        if isinstance(summary, str) and summary.startswith(
-            _LEAD_CALL_SUMMARY_PREFIX
+        if not isinstance(audit_input, dict) or not isinstance(audit_output, dict):
+            continue
+        event_id = audit_output.get("event_id")
+        if (
+            audit_input.get("delivery_step") == step_key
+            and isinstance(event_id, str)
+            and event_id.strip()
         ):
-            return True
-    return False
+            return event_id
+    return None
 
 
 def _on_tour_booked_impl(
-    lead: dict, appt: dict, *, force_simulated: bool = False
+    lead: dict,
+    appt: dict,
+    *,
+    force_simulated: bool = False,
+    delivery_key: str | None = None,
 ) -> HookOutcome:
+    live = False if force_simulated else cc.is_live()
+    if live and appt.get("gcal_event_id"):
+        return HookOutcome.LIVE_DELIVERED
+    calendar_step = f"{delivery_key}:calendar" if delivery_key else None
+    recovered_event_id = (
+        _delivered_event_id(lead["id"], calendar_step) if live else None
+    )
+    if recovered_event_id:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE appointments SET gcal_event_id = ? WHERE id = ?",
+                (recovered_event_id, appt["id"]),
+            )
+        return HookOutcome.LIVE_DELIVERED
     start = datetime.fromisoformat(appt["start_ts"])
     end = datetime.fromisoformat(appt["end_ts"])
     minutes = max(int((end - start).total_seconds() // 60), 15)
-    outcome, event_id = _create_event(lead["id"], {
-        "calendar_id": "primary",
-        "summary": f"Home tour with {lead['name']}",
-        "description": _lead_details(lead),
-        "location": appt.get("location") or "",
-        "start_datetime": appt["start_ts"],
-        "event_duration_minutes": minutes,
-        "timezone": _tz(),
-    }, live=False if force_simulated else cc.is_live())
+    outcome, event_id = _create_event(
+        lead["id"],
+        {
+            "calendar_id": "primary",
+            "summary": f"Home tour with {lead['name']}",
+            "description": _lead_details(lead),
+            "location": appt.get("location") or "",
+            "start_datetime": appt["start_ts"],
+            "event_duration_minutes": minutes,
+            "timezone": _tz(),
+        },
+        live=live,
+        delivery_step=calendar_step,
+    )
     if outcome is HookOutcome.FAILED:
         return outcome
     if event_id:
@@ -142,37 +228,63 @@ def _on_tour_booked_impl(
 
 
 def on_tour_booked(
-    lead: dict, appt: dict, *, force_simulated: bool = False
+    lead: dict,
+    appt: dict,
+    *,
+    force_simulated: bool = False,
+    delivery_key: str | None = None,
 ) -> HookOutcome:
     """Book tour in GCal. Blanket guard ensures this never raises into the calling request."""
     try:
         return _on_tour_booked_impl(
-            lead, appt, force_simulated=force_simulated
+            lead,
+            appt,
+            force_simulated=force_simulated,
+            delivery_key=delivery_key,
         )
     except Exception as e:
-        _audit_hook_failure("gcal_create_event", lead.get("id"), e)
+        _audit_hook_failure(
+            "gcal_create_event",
+            lead.get("id"),
+            e,
+            delivery_key=delivery_key,
+        )
         return HookOutcome.FAILED
 
 
 def _on_lead_created_impl(
-    lead: dict, *, force_simulated: bool = False
+    lead: dict,
+    *,
+    force_simulated: bool = False,
+    delivery_key: str | None = None,
 ) -> HookOutcome:
     # local wall-clock in the event's timezone — naive now() on a UTC box would
     # schedule the call block ~7h off
     start = (datetime.now(ZoneInfo(_tz())) + timedelta(minutes=30)).replace(
         second=0, microsecond=0, tzinfo=None)
     live = False if force_simulated else cc.is_live()
-    if live and _lead_call_event_was_created(lead["id"]):
+    calendar_step = f"{delivery_key}:calendar" if delivery_key else None
+    gmail_step = f"{delivery_key}:gmail-draft" if delivery_key else None
+    if live and _step_was_delivered(
+        "gcal_create_event", lead["id"], calendar_step
+    ):
         event_outcome = HookOutcome.LIVE_DELIVERED
     else:
-        event_outcome, _event_id = _create_event(lead["id"], {
-            "calendar_id": "primary",
-            "summary": f"{_LEAD_CALL_SUMMARY_PREFIX}{lead['name']}",
-            "description": _lead_details(lead),
-            "start_datetime": start.isoformat(),
-            "event_duration_minutes": 30,
-            "timezone": _tz(),
-        }, live=live)
+        event_outcome, _event_id = _create_event(
+            lead["id"],
+            {
+                "calendar_id": "primary",
+                "summary": f"{_LEAD_CALL_SUMMARY_PREFIX}{lead['name']}",
+                "description": _lead_details(lead),
+                "start_datetime": start.isoformat(),
+                "event_duration_minutes": 30,
+                "timezone": _tz(),
+            },
+            live=live,
+            delivery_step=calendar_step,
+        )
+    if event_outcome is HookOutcome.FAILED:
+        return HookOutcome.FAILED
     if not lead.get("email"):
         return event_outcome
     first = lead["name"].split()[0]
@@ -184,20 +296,35 @@ def _on_lead_created_impl(
     args = {"recipient_email": lead["email"], "subject": subject, "body": body}
     # same rule as _create_event: run the Composio call with no get_conn() open.
     if not live:
+        audit_input = dict(args)
+        if gmail_step:
+            audit_input["delivery_step"] = gmail_step
         with get_conn() as conn:
-            audit(conn, "user", "gmail_create_draft (simulated)", args,
+            audit(conn, "user", "gmail_create_draft (simulated)", audit_input,
                   {"simulated": True}, lead["id"])
         return HookOutcome.SIMULATED
+    if _step_was_delivered("gmail_create_draft", lead["id"], gmail_step):
+        return HookOutcome.LIVE_DELIVERED
+    audit_input = dict(args)
+    if gmail_step:
+        audit_input["delivery_step"] = gmail_step
     try:
         data = cc.execute("GMAIL_CREATE_EMAIL_DRAFT", args)
         draft_id = (data.get("response_data") or data).get("id")
     except cc.IntegrationError as e:
         with get_conn() as conn:
-            audit(conn, "user", "gmail_create_draft (failed)", args,
-                  {"error": str(e)}, lead["id"])
+            audit(conn, "user", "gmail_create_draft (failed)", audit_input,
+                  {"error": _sanitized_error(e)}, lead["id"])
         return HookOutcome.FAILED
     with get_conn() as conn:
-        audit(conn, "user", "gmail_create_draft", args, {"id": draft_id}, lead["id"])
+        audit(
+            conn,
+            "user",
+            "gmail_create_draft",
+            audit_input,
+            {"id": draft_id},
+            lead["id"],
+        )
     return (
         HookOutcome.LIVE_DELIVERED
         if event_outcome is HookOutcome.LIVE_DELIVERED
@@ -206,31 +333,66 @@ def _on_lead_created_impl(
 
 
 def on_lead_created(
-    lead: dict, *, force_simulated: bool = False
+    lead: dict,
+    *,
+    force_simulated: bool = False,
+    delivery_key: str | None = None,
 ) -> HookOutcome:
     """Create call block + intro draft. Blanket guard ensures this never raises into the calling request."""
     try:
-        return _on_lead_created_impl(lead, force_simulated=force_simulated)
+        return _on_lead_created_impl(
+            lead,
+            force_simulated=force_simulated,
+            delivery_key=delivery_key,
+        )
     except Exception as e:
-        _audit_hook_failure("lead_created_hook", lead.get("id"), e)
+        _audit_hook_failure(
+            "lead_created_hook",
+            lead.get("id"),
+            e,
+            delivery_key=delivery_key,
+        )
         return HookOutcome.FAILED
 
 
 def _on_reminder_created_impl(
-    reminder: dict, *, force_simulated: bool = False
+    reminder: dict,
+    *,
+    force_simulated: bool = False,
+    delivery_key: str | None = None,
 ) -> HookOutcome:
+    live = False if force_simulated else cc.is_live()
+    if live and reminder.get("gcal_event_id"):
+        return HookOutcome.LIVE_DELIVERED
+    calendar_step = f"{delivery_key}:calendar" if delivery_key else None
+    recovered_event_id = (
+        _delivered_event_id(reminder["lead_id"], calendar_step) if live else None
+    )
+    if recovered_event_id:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE reminders SET gcal_event_id = ? WHERE id = ?",
+                (recovered_event_id, reminder["id"]),
+            )
+        return HookOutcome.LIVE_DELIVERED
     with get_conn() as conn:
         row = conn.execute("SELECT name FROM leads WHERE id = ?",
                            (reminder["lead_id"],)).fetchone()
     name = row["name"] if row else f"lead #{reminder['lead_id']}"
-    outcome, event_id = _create_event(reminder["lead_id"], {
-        "calendar_id": "primary",
-        "summary": f"Follow up: {name}" + (f" — {reminder['note']}" if reminder.get("note") else ""),
-        "description": "Scheduled by Open House Intelligence.",
-        "start_datetime": reminder["due_ts"],
-        "event_duration_minutes": 15,
-        "timezone": _tz(),
-    }, live=False if force_simulated else cc.is_live())
+    outcome, event_id = _create_event(
+        reminder["lead_id"],
+        {
+            "calendar_id": "primary",
+            "summary": f"Follow up: {name}"
+            + (f" — {reminder['note']}" if reminder.get("note") else ""),
+            "description": "Scheduled by Open House Intelligence.",
+            "start_datetime": reminder["due_ts"],
+            "event_duration_minutes": 15,
+            "timezone": _tz(),
+        },
+        live=live,
+        delivery_step=calendar_step,
+    )
     if outcome is HookOutcome.FAILED:
         return outcome
     if event_id:
@@ -241,13 +403,23 @@ def _on_reminder_created_impl(
 
 
 def on_reminder_created(
-    reminder: dict, *, force_simulated: bool = False
+    reminder: dict,
+    *,
+    force_simulated: bool = False,
+    delivery_key: str | None = None,
 ) -> HookOutcome:
     """Create follow-up reminder in GCal. Blanket guard ensures this never raises into the calling request."""
     try:
         return _on_reminder_created_impl(
-            reminder, force_simulated=force_simulated
+            reminder,
+            force_simulated=force_simulated,
+            delivery_key=delivery_key,
         )
     except Exception as e:
-        _audit_hook_failure("gcal_create_event", reminder.get("lead_id"), e)
+        _audit_hook_failure(
+            "gcal_create_event",
+            reminder.get("lead_id"),
+            e,
+            delivery_key=delivery_key,
+        )
         return HookOutcome.FAILED

@@ -3,6 +3,8 @@ fix round 1 — docs/CONTRACT.md §3 previously claimed this while three write
 endpoints silently skipped it). Pins the fix so it can't regress."""
 import json
 
+from app.db import get_conn
+
 
 AGENT = {"X-Actor": "agent"}
 
@@ -67,6 +69,54 @@ def test_advance_time_is_audited_even_without_neglect(client):
     row = _last_audit_row(client, "advance_time")
     assert row["actor"] == "user"
     assert json.loads(row["input"]) == {"days": 1}
+
+
+def test_agent_cannot_complete_reminder_or_advance_demo_time(client):
+    lead = _mk(client)
+    reminder = client.post("/api/reminders", json={
+        "lead_id": lead["id"],
+        "due_ts": "2026-08-20T09:00:00",
+        "note": "Call",
+    }).json()
+    audit_before = client.get("/api/audit?limit=50").json()
+
+    complete = client.patch(
+        f"/api/reminders/{reminder['id']}", headers=AGENT
+    )
+    advance = client.post(
+        "/api/demo/advance-time", json={"days": 1}, headers=AGENT
+    )
+
+    assert complete.status_code == 403
+    assert advance.status_code == 403
+    pending_reminders = client.get("/api/reminders").json()
+    assert any(row["id"] == reminder["id"] for row in pending_reminders)
+    assert client.get(f"/api/leads/{lead['id']}").json()["last_activity_at"] == lead[
+        "last_activity_at"
+    ]
+    assert client.get("/api/audit?limit=50").json() == audit_before
+
+
+def test_agent_can_run_neglect_check_without_advancing_time(client):
+    lead = _mk(client)
+    idle_since = "2026-07-01T09:00:00"
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE leads SET last_activity_at = ? WHERE id = ?",
+            (idle_since, lead["id"]),
+        )
+
+    response = client.post(
+        "/api/demo/advance-time", json={"days": 0}, headers=AGENT
+    )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["neglected"]] == [lead["id"]]
+    updated = client.get(f"/api/leads/{lead['id']}").json()
+    assert updated["last_activity_at"] == idle_since
+    assert updated["is_neglected"] == 1
+    row = _last_audit_row(client, "find_neglected_leads")
+    assert row["actor"] == "cron"
 
 
 def test_direct_note_booking_and_reminder_are_user_audited(client):

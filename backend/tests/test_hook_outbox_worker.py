@@ -91,7 +91,7 @@ def test_worker_drains_more_than_one_batch(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda _reminder: hooks.HookOutcome.LIVE_DELIVERED,
+        lambda _reminder, **_kwargs: hooks.HookOutcome.LIVE_DELIVERED,
     )
 
     hook_outbox.start_worker(batch_size=10, poll_seconds=30)
@@ -113,7 +113,7 @@ def test_worker_retries_failed_row_without_restart(client, monkeypatch):
     _seed_live_reminder_rows(client, 1)
     calls = []
 
-    def flaky(reminder):
+    def flaky(reminder, **_kwargs):
         calls.append(reminder)
         return (
             hooks.HookOutcome.FAILED
@@ -128,6 +128,36 @@ def test_worker_retries_failed_row_without_restart(client, monkeypatch):
     _wait_until(lambda: _outbox_rows()[0]["status"] == "delivered", timeout=3)
 
     assert worker.is_alive()
+    assert len(calls) == 2
+    assert _outbox_rows()[0]["attempts"] == 2
+    _stop_worker()
+
+
+def test_worker_propagates_max_attempts_and_stops_exhausted_row(
+    client, monkeypatch
+):
+    from app.integrations import hook_outbox, hooks
+
+    _stop_worker()
+    _configure_live(monkeypatch)
+    _seed_live_reminder_rows(client, 1)
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.FAILED,
+    )
+
+    hook_outbox.start_worker(
+        batch_size=10,
+        poll_seconds=0.01,
+        retry_base_seconds=0,
+        max_attempts=2,
+    )
+    _wait_until(lambda: _outbox_rows()[0]["status"] == "exhausted")
+    time.sleep(0.05)
+
     assert len(calls) == 2
     assert _outbox_rows()[0]["attempts"] == 2
     _stop_worker()
@@ -148,7 +178,7 @@ def test_worker_clamps_zero_retry_base_to_prevent_tight_full_batch_loop(
     release = threading.Event()
     calls = []
 
-    def always_fails(reminder):
+    def always_fails(reminder, **_kwargs):
         calls.append(reminder)
         if len(calls) == 1:
             first_call.set()
@@ -185,7 +215,7 @@ def test_one_failed_delivery_does_not_stop_the_rest_of_the_batch(
     _configure_live(monkeypatch)
     _seed_live_reminder_rows(client, 2)
 
-    def deliver_by_note(reminder):
+    def deliver_by_note(reminder, **_kwargs):
         return (
             hooks.HookOutcome.FAILED
             if reminder["note"] == "Follow up 0"
@@ -211,7 +241,8 @@ def test_approval_enqueue_wakes_sleeping_worker(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
     )
     hook_outbox.start_worker(batch_size=10, poll_seconds=30)
     time.sleep(0.05)
@@ -274,7 +305,7 @@ def test_restart_waits_for_inflight_shutdown_then_starts_fresh_worker(
     release = threading.Event()
     calls = []
 
-    def blocking_hook(reminder):
+    def blocking_hook(reminder, **_kwargs):
         calls.append(reminder)
         started.set()
         release.wait(timeout=3)
@@ -329,7 +360,7 @@ def test_worker_recovers_stale_processing_claim(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda _reminder: hooks.HookOutcome.LIVE_DELIVERED,
+        lambda _reminder, **_kwargs: hooks.HookOutcome.LIVE_DELIVERED,
     )
 
     hook_outbox.start_worker(
@@ -366,7 +397,8 @@ def test_live_intent_waits_for_integrations_then_delivers(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
     )
     hook_outbox.start_worker(
         poll_seconds=0.05, retry_base_seconds=1, stale_after_seconds=1
@@ -434,7 +466,7 @@ def test_live_outbox_rejects_simulated_hook_result(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda _reminder: hooks.HookOutcome.SIMULATED,
+        lambda _reminder, **_kwargs: hooks.HookOutcome.SIMULATED,
     )
 
     delivered = hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=1)
@@ -472,7 +504,9 @@ def test_lead_created_failure_uses_composite_audit_label(client, monkeypatch):
             ),
         ).lastrowid
     monkeypatch.setattr(
-        hooks, "on_lead_created", lambda _lead: hooks.HookOutcome.FAILED
+        hooks,
+        "on_lead_created",
+        lambda _lead, **_kwargs: hooks.HookOutcome.FAILED,
     )
 
     hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=1)
@@ -495,7 +529,9 @@ def test_outbox_failure_survives_failure_audit_error(
     _configure_live(monkeypatch)
     outbox_id = _seed_live_reminder_rows(client, 1)[0]
     monkeypatch.setattr(
-        hooks, "on_reminder_created", lambda _reminder: hooks.HookOutcome.FAILED
+        hooks,
+        "on_reminder_created",
+        lambda _reminder, **_kwargs: hooks.HookOutcome.FAILED,
     )
     monkeypatch.setattr(
         hook_outbox,

@@ -109,6 +109,181 @@ def test_reminder_hook_reports_integration_failure(client, monkeypatch):
     assert delivered is hooks.HookOutcome.FAILED
 
 
+def test_lead_calendar_failure_does_not_create_gmail_draft(client, monkeypatch):
+    from app.integrations import hooks
+    from app.integrations.composio_client import IntegrationError
+
+    lead = make_lead(client, email="buyer@example.com")
+    calls = []
+
+    def execute(slug, _args):
+        calls.append(slug)
+        raise IntegrationError("calendar unavailable")
+
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test")
+    monkeypatch.setattr(hooks.cc, "execute", execute)
+
+    outcome = hooks.on_lead_created(lead, delivery_key="pending-change:41")
+
+    assert outcome is hooks.HookOutcome.FAILED
+    assert calls == ["GOOGLECALENDAR_CREATE_EVENT"]
+
+
+def test_existing_appointment_event_id_skips_provider(client, monkeypatch):
+    from app.integrations import hooks
+
+    lead = make_lead(client)
+    appointment = {
+        "id": 91,
+        "lead_id": lead["id"],
+        "start_ts": "2026-08-20T10:00:00",
+        "end_ts": "2026-08-20T10:45:00",
+        "location": "Kirkland",
+        "gcal_event_id": "already-created",
+    }
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test")
+    monkeypatch.setattr(
+        hooks.cc,
+        "execute",
+        lambda *_: (_ for _ in ()).throw(AssertionError("provider replayed")),
+    )
+
+    assert hooks.on_tour_booked(
+        lead, appointment, delivery_key="pending-change:42"
+    ) is hooks.HookOutcome.LIVE_DELIVERED
+
+
+def test_existing_reminder_event_id_skips_provider(client, monkeypatch):
+    from app.integrations import hooks
+
+    lead = make_lead(client)
+    reminder = {
+        "id": 92,
+        "lead_id": lead["id"],
+        "due_ts": "2026-08-20T09:00:00",
+        "note": "Call",
+        "gcal_event_id": "already-created",
+    }
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test")
+    monkeypatch.setattr(
+        hooks.cc,
+        "execute",
+        lambda *_: (_ for _ in ()).throw(AssertionError("provider replayed")),
+    )
+
+    assert hooks.on_reminder_created(
+        reminder, delivery_key="pending-change:43"
+    ) is hooks.HookOutcome.LIVE_DELIVERED
+
+
+def test_appointment_retry_recovers_event_id_from_exact_step_audit(
+    client, monkeypatch
+):
+    from app.db import get_conn
+    from app.integrations import hooks
+
+    lead = make_lead(client)
+    appointment = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-08-20T17:00:00",
+            "end_ts": "2026-08-20T17:45:00",
+            "location": "Kirkland",
+        },
+    ).json()
+    with get_conn() as conn:
+        conn.execute(
+            "CREATE TRIGGER fail_appointment_gcal_update "
+            "BEFORE UPDATE OF gcal_event_id ON appointments "
+            "BEGIN SELECT RAISE(ABORT, 'forced persistence failure'); END"
+        )
+
+    calls = []
+
+    def execute(slug, args):
+        calls.append((slug, dict(args)))
+        return {"response_data": {"id": "appointment-event-once"}}
+
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test")
+    monkeypatch.setattr(hooks.cc, "execute", execute)
+    delivery_key = "pending-change:44"
+
+    assert hooks.on_tour_booked(
+        lead, appointment, delivery_key=delivery_key
+    ) is hooks.HookOutcome.FAILED
+    with get_conn() as conn:
+        conn.execute("DROP TRIGGER fail_appointment_gcal_update")
+
+    assert hooks.on_tour_booked(
+        lead, appointment, delivery_key=delivery_key
+    ) is hooks.HookOutcome.LIVE_DELIVERED
+
+    with get_conn() as conn:
+        stored_event_id = conn.execute(
+            "SELECT gcal_event_id FROM appointments WHERE id = ?",
+            (appointment["id"],),
+        ).fetchone()["gcal_event_id"]
+    assert stored_event_id == "appointment-event-once"
+    assert [slug for slug, _args in calls] == ["GOOGLECALENDAR_CREATE_EVENT"]
+    assert "delivery_step" not in calls[0][1]
+
+
+def test_reminder_retry_recovers_event_id_from_exact_step_audit(client, monkeypatch):
+    from app.db import get_conn
+    from app.integrations import hooks
+
+    lead = make_lead(client)
+    reminder = client.post(
+        "/api/reminders",
+        json={
+            "lead_id": lead["id"],
+            "due_ts": "2026-08-20T09:00:00",
+            "note": "Call",
+        },
+    ).json()
+    with get_conn() as conn:
+        conn.execute(
+            "CREATE TRIGGER fail_reminder_gcal_update "
+            "BEFORE UPDATE OF gcal_event_id ON reminders "
+            "BEGIN SELECT RAISE(ABORT, 'forced persistence failure'); END"
+        )
+
+    calls = []
+
+    def execute(slug, args):
+        calls.append((slug, dict(args)))
+        return {"response_data": {"id": "reminder-event-once"}}
+
+    monkeypatch.setenv("INTEGRATIONS_MODE", "live")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "test")
+    monkeypatch.setattr(hooks.cc, "execute", execute)
+    delivery_key = "pending-change:45"
+
+    assert hooks.on_reminder_created(
+        reminder, delivery_key=delivery_key
+    ) is hooks.HookOutcome.FAILED
+    with get_conn() as conn:
+        conn.execute("DROP TRIGGER fail_reminder_gcal_update")
+
+    assert hooks.on_reminder_created(
+        reminder, delivery_key=delivery_key
+    ) is hooks.HookOutcome.LIVE_DELIVERED
+
+    with get_conn() as conn:
+        stored_event_id = conn.execute(
+            "SELECT gcal_event_id FROM reminders WHERE id = ?",
+            (reminder["id"],),
+        ).fetchone()["gcal_event_id"]
+    assert stored_event_id == "reminder-event-once"
+    assert [slug for slug, _args in calls] == ["GOOGLECALENDAR_CREATE_EVENT"]
+    assert "delivery_step" not in calls[0][1]
+
+
 def test_hook_blanket_guard_non_integration_error(client, monkeypatch):
     """Verify hooks never raise even when _create_event raises non-IntegrationError."""
     def boom(*args, **kwargs):

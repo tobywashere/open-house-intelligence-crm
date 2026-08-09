@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -40,6 +41,19 @@ DESIRED_TOOLS = {
     "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
 }
 DESIRED_SANDBOX = {"mode": "off"}
+TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
+TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
+LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
+LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
+TOKEN_SECRETREF = {
+    "source": "env",
+    "provider": "default",
+    "id": "OHI_API_TOKEN",
+}
+TOKEN_SECRETREF_REDACTED = {
+    **TOKEN_SECRETREF,
+    "id": "__OPENCLAW_REDACTED__",
+}
 
 
 @dataclass(frozen=True)
@@ -108,6 +122,193 @@ def _redact_api_token(value: str) -> str:
     for form in sorted((item for item in forms if item), key=len, reverse=True):
         value = value.replace(form, "<redacted>")
     return value
+
+
+def _validate_api_token(token: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", token):
+        raise SetupConflict(
+            "OHI_API_TOKEN must use a nonempty dotenv-safe generated-token "
+            "alphabet: letters, digits, dot, underscore, tilde, plus, slash, "
+            "equals, and hyphen"
+        )
+
+
+def _token_secretref_argv(*, dry_run: bool) -> list[str]:
+    argv = [
+        "openclaw",
+        "config",
+        "set",
+        TOKEN_CONFIG_PATH,
+        "--ref-provider",
+        "default",
+        "--ref-source",
+        "env",
+        "--ref-id",
+        "OHI_API_TOKEN",
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+    return argv
+
+
+def _gateway_env_path() -> Path:
+    state_override = os.environ.get("OPENCLAW_STATE_DIR", "").strip()
+    if state_override:
+        state_dir = Path(state_override).expanduser()
+    else:
+        home_override = os.environ.get("OPENCLAW_HOME", "").strip()
+        openclaw_home = Path(home_override).expanduser() if home_override else Path.home()
+        profile = os.environ.get("OPENCLAW_PROFILE", "").strip()
+        if profile and not re.fullmatch(r"[A-Za-z0-9_-]+", profile):
+            raise SetupConflict(
+                "OPENCLAW_PROFILE must use only letters, numbers, underscore, or hyphen"
+            )
+        suffix = "" if not profile or profile.lower() == "default" else f"-{profile}"
+        state_dir = openclaw_home / f".openclaw{suffix}"
+    if not state_dir.is_absolute():
+        state_dir = state_dir.resolve(strict=False)
+    return state_dir / ".env"
+
+
+def _updated_gateway_env(contents: str, token: str) -> str:
+    assignment = f"OHI_API_TOKEN={token}"
+    output: list[str] = []
+    replaced = False
+    for line in contents.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        ending = line[len(body) :]
+        if re.fullmatch(
+            r"[ \t]*(?:export[ \t]+)?OHI_API_TOKEN[ \t]*=.*", body
+        ):
+            if not replaced:
+                output.append(assignment + (ending or "\n"))
+                replaced = True
+            continue
+        output.append(line)
+    if not replaced:
+        if contents and not contents.endswith(("\r", "\n")):
+            output.append("\n")
+        output.append(assignment + "\n")
+    return "".join(output)
+
+
+def _read_gateway_env_token(contents: str) -> str | None:
+    values = []
+    for line in contents.splitlines():
+        if not line.startswith("OHI_API_TOKEN="):
+            continue
+        value = line.split("=", 1)[1]
+        if not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", value):
+            raise SetupConflict(
+                "OpenClaw gateway environment contains an invalid OHI_API_TOKEN"
+            )
+        values.append(value)
+    if len(values) > 1:
+        raise SetupConflict(
+            "OpenClaw gateway environment contains duplicate OHI_API_TOKEN entries"
+        )
+    return values[0] if values else None
+
+
+def _read_gateway_env_no_follow(env_path: Path) -> str:
+    try:
+        path_stat = os.lstat(env_path)
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        raise SetupConflict(f"could not inspect OpenClaw gateway environment: {exc}") from exc
+    if stat.S_ISLNK(path_stat.st_mode):
+        raise SetupConflict(
+            f"OpenClaw gateway environment must not be a symlink: {env_path}"
+        )
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise SetupConflict(
+            f"OpenClaw gateway environment must be a regular file: {env_path}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(env_path, flags)
+    except OSError as exc:
+        if env_path.is_symlink():
+            raise SetupConflict(
+                f"OpenClaw gateway environment must not be a symlink: {env_path}"
+            ) from exc
+        raise SetupConflict(f"could not open OpenClaw gateway environment: {exc}") from exc
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise SetupConflict(
+                f"OpenClaw gateway environment must be a regular file: {env_path}"
+            )
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            return stream.read()
+    except UnicodeError as exc:
+        raise SetupConflict(
+            "OpenClaw gateway environment is not valid UTF-8"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _verify_gateway_env_no_follow(env_path: Path, token: str) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(env_path, flags)
+    except OSError as exc:
+        raise SetupConflict(
+            "could not open OpenClaw gateway environment for verification"
+        ) from exc
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise SetupConflict(
+                f"OpenClaw gateway environment must be a regular file: {env_path}"
+            )
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            persisted = stream.read()
+    except UnicodeError as exc:
+        raise SetupConflict(
+            "OpenClaw gateway environment is not valid UTF-8"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if _read_gateway_env_token(persisted) != token:
+        raise SetupConflict("OpenClaw gateway environment token verification failed")
+
+
+def _upsert_gateway_env(env_path: Path, token: str) -> None:
+    _validate_api_token(token)
+    _create_directory_chain(env_path.parent, "OpenClaw state directory")
+    existing = _read_gateway_env_no_follow(env_path)
+    updated = _updated_gateway_env(existing, token)
+    if updated != existing:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".openhouse-env-", dir=env_path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                descriptor = -1
+                stream.write(updated)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if env_path.is_symlink():
+                raise SetupConflict(
+                    f"OpenClaw gateway environment must not be a symlink: {env_path}"
+                )
+            os.replace(temporary, env_path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary.exists():
+                temporary.unlink()
+    _verify_gateway_env_no_follow(env_path, token)
 
 
 def _load_repo_env(repo: Path) -> None:
@@ -589,6 +790,15 @@ def _run_required(cli: OpenClawCLI, argv: list[str], label: str) -> CommandResul
     return result
 
 
+def _run_sensitive_required(
+    cli: OpenClawCLI, argv: list[str], label: str
+) -> CommandResult:
+    result = cli.run(argv)
+    if result.returncode != 0:
+        raise SetupConflict(f"{label} failed; sensitive output was suppressed")
+    return result
+
+
 def _require_help(
     cli: OpenClawCLI, argv: list[str], label: str, required: tuple[str, ...]
 ) -> None:
@@ -628,6 +838,19 @@ def _require_help(
 
 def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
     agents_commands = ("add", "list") + (("bind",) if options.bind_discord else ())
+    secretref_options = (
+        "--ref-provider",
+        "--ref-source",
+        "--ref-id",
+        "--dry-run",
+    )
+    config_set_options = ("--strict-json",)
+    token_enabled = bool(os.environ.get("OHI_API_TOKEN", ""))
+    if token_enabled:
+        config_set_options += secretref_options
+    config_commands = ("get", "set", "validate")
+    if token_enabled:
+        config_commands += ("file", "unset")
     checks = [
         (["openclaw", "agents", "--help"], "agents", agents_commands),
         (
@@ -645,13 +868,13 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
         (
             ["openclaw", "config", "--help"],
             "config",
-            ("get", "set", "validate"),
+            config_commands,
         ),
         (["openclaw", "config", "get", "--help"], "config get", ("--json",)),
         (
             ["openclaw", "config", "set", "--help"],
             "config set",
-            ("--strict-json",),
+            config_set_options,
         ),
         (
             ["openclaw", "config", "validate", "--help"],
@@ -700,8 +923,27 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
                 ("--agent", "--bind", "--json"),
             )
         )
+    if token_enabled:
+        checks.append(
+            (
+                ["openclaw", "config", "unset", "--help"],
+                "config unset",
+                (),
+            )
+        )
     for argv, label, required in checks:
-        _require_help(cli, argv, label, required)
+        try:
+            _require_help(cli, argv, label, required)
+        except SetupConflict as exc:
+            if token_enabled and label == "config set" and any(
+                option in str(exc) for option in secretref_options
+            ):
+                raise SetupConflict(
+                    "This OpenClaw version cannot configure an environment SecretRef "
+                    "for OHI_API_TOKEN. Upgrade OpenClaw or configure that SecretRef "
+                    "manually; setup will not store the token as plaintext."
+                ) from exc
+            raise
 
 
 def _detect_version(cli: OpenClawCLI) -> str:
@@ -806,15 +1048,8 @@ def _config_actions(options: SetupOptions, index: int) -> list[Action]:
     if token:
         actions.append(
             Action(
-                "Configure the CRM API token: <redacted>",
-                [
-                    "openclaw",
-                    "config",
-                    "set",
-                    'skills.entries["crm-db-operations"].env.OHI_API_TOKEN',
-                    json.dumps(token),
-                    "--strict-json",
-                ],
+                "Configure the CRM API token from environment SecretRef OHI_API_TOKEN",
+                _token_secretref_argv(dry_run=False),
             )
         )
     return actions
@@ -831,9 +1066,21 @@ def _run_action(cli: OpenClawCLI, action: Action) -> CommandResult:
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
     try:
+        token = os.environ.get("OHI_API_TOKEN", "")
+        gateway_env_path: Path | None = None
+        if token:
+            _validate_api_token(token)
         version = _detect_version(cli)
         messages.append(f"OpenClaw version: {version}")
         _preflight(cli, options)
+        if token:
+            _run_required(
+                cli,
+                _token_secretref_argv(dry_run=True),
+                "environment SecretRef validation",
+            )
+            _run_required(cli, ["openclaw", "config", "file"], "config file")
+            gateway_env_path = _gateway_env_path()
         listed = _run_required(
             cli, ["openclaw", "agents", "list", "--json"], "agents list --json"
         )
@@ -923,6 +1170,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
             planned.extend(_config_actions(options, index))
             messages.append("Dry run only. No files or OpenClaw configuration were changed.")
+            if gateway_env_path is not None:
+                messages.append(
+                    "Would securely store OHI_API_TOKEN at "
+                    f"{gateway_env_path} with file mode 0600."
+                )
             messages.extend(_render_action(action) for action in planned)
             if not options.bind_discord:
                 messages.append(
@@ -930,6 +1182,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     f"{options.agent_id} --bind discord:ACCOUNT --json"
                 )
             return SetupResult(True, messages)
+
+        if token and gateway_env_path is not None:
+            _upsert_gateway_env(gateway_env_path, token)
 
         repo = Path(__file__).resolve().parents[1]
         sync_skills(repo, options.workspace, dry_run=False)
@@ -981,6 +1236,68 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 detail = (result.stderr or result.stdout).strip()
                 raise SetupConflict(f"{action.description} failed: {detail}")
             messages.append(action.description)
+
+        if token:
+            token_readback = _run_required(
+                cli,
+                ["openclaw", "config", "get", TOKEN_CONFIG_PATH, "--json"],
+                "CRM API token SecretRef readback",
+            )
+            token_ref = _json(token_readback, "CRM API token SecretRef readback")
+            if token_ref not in (TOKEN_SECRETREF, TOKEN_SECRETREF_REDACTED):
+                raise SetupConflict(
+                    "OpenClaw did not persist the expected OHI_API_TOKEN SecretRef shape"
+                )
+
+            legacy_readback = _run_sensitive_required(
+                cli,
+                ["openclaw", "config", "get", TOKEN_ENTRY_CONFIG_PATH, "--json"],
+                "legacy CRM API token inspection",
+            )
+            skill_entry = _json(legacy_readback, "legacy CRM API token inspection")
+            if not isinstance(skill_entry, dict):
+                raise SetupConflict(
+                    "OpenClaw returned an unsupported CRM skill configuration shape"
+                )
+            legacy_env = skill_entry.get("env", {})
+            if not isinstance(legacy_env, dict):
+                raise SetupConflict(
+                    "OpenClaw returned an unsupported legacy skill environment shape"
+                )
+            if "OHI_API_TOKEN" in legacy_env:
+                unset = cli.run(
+                    ["openclaw", "config", "unset", LEGACY_TOKEN_CONFIG_PATH],
+                    mutate=True,
+                )
+                if unset.returncode != 0:
+                    raise SetupConflict(
+                        "Could not remove the legacy plaintext CRM API token setting"
+                    )
+                legacy_verify = _run_sensitive_required(
+                    cli,
+                    [
+                        "openclaw",
+                        "config",
+                        "get",
+                        TOKEN_ENTRY_CONFIG_PATH,
+                        "--json",
+                    ],
+                    "legacy CRM API token cleanup verification",
+                )
+                verified_entry = _json(
+                    legacy_verify, "legacy CRM API token cleanup verification"
+                )
+                if not isinstance(verified_entry, dict):
+                    raise SetupConflict(
+                        "OpenClaw returned an unsupported CRM skill configuration shape"
+                    )
+                verified_legacy_env = verified_entry.get("env", {})
+                if not isinstance(verified_legacy_env, dict) or (
+                    "OHI_API_TOKEN" in verified_legacy_env
+                ):
+                    raise SetupConflict(
+                        "OpenClaw did not remove the legacy plaintext CRM API token setting"
+                    )
 
         authoritative_tools = _run_required(
             cli,
@@ -1048,7 +1365,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         )
         if final_patterns != expected_patterns:
             raise SetupConflict(
-                "dedicated CRM agent executable allowlist is not exactly the two shipped entrypoints"
+                "dedicated CRM agent executable allowlist is not exactly the two "
+                "shipped entrypoints"
             )
 
         restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
@@ -1056,7 +1374,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             raise SetupConflict(
                 f"Gateway restart failed: {(restart.stderr or restart.stdout).strip()}"
             )
-        messages.append("Validated the restricted agent and restarted the OpenClaw Gateway.")
+        messages.append(
+            "Validated the restricted agent configuration and restarted the "
+            "OpenClaw Gateway. Runtime CRM verification is still required: "
+            "python scripts/doctor.py --live-agent --live-crm"
+        )
         if not options.bind_discord:
             messages.append(
                 "Optional Discord binding: openclaw agents bind --agent "

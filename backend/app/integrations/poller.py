@@ -3,6 +3,7 @@
 Reply idempotence: every logged reply embeds "[gmail:<message_id>]" in the
 event content; a message id seen once is never logged again."""
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -102,6 +103,52 @@ def _seen(msg_id: str) -> bool:
         return _seen_in_conn(conn, msg_id)
 
 
+def _reply_processing_succeeded(conn, lead_id: int, event_id: int) -> bool:
+    rows = conn.execute(
+        "SELECT input FROM audit_log "
+        "WHERE tool = 'score_lead' AND lead_id = ? ORDER BY id DESC",
+        (lead_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            inputs = json.loads(row["input"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(inputs, dict) and inputs.get("source_event_id") == event_id:
+            return True
+    return False
+
+
+def _sanitized_failure(exc: Exception) -> dict[str, str]:
+    error_type = type(exc).__name__
+    message = str(exc) or error_type
+    for env_name in (
+        "COMPOSIO_API_KEY",
+        "OHI_API_TOKEN",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_API_TOKEN",
+    ):
+        secret = os.environ.get(env_name)
+        if secret:
+            error_type = error_type.replace(secret, "[redacted]")
+            message = message.replace(secret, "[redacted]")
+    return {"error_type": error_type[:100], "message": message[:500]}
+
+
+def _audit_processing_failure(
+    lead_id: int, event_id: int, msg_id: str, exc: Exception
+) -> None:
+    with get_conn() as conn:
+        audit(
+            conn,
+            "cron",
+            "agent_processing_failed",
+            {"lead_id": lead_id, "event_id": event_id, "message_id": msg_id},
+            _sanitized_failure(exc),
+            lead_id,
+        )
+
+
 def _log_reply(lead: dict, msg_id: str, snippet: str) -> tuple[int, bool]:
     with get_conn() as conn:
         marker = f"%[gmail:{msg_id}]%"
@@ -113,7 +160,11 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> tuple[int, bool]:
         inserted = existing is None
         if existing:
             event_id = int(existing["id"])
+            already_processed = _reply_processing_succeeded(
+                conn, lead["id"], event_id
+            )
         else:
+            already_processed = False
             cur = conn.execute(
                 "INSERT INTO events (lead_id, type, content) VALUES (?,?,?)",
                 (lead["id"], "email",
@@ -127,6 +178,8 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> tuple[int, bool]:
                 "WHERE id = ?", (lead["id"],))
             audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
                   {"message_id": msg_id, "event_id": event_id}, lead["id"])
+    if already_processed:
+        return event_id, False
     try:
         # Use the precise Gmail event. Another note may arrive while agent
         # extraction is running, and retrying this message must reuse its key.
@@ -143,8 +196,10 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> tuple[int, bool]:
                     {"reason": "deterministic_fallback"},
                     lead["id"],
                 )
-    except Exception:
-        pass  # re-extraction is best-effort; the reply event is already logged
+        else:
+            _audit_processing_failure(lead["id"], event_id, msg_id, exc)
+    except Exception as exc:
+        _audit_processing_failure(lead["id"], event_id, msg_id, exc)
     return event_id, inserted
 
 
