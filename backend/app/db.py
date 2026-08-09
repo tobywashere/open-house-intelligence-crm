@@ -23,7 +23,7 @@ HOOK_OUTBOX_DDL = (
     " delivery_mode TEXT NOT NULL DEFAULT 'simulated' CHECK (delivery_mode IN"
     " ('live','simulated')),"
     " status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN"
-    " ('pending','processing','failed','delivered','cancelled')),"
+    " ('pending','processing','failed','delivered','cancelled','exhausted')),"
     " attempts INTEGER NOT NULL DEFAULT 0,"
     " last_error TEXT,"
     " claim_token TEXT,"
@@ -152,7 +152,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
     if "next_attempt_at" not in outbox_cols:
         conn.execute("ALTER TABLE hook_outbox ADD COLUMN next_attempt_at TEXT")
-    _migrate_hook_outbox_cancelled_status(conn)
+    _migrate_hook_outbox_terminal_statuses(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_hook_outbox_retry "
         "ON hook_outbox (status, next_attempt_at, claimed_at, id)"
@@ -172,30 +172,34 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN gcal_event_id TEXT")
 
 
-def _migrate_hook_outbox_cancelled_status(conn: sqlite3.Connection) -> None:
+def _migrate_hook_outbox_terminal_statuses(conn: sqlite3.Connection) -> None:
     """Widen the SQLite CHECK constraint without losing existing intents."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hook_outbox'"
     ).fetchone()
     sql = row["sql"] if row else ""
     compact = "".join((sql or "").lower().split())
-    if "check(statusin(" not in compact or "'cancelled'" in compact:
+    if all(status in compact for status in ("'cancelled'", "'exhausted'")):
         return
 
-    columns = (
-        "id, pending_change_id, idempotency_key, hook_type, object_id, lead_id, "
-        "delivery_mode, status, attempts, last_error, claim_token, claimed_at, "
-        "next_attempt_at, created_at, updated_at, delivered_at"
-    )
     conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_delivery")
     conn.execute("DROP INDEX IF EXISTS idx_hook_outbox_retry")
-    conn.execute("ALTER TABLE hook_outbox RENAME TO hook_outbox_before_cancelled")
+    conn.execute("ALTER TABLE hook_outbox RENAME TO hook_outbox_before_terminal")
     conn.execute(HOOK_OUTBOX_DDL)
+    old_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(hook_outbox_before_terminal)")
+    }
+    columns = ", ".join(
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(hook_outbox)")
+        if row["name"] in old_columns
+    )
     conn.execute(
         f"INSERT INTO hook_outbox ({columns}) SELECT {columns} "
-        "FROM hook_outbox_before_cancelled"
+        "FROM hook_outbox_before_terminal"
     )
-    conn.execute("DROP TABLE hook_outbox_before_cancelled")
+    conn.execute("DROP TABLE hook_outbox_before_terminal")
 
 
 # Every timestamp column in schema.sql (Task 7's one convention: naive local

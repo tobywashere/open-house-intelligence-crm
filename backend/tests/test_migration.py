@@ -119,7 +119,7 @@ def test_hook_outbox_schema_is_additive_and_idempotent(tmp_path, monkeypatch):
     assert legacy == ("simulated", None)
 
 
-def test_hook_outbox_status_migration_preserves_rows_and_allows_cancellation(
+def test_hook_outbox_status_migration_preserves_rows_and_allows_terminal_states(
     tmp_path, monkeypatch
 ):
     import app.db as db
@@ -163,6 +163,7 @@ def test_hook_outbox_status_migration_preserves_rows_and_allows_cancellation(
         "FROM hook_outbox WHERE id = 7"
     ).fetchone()
     conn.execute("UPDATE hook_outbox SET status = 'cancelled' WHERE id = 7")
+    conn.execute("UPDATE hook_outbox SET status = 'exhausted' WHERE id = 7")
     conn.commit()
     migrated = conn.execute(
         "SELECT status FROM hook_outbox WHERE id = 7"
@@ -170,7 +171,7 @@ def test_hook_outbox_status_migration_preserves_rows_and_allows_cancellation(
     conn.close()
 
     assert preserved == (7, 11, "failed", 3, "temporary failure")
-    assert migrated == "cancelled"
+    assert migrated == "exhausted"
 
 
 def test_pending_change_dedupe_key_migration_is_additive(tmp_path, monkeypatch):

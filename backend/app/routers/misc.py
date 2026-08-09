@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from dataclasses import asdict, replace
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -11,7 +12,7 @@ from ..agent.status import AgentProbe, record_crm_capability
 from ..approvals import is_agent_write, queue_pending_change
 from ..calendar_adapter import calendar
 from ..db import audit, get_conn, row_to_dict
-from ..integrations import hooks
+from ..integrations import hook_outbox, hooks
 from ..integrations import composio_client
 from .leads import fetch_lead
 from ..scoring import is_high_priority
@@ -19,6 +20,15 @@ from ..scoring import is_high_priority
 router = APIRouter(tags=["misc"])
 
 NEGLECT_AFTER_DAYS = 2
+
+OutboxStatus = Literal[
+    "pending",
+    "processing",
+    "failed",
+    "delivered",
+    "cancelled",
+    "exhausted",
+]
 
 
 class AdvanceTimeIn(BaseModel):
@@ -152,6 +162,23 @@ def audit_log(limit: int = Query(50, ge=1, le=500)):
             "SELECT a.*, l.name AS lead_name FROM audit_log a "
             "LEFT JOIN leads l ON l.id = a.lead_id "
             "ORDER BY a.id DESC LIMIT ?", (limit,))]
+
+
+@router.get("/integrations/outbox")
+def integration_outbox(status: OutboxStatus = "exhausted"):
+    return hook_outbox.list_hook_outbox(status)
+
+
+@router.post("/integrations/outbox/{outbox_id}/retry")
+def retry_integration_outbox(outbox_id: int, request: Request):
+    if is_agent_write(request):
+        raise HTTPException(403, "only a user can retry an exhausted integration")
+    try:
+        return hook_outbox.retry_exhausted(outbox_id)
+    except hook_outbox.HookOutboxNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except hook_outbox.HookRetryConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/metrics")

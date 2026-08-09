@@ -133,6 +133,36 @@ def test_worker_retries_failed_row_without_restart(client, monkeypatch):
     _stop_worker()
 
 
+def test_worker_propagates_max_attempts_and_stops_exhausted_row(
+    client, monkeypatch
+):
+    from app.integrations import hook_outbox, hooks
+
+    _stop_worker()
+    _configure_live(monkeypatch)
+    _seed_live_reminder_rows(client, 1)
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.FAILED,
+    )
+
+    hook_outbox.start_worker(
+        batch_size=10,
+        poll_seconds=0.01,
+        retry_base_seconds=0,
+        max_attempts=2,
+    )
+    _wait_until(lambda: _outbox_rows()[0]["status"] == "exhausted")
+    time.sleep(0.05)
+
+    assert len(calls) == 2
+    assert _outbox_rows()[0]["attempts"] == 2
+    _stop_worker()
+
+
 def test_worker_clamps_zero_retry_base_to_prevent_tight_full_batch_loop(
     client, monkeypatch
 ):

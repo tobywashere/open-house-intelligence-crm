@@ -180,6 +180,253 @@ def test_failed_hook_stays_retryable_and_retry_does_not_replay_approval(
     assert len(approval_audits) == 1
 
 
+def test_failed_hook_exhausts_on_fifth_attempt(client, monkeypatch):
+    from app.integrations import hook_outbox, hooks
+
+    _, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.FAILED,
+    )
+    outbox_id = _outbox_rows()[0]["id"]
+
+    for attempt in range(5):
+        assert hook_outbox.dispatch_hook(
+            outbox_id, retry_base_seconds=0
+        ) is False
+        row = _outbox_rows()[0]
+        assert row["attempts"] == attempt + 1
+        assert row["status"] == (
+            "exhausted" if attempt == 4 else "failed"
+        )
+
+    assert row["next_attempt_at"] is None
+    assert row["claim_token"] is None
+    assert row["claimed_at"] is None
+    assert hook_outbox.drain_hook_outbox(retry_base_seconds=0) == 0
+    assert hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0) is False
+    assert len(calls) == 5
+    assert _outbox_rows()[0]["attempts"] == 5
+
+
+def test_exhausted_hook_sanitizes_error_and_terminal_audit(
+    client, monkeypatch
+):
+    from app.integrations import hook_outbox, hooks
+
+    _, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    secret = "top-secret-provider-token"
+    monkeypatch.setenv("OHI_API_TOKEN", secret)
+
+    def fail_with_secret(_reminder, **_kwargs):
+        raise RuntimeError(f"provider rejected {secret}")
+
+    monkeypatch.setattr(hooks, "on_reminder_created", fail_with_secret)
+    outbox_id = _outbox_rows()[0]["id"]
+
+    for _ in range(5):
+        hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0)
+
+    exhausted = _outbox_rows()[0]
+    assert exhausted["status"] == "exhausted"
+    assert exhausted["last_error"] == "provider rejected [redacted]"
+    matching = [
+        row
+        for row in client.get(
+            "/api/audit?limit=100", headers={"X-API-Token": secret}
+        ).json()
+        if json.loads(row["input"]).get("outbox_id") == outbox_id
+    ]
+    terminal = matching[0]
+    output = json.loads(terminal["output"])
+    assert terminal["tool"] == "gcal_create_event (failed)"
+    assert output == {
+        "error": "provider rejected [redacted]",
+        "retryable": False,
+        "status": "exhausted",
+        "attempts": 5,
+    }
+    assert secret not in json.dumps(matching)
+
+
+def test_exhaustion_state_and_audit_are_atomic(
+    client, monkeypatch, caplog
+):
+    import logging
+
+    from app.db import get_conn
+    from app.integrations import hook_outbox, hooks
+
+    _, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    outbox_id = _outbox_rows()[0]["id"]
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE hook_outbox SET status = 'failed', attempts = 4 "
+            "WHERE id = ?",
+            (outbox_id,),
+        )
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda _reminder, **_kwargs: hooks.HookOutcome.FAILED,
+    )
+    monkeypatch.setattr(
+        hook_outbox,
+        "audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("audit database unavailable")
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        hook_outbox.dispatch_hook(outbox_id, retry_base_seconds=0)
+
+    row = _outbox_rows()[0]
+    assert row["status"] == "processing"
+    assert row["attempts"] == 5
+    assert row["claim_token"] is not None
+    assert "could not persist exhausted state" in caplog.text
+
+
+def test_stale_fifth_claim_exhausts_without_sixth_provider_attempt(
+    client, monkeypatch
+):
+    from app.db import get_conn
+    from app.integrations import hook_outbox, hooks
+
+    _, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    outbox_id = _outbox_rows()[0]["id"]
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE hook_outbox SET status = 'processing', attempts = 5, "
+            "claim_token = 'dead-worker', claimed_at = '2000-01-01T00:00:00' "
+            "WHERE id = ?",
+            (outbox_id,),
+        )
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
+    )
+
+    assert hook_outbox.dispatch_hook(
+        outbox_id, stale_after_seconds=1
+    ) is False
+
+    exhausted = _outbox_rows()[0]
+    assert exhausted["status"] == "exhausted"
+    assert exhausted["attempts"] == 5
+    assert exhausted["claim_token"] is None
+    assert calls == []
+
+
+def test_operator_can_list_and_retry_exhausted_hook(client, monkeypatch):
+    from app.db import get_conn
+    from app.integrations import hook_outbox
+
+    _, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    outbox_id = _outbox_rows()[0]["id"]
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE hook_outbox SET status = 'exhausted', attempts = 5, "
+            "last_error = 'provider unavailable', claim_token = NULL, "
+            "claimed_at = NULL, next_attempt_at = NULL WHERE id = ?",
+            (outbox_id,),
+        )
+
+    listed = client.get("/api/integrations/outbox?status=exhausted")
+
+    assert listed.status_code == 200, listed.text
+    assert [row["id"] for row in listed.json()] == [outbox_id]
+    assert set(listed.json()[0]) == {
+        "id",
+        "pending_change_id",
+        "hook_type",
+        "object_id",
+        "lead_id",
+        "delivery_mode",
+        "status",
+        "attempts",
+        "last_error",
+        "next_attempt_at",
+        "created_at",
+        "updated_at",
+        "delivered_at",
+    }
+
+    retried = client.post(f"/api/integrations/outbox/{outbox_id}/retry")
+
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["status"] == "pending"
+    assert retried.json()["attempts"] == 0
+    assert retried.json()["last_error"] is None
+    assert retried.json()["next_attempt_at"] is None
+    assert set(retried.json()) == set(listed.json()[0])
+    audits = client.get("/api/audit?limit=100").json()
+    retry_audit = next(
+        row for row in audits if row["tool"] == "retry_hook_delivery"
+    )
+    assert retry_audit["actor"] == "user"
+    assert json.loads(retry_audit["input"]) == {"outbox_id": outbox_id}
+    assert json.loads(retry_audit["output"]) == {
+        "status": "pending",
+        "attempts": 0,
+    }
+    assert hook_outbox.stop_worker(timeout=2)
+
+    agent_retry = client.post(
+        f"/api/integrations/outbox/{outbox_id}/retry",
+        headers=AGENT,
+    )
+    assert agent_retry.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "status", ["pending", "failed", "processing", "delivered", "cancelled"]
+)
+def test_only_exhausted_hook_can_be_retried(client, monkeypatch, status):
+    from app.db import get_conn
+
+    _, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    outbox_id = _outbox_rows()[0]["id"]
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE hook_outbox SET status = ? WHERE id = ?",
+            (status, outbox_id),
+        )
+
+    conflict = client.post(f"/api/integrations/outbox/{outbox_id}/retry")
+
+    assert conflict.status_code == 409
+    assert client.post("/api/integrations/outbox/999999/retry").status_code == 404
+
+
+def test_outbox_listing_rejects_unknown_status(client):
+    response = client.get("/api/integrations/outbox?status=unknown")
+
+    assert response.status_code == 422
+
+
+def test_agent_retry_is_rejected_before_outbox_lookup(client):
+    response = client.post(
+        "/api/integrations/outbox/999999/retry",
+        headers=AGENT,
+    )
+
+    assert response.status_code == 403
+
+
 def test_lead_created_retry_resumes_after_calendar_when_gmail_failed(
     client, monkeypatch
 ):
