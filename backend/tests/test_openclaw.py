@@ -292,6 +292,41 @@ def test_crm_check_requires_new_matching_audit(client, monkeypatch):
     assert body["agent_id"] == "openhouse-crm"
 
 
+def test_crm_check_moves_database_reads_off_event_loop(client, monkeypatch):
+    loop_threads = []
+    db_threads = []
+    real_latest = misc._latest_audit_id
+    real_inputs = misc._crm_probe_inputs_after
+
+    monkeypatch.setattr(
+        misc,
+        "_latest_audit_id",
+        lambda: db_threads.append(threading.get_ident()) or real_latest(),
+    )
+    monkeypatch.setattr(
+        misc,
+        "_crm_probe_inputs_after",
+        lambda before: db_threads.append(threading.get_ident())
+        or real_inputs(before),
+    )
+
+    class Driver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id, probe_nonce):
+            loop_threads.append(threading.get_ident())
+
+        async def probe(self):
+            return _capability_probe()
+
+    monkeypatch.setattr(misc, "get_driver", lambda: Driver())
+
+    assert client.post("/api/health/crm-check").status_code == 200
+    assert db_threads
+    assert loop_threads
+    assert all(thread_id != loop_threads[0] for thread_id in db_threads)
+
+
 def test_crm_check_keeps_newer_chat_failure_degraded(client, monkeypatch):
     class AuditedThenFailedDriver:
         name = "openclaw"
