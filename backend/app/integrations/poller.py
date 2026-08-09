@@ -127,6 +127,8 @@ def _log_reply(lead: dict, msg_id: str, snippet: str) -> tuple[int, bool]:
                 "WHERE id = ?", (lead["id"],))
             audit(conn, "cron", "gmail_reply_detected", {"lead_id": lead["id"]},
                   {"message_id": msg_id, "event_id": event_id}, lead["id"])
+    if not inserted:
+        return event_id, False
     try:
         # Use the precise Gmail event. Another note may arrive while agent
         # extraction is running, and retrying this message must reuse its key.

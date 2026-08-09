@@ -477,10 +477,47 @@ def test_reply_processing_uses_exact_inserted_or_existing_event_id(client, monke
     assert retry_event_id == first_event_id
     assert first_inserted is True
     assert retry_inserted is False
-    assert processed == [
-        (lead["id"], first_event_id),
-        (lead["id"], first_event_id),
-    ]
+    assert processed == [(lead["id"], first_event_id)]
+
+
+def test_changed_payload_for_same_event_can_be_proposed_after_denial(
+    client, monkeypatch
+):
+    lead = make_lead(client, area="Bellevue")
+    event = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "My preferred area changed."},
+    ).json()
+    areas = iter([" Redmond ", " Kirkland ", "Kirkland"])
+
+    class ChangingDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            return {"area": next(areas)}
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: ChangingDriver())
+
+    first = asyncio.run(
+        leads_router.process_lead(lead["id"], source_event_id=event["id"])
+    )
+    denied = client.post(
+        f"/api/pending-changes/{first['pending_change']['id']}/deny",
+        json={"reason": "incorrect extraction"},
+    )
+    assert denied.status_code == 200, denied.text
+
+    second = asyncio.run(
+        leads_router.process_lead(lead["id"], source_event_id=event["id"])
+    )
+    third = asyncio.run(
+        leads_router.process_lead(lead["id"], source_event_id=event["id"])
+    )
+
+    assert second["pending_change"]["id"] == third["pending_change"]["id"]
+    assert second["pending_change"]["id"] != first["pending_change"]["id"]
+    assert len(client.get("/api/pending-changes?status=denied").json()) == 1
+    pending = client.get("/api/pending-changes").json()
+    assert len(pending) == 1
+    assert pending[0]["payload"]["area"] == "Kirkland"
 
 
 def test_process_proposes_changes_to_every_populated_business_field(client, monkeypatch):
@@ -805,6 +842,10 @@ def test_concurrent_processing_deduplicates_same_source_proposal(client, monkeyp
         ]
 
     assert len(results) == 2
+    assert (
+        results[0]["pending_change"]["id"]
+        == results[1]["pending_change"]["id"]
+    )
     pending = client.get("/api/pending-changes").json()
     assert len(pending) == 1
     assert pending[0]["operation"] == "update_lead"

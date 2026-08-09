@@ -631,6 +631,11 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
     }
     response_lead = {**candidate, "score": score, "score_reason": reason}
 
+    serialized_proposal = json.dumps(
+        proposed_fields, sort_keys=True, separators=(",", ":"), default=str
+    ).encode()
+    proposal_digest = hashlib.sha256(serialized_proposal).hexdigest()
+
     with get_conn() as conn:
         audit(conn, "agent", "score_lead", {"lead_id": lead_id},
               {"score": score, "reason": reason, "pending": bool(proposed_fields)},
@@ -640,13 +645,12 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
         proposal = None
         if proposed_fields:
             if source_event:
-                dedupe_key = f"lead-process:{lead_id}:event:{source_event['id']}"
+                dedupe_key = (
+                    f"lead-process:{lead_id}:event:{source_event['id']}:"
+                    f"candidate:{proposal_digest}"
+                )
             else:
-                serialized_candidate = json.dumps(
-                    proposed_fields, sort_keys=True, default=str
-                ).encode()
-                digest = hashlib.sha256(serialized_candidate).hexdigest()
-                dedupe_key = f"lead-process:{lead_id}:candidate:{digest}"
+                dedupe_key = f"lead-process:{lead_id}:candidate:{proposal_digest}"
             proposal = insert_pending_change(
                 conn,
                 "update_lead",
