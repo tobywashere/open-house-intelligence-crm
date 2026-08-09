@@ -168,6 +168,9 @@ agent configuration and the same review-before-apply CRM rules.
   and that `AGENT_GATEWAY_URL` in `.env` is correct.
 - **Voice transcription failed:** run the exact command in
   [the local-AI guide](docs/LOCAL-AI.md#voice-notes).
+- **Gmail or Calendar stopped retrying:** failed jobs try five times, then stop
+  for review. Use the two beginner recovery commands in
+  [the local-AI guide](docs/LOCAL-AI.md#if-gmail-or-calendar-stops-retrying).
 - **No daily market summary:** this is an honest empty state, not an error the
   CRM should hide with made-up content.
 
