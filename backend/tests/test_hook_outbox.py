@@ -93,7 +93,8 @@ def test_startup_drains_hook_committed_before_dispatch(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
     )
     startup()
     _wait_until(lambda: _outbox_rows()[0]["status"] == "delivered")
@@ -116,7 +117,7 @@ def test_startup_recovery_does_not_block_application_startup(client, monkeypatch
     started = threading.Event()
     release = threading.Event()
 
-    def slow_hook(_reminder):
+    def slow_hook(_reminder, **_kwargs):
         started.set()
         release.wait(timeout=3)
         return hooks.HookOutcome.LIVE_DELIVERED
@@ -144,7 +145,7 @@ def test_failed_hook_stays_retryable_and_retry_does_not_replay_approval(
     monkeypatch.setenv("COMPOSIO_API_KEY", "test-key")
     calls = []
 
-    def flaky_hook(reminder):
+    def flaky_hook(reminder, **_kwargs):
         calls.append(reminder)
         return (
             hooks.HookOutcome.LIVE_DELIVERED
@@ -236,7 +237,7 @@ def test_concurrent_drains_claim_one_delivery(client, monkeypatch):
     calls = []
     errors = []
 
-    def blocking_hook(reminder):
+    def blocking_hook(reminder, **_kwargs):
         calls.append(reminder)
         started.set()
         release.wait(timeout=3)
@@ -282,7 +283,8 @@ def test_stale_processing_claim_is_recovered(client, monkeypatch):
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
     )
     hook_outbox.drain_hook_outbox()
 
@@ -302,7 +304,7 @@ def test_dispatch_does_not_report_delivery_after_claim_is_replaced(
     _, queued = _queue_reminder(client)
     _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
 
-    def replace_claim(_reminder):
+    def replace_claim(_reminder, **_kwargs):
         with get_conn() as conn:
             conn.execute(
                 "UPDATE hook_outbox SET claim_token = 'replacement-worker' "
@@ -331,7 +333,8 @@ def test_deleted_reminder_hook_is_cancelled_once_and_never_retried(
     monkeypatch.setattr(
         hooks,
         "on_reminder_created",
-        lambda reminder: calls.append(reminder) or hooks.HookOutcome.LIVE_DELIVERED,
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
     )
 
     deleted = client.delete(f"/api/leads/{lead['id']}")
@@ -391,7 +394,7 @@ def test_merged_appointment_hook_delivers_for_surviving_lead(client, monkeypatch
     monkeypatch.setattr(
         hooks,
         "on_tour_booked",
-        lambda lead, appointment: calls.append((lead, appointment))
+        lambda lead, appointment, **_kwargs: calls.append((lead, appointment))
         or hooks.HookOutcome.LIVE_DELIVERED,
     )
 
@@ -429,7 +432,8 @@ def test_merged_away_lead_created_hook_is_cancelled_not_retried(client, monkeypa
     monkeypatch.setattr(
         hooks,
         "on_lead_created",
-        lambda lead: calls.append(lead) or hooks.HookOutcome.LIVE_DELIVERED,
+        lambda lead, **_kwargs: calls.append(lead)
+        or hooks.HookOutcome.LIVE_DELIVERED,
     )
 
     outbox_id = _outbox_rows()[0]["id"]

@@ -199,7 +199,11 @@ def _invoke_hook(row: dict, args: tuple) -> None:
         "reminder_created": hooks.on_reminder_created,
     }[row["hook_type"]]
     if row["delivery_mode"] == "simulated":
-        outcome = hook(*args, force_simulated=True)
+        outcome = hook(
+            *args,
+            force_simulated=True,
+            delivery_key=row["idempotency_key"],
+        )
         if outcome is not hooks.HookOutcome.SIMULATED:
             raise HookDeliveryError(
                 f"simulated hook returned invalid outcome {outcome!r}"
@@ -211,7 +215,7 @@ def _invoke_hook(row: dict, args: tuple) -> None:
         )
     if not cc.is_live():
         raise HookDeliveryError("live integrations unavailable; delivery deferred")
-    outcome = hook(*args)
+    outcome = hook(*args, delivery_key=row["idempotency_key"])
     if outcome is hooks.HookOutcome.SIMULATED:
         raise HookDeliveryError("live hook returned simulated delivery")
     if outcome is hooks.HookOutcome.FAILED:
