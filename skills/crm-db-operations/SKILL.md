@@ -1,6 +1,7 @@
 ---
 name: crm-db-operations
 description: Read and write the Open House real-estate CRM lead database through an audited tool layer — create/update/merge/delete leads, pull lead context, list and score leads, draft follow-ups, check availability and book appointments, find neglected leads, generate dashboard insights, and search the operator's local market-intelligence knowledge base. Use for "add a lead", "who should I follow up with", "book a showing", "what do we know about X", "how's the pipeline looking", questions about market conditions/taxes/financing/neighborhoods, or any CRM lead/appointment question. Never write SQL directly.
+metadata: {"openclaw":{"primaryEnv":"OHI_API_TOKEN"}}
 ---
 
 # Open House CRM — lead database skill
