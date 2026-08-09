@@ -329,6 +329,59 @@ def test_stale_fifth_claim_exhausts_without_sixth_provider_attempt(
     assert calls == []
 
 
+def test_stale_fifth_claim_for_deleted_object_is_cancelled_not_exhausted(
+    client, monkeypatch
+):
+    from app.db import get_conn
+    from app.integrations import hook_outbox, hooks
+
+    lead, queued = _queue_reminder(client)
+    _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
+    outbox_id = _outbox_rows()[0]["id"]
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE hook_outbox SET status = 'processing', attempts = 5, "
+            "claim_token = 'dead-worker', claimed_at = '2000-01-01T00:00:00' "
+            "WHERE id = ?",
+            (outbox_id,),
+        )
+    calls = []
+    monkeypatch.setattr(
+        hooks,
+        "on_reminder_created",
+        lambda reminder, **_kwargs: calls.append(reminder)
+        or hooks.HookOutcome.LIVE_DELIVERED,
+    )
+    deleted = client.delete(f"/api/leads/{lead['id']}")
+    assert deleted.status_code == 200, deleted.text
+
+    assert hook_outbox.dispatch_hook(
+        outbox_id, stale_after_seconds=1
+    ) is False
+
+    cancelled = _outbox_rows()[0]
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["attempts"] == 5
+    assert cancelled["claim_token"] is None
+    assert cancelled["claimed_at"] is None
+    assert cancelled["next_attempt_at"] is None
+    assert "reminder no longer exists" in cancelled["last_error"]
+    assert calls == []
+    matching = [
+        row
+        for row in client.get("/api/audit?limit=100").json()
+        if json.loads(row["input"]).get("outbox_id") == outbox_id
+    ]
+    assert [row["tool"] for row in matching] == [
+        "gcal_create_event (cancelled)"
+    ]
+    output = json.loads(matching[0]["output"])
+    assert output["retryable"] is False
+    assert output["status"] == "cancelled"
+    assert "reminder no longer exists" in output["reason"]
+    assert matching[0]["lead_id"] is None
+
+
 def test_operator_can_list_and_retry_exhausted_hook(client, monkeypatch):
     from app.db import get_conn
     from app.integrations import hook_outbox

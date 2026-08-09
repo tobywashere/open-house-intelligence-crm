@@ -378,6 +378,23 @@ def _mark_exhausted(row: dict, exc: Exception) -> bool:
     return True
 
 
+def _stale_claim_at_limit(
+    outbox_id: int, stale_after_seconds: int, max_attempts: int
+) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM hook_outbox WHERE id = ? AND status = 'processing' "
+            "AND attempts >= ? AND (claimed_at IS NULL OR claimed_at <= "
+            "strftime('%Y-%m-%dT%H:%M:%S','now','localtime', ?))",
+            (
+                outbox_id,
+                max(int(max_attempts), 1),
+                _stale_modifier(stale_after_seconds),
+            ),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def _exhaust_stale_claim_at_limit(
     outbox_id: int, stale_after_seconds: int, max_attempts: int
 ) -> bool:
@@ -465,6 +482,34 @@ def dispatch_hook(
 ) -> bool:
     """Claim and attempt one row. Expected delivery failures never raise."""
     safe_max_attempts = max(int(max_attempts), 1)
+    try:
+        stale_final_claim = _stale_claim_at_limit(
+            outbox_id, stale_after_seconds, safe_max_attempts
+        )
+    except Exception:
+        logging.exception(
+            "could not inspect stale final claim for hook outbox row %s",
+            outbox_id,
+        )
+        return False
+    if stale_final_claim is not None:
+        try:
+            _load_hook_arguments(stale_final_claim)
+        except ObsoleteHookError as exc:
+            try:
+                _mark_cancelled(stale_final_claim, exc)
+            except Exception:
+                logging.exception(
+                    "could not persist cancelled state for hook outbox row %s",
+                    outbox_id,
+                )
+            return False
+        except Exception:
+            logging.exception(
+                "could not validate stale final claim for hook outbox row %s",
+                outbox_id,
+            )
+            return False
     try:
         if _exhaust_stale_claim_at_limit(
             outbox_id, stale_after_seconds, safe_max_attempts
