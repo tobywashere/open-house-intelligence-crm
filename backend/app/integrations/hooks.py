@@ -124,6 +124,34 @@ def _step_was_delivered(tool: str, lead_id: int, step_key: str | None) -> bool:
     return False
 
 
+def _delivered_event_id(lead_id: int, step_key: str | None) -> str | None:
+    """Return the provider event ID saved for an exact Calendar delivery step."""
+    if not step_key:
+        return None
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input, output FROM audit_log WHERE lead_id = ? "
+            "AND tool = 'gcal_create_event' ORDER BY id DESC",
+            (lead_id,),
+        ).fetchall()
+    for row in rows:
+        try:
+            audit_input = json.loads(row["input"])
+            audit_output = json.loads(row["output"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(audit_input, dict) or not isinstance(audit_output, dict):
+            continue
+        event_id = audit_output.get("event_id")
+        if (
+            audit_input.get("delivery_step") == step_key
+            and isinstance(event_id, str)
+            and event_id.strip()
+        ):
+            return event_id
+    return None
+
+
 def _on_tour_booked_impl(
     lead: dict,
     appt: dict,
@@ -133,6 +161,17 @@ def _on_tour_booked_impl(
 ) -> HookOutcome:
     live = False if force_simulated else cc.is_live()
     if live and appt.get("gcal_event_id"):
+        return HookOutcome.LIVE_DELIVERED
+    calendar_step = f"{delivery_key}:calendar" if delivery_key else None
+    recovered_event_id = (
+        _delivered_event_id(lead["id"], calendar_step) if live else None
+    )
+    if recovered_event_id:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE appointments SET gcal_event_id = ? WHERE id = ?",
+                (recovered_event_id, appt["id"]),
+            )
         return HookOutcome.LIVE_DELIVERED
     start = datetime.fromisoformat(appt["start_ts"])
     end = datetime.fromisoformat(appt["end_ts"])
@@ -149,7 +188,7 @@ def _on_tour_booked_impl(
             "timezone": _tz(),
         },
         live=live,
-        delivery_step=f"{delivery_key}:calendar" if delivery_key else None,
+        delivery_step=calendar_step,
     )
     if outcome is HookOutcome.FAILED:
         return outcome
@@ -287,6 +326,17 @@ def _on_reminder_created_impl(
     live = False if force_simulated else cc.is_live()
     if live and reminder.get("gcal_event_id"):
         return HookOutcome.LIVE_DELIVERED
+    calendar_step = f"{delivery_key}:calendar" if delivery_key else None
+    recovered_event_id = (
+        _delivered_event_id(reminder["lead_id"], calendar_step) if live else None
+    )
+    if recovered_event_id:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE reminders SET gcal_event_id = ? WHERE id = ?",
+                (recovered_event_id, reminder["id"]),
+            )
+        return HookOutcome.LIVE_DELIVERED
     with get_conn() as conn:
         row = conn.execute("SELECT name FROM leads WHERE id = ?",
                            (reminder["lead_id"],)).fetchone()
@@ -303,7 +353,7 @@ def _on_reminder_created_impl(
             "timezone": _tz(),
         },
         live=live,
-        delivery_step=f"{delivery_key}:calendar" if delivery_key else None,
+        delivery_step=calendar_step,
     )
     if outcome is HookOutcome.FAILED:
         return outcome
