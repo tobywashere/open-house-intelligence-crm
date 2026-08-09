@@ -103,6 +103,7 @@ class FakeCLI:
                 "Options:\n"
                 "  --workspace PATH\n  --non-interactive\n  --json\n"
                 "  --agent ID\n  --bind TARGET\n  --strict-json VALUE\n"
+                "  --ref-provider NAME\n  --ref-source SOURCE\n  --ref-id ID\n"
                 "  --gateway",
                 "",
             )
@@ -589,13 +590,26 @@ def test_dry_run_never_executes_mutating_commands(fake_cli, tmp_path):
     assert fake_cli.mutating_calls == []
 
 
-def test_output_redacts_api_token(fake_cli, tmp_path, monkeypatch):
+def test_setup_never_places_api_token_in_openclaw_argv_or_output(
+    fake_cli, tmp_path, monkeypatch
+):
     monkeypatch.setenv("OHI_API_TOKEN", "secret-value")
 
     result = configure_openclaw(make_options(tmp_path), cli=fake_cli)
 
+    assert result.ok, result.render()
+    assert all(
+        "secret-value" not in argument
+        for call in fake_cli.calls
+        for argument in call
+    )
+    assert all(
+        json.dumps("secret-value") not in argument
+        for call in fake_cli.calls
+        for argument in call
+    )
     assert "secret-value" not in result.render()
-    assert "<redacted>" in result.render()
+    assert json.dumps("secret-value") not in result.render()
 
 
 def test_setup_defaults_load_repo_env_port_and_token_without_leaking(tmp_path, monkeypatch):
@@ -619,9 +633,19 @@ def test_setup_defaults_load_repo_env_port_and_token_without_leaking(tmp_path, m
             if 'skills.entries["crm-db-operations"].env.OHI_API_TOKEN' in " ".join(call)
         ]
         assert len(token_calls) == 1
-        assert json.loads(token_calls[0][-2]) == "secret-from-dotenv"
+        token_call = token_calls[0]
+        assert "secret-from-dotenv" not in token_call
+        assert json.dumps("secret-from-dotenv") not in token_call
+        assert token_call[-6:] == [
+            "--ref-provider",
+            "default",
+            "--ref-source",
+            "env",
+            "--ref-id",
+            "OHI_API_TOKEN",
+        ]
         assert "secret-from-dotenv" not in result.render()
-        assert "<redacted>" in result.render()
+        assert json.dumps("secret-from-dotenv") not in result.render()
     finally:
         for key in ("CRM_API_URL", "PORT", "OHI_API_TOKEN", "AGENT_MODE"):
             os.environ.pop(key, None)
@@ -713,6 +737,7 @@ def test_setup_defaults_use_dotenv_crm_url_before_port(tmp_path, monkeypatch):
 def test_dotenv_token_is_redacted_from_dry_run_and_setup_error(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text("OHI_API_TOKEN=dotenv-secret\n")
     monkeypatch.delenv("OHI_API_TOKEN", raising=False)
+    monkeypatch.delenv("AGENT_ID", raising=False)
     try:
         options = parse_args(
             ["--workspace", str(tmp_path / "workspace")], repo=tmp_path
@@ -729,7 +754,6 @@ def test_dotenv_token_is_redacted_from_dry_run_and_setup_error(tmp_path, monkeyp
 
         assert "dotenv-secret" not in dry_run.render()
         assert "dotenv-secret" not in failed.render()
-        assert "<redacted>" in dry_run.render()
         assert "<redacted>" in failed.render()
     finally:
         os.environ.pop("OHI_API_TOKEN", None)
@@ -748,7 +772,30 @@ def test_output_redacts_raw_and_json_escaped_api_tokens(
     assert token not in rendered
     assert json.dumps(token) not in rendered
     assert json.dumps(token)[1:-1] not in rendered
-    assert "<redacted>" in rendered
+    for call in fake_cli.calls:
+        for argument in call:
+            assert token not in argument
+            assert json.dumps(token) not in argument
+            assert json.dumps(token)[1:-1] not in argument
+
+
+def test_token_setup_requires_secretref_capability(tmp_path, monkeypatch):
+    monkeypatch.setenv("OHI_API_TOKEN", "must-not-leak")
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "set", "--help"): CommandResult(
+                0, "Options:\n  --strict-json VALUE", ""
+            )
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls == []
+    assert "environment SecretRef" in result.render()
+    assert "must-not-leak" not in result.render()
+    assert json.dumps("must-not-leak") not in result.render()
 
 
 def test_failed_preflight_stops_before_sync_or_mutation(tmp_path):

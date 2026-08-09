@@ -628,6 +628,11 @@ def _require_help(
 
 def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
     agents_commands = ("add", "list") + (("bind",) if options.bind_discord else ())
+    secretref_options = ("--ref-provider", "--ref-source", "--ref-id")
+    config_set_options = ("--strict-json",)
+    token_enabled = bool(os.environ.get("OHI_API_TOKEN", ""))
+    if token_enabled:
+        config_set_options += secretref_options
     checks = [
         (["openclaw", "agents", "--help"], "agents", agents_commands),
         (
@@ -651,7 +656,7 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
         (
             ["openclaw", "config", "set", "--help"],
             "config set",
-            ("--strict-json",),
+            config_set_options,
         ),
         (
             ["openclaw", "config", "validate", "--help"],
@@ -701,7 +706,18 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
             )
         )
     for argv, label, required in checks:
-        _require_help(cli, argv, label, required)
+        try:
+            _require_help(cli, argv, label, required)
+        except SetupConflict as exc:
+            if token_enabled and label == "config set" and any(
+                option in str(exc) for option in secretref_options
+            ):
+                raise SetupConflict(
+                    "This OpenClaw version cannot configure an environment SecretRef "
+                    "for OHI_API_TOKEN. Upgrade OpenClaw or configure that SecretRef "
+                    "manually; setup will not store the token as plaintext."
+                ) from exc
+            raise
 
 
 def _detect_version(cli: OpenClawCLI) -> str:
@@ -806,14 +822,18 @@ def _config_actions(options: SetupOptions, index: int) -> list[Action]:
     if token:
         actions.append(
             Action(
-                "Configure the CRM API token: <redacted>",
+                "Configure the CRM API token from environment SecretRef OHI_API_TOKEN",
                 [
                     "openclaw",
                     "config",
                     "set",
                     'skills.entries["crm-db-operations"].env.OHI_API_TOKEN',
-                    json.dumps(token),
-                    "--strict-json",
+                    "--ref-provider",
+                    "default",
+                    "--ref-source",
+                    "env",
+                    "--ref-id",
+                    "OHI_API_TOKEN",
                 ],
             )
         )
