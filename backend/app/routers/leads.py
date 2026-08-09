@@ -211,6 +211,15 @@ def _changed_process_fields(lead: dict, extracted: dict) -> dict:
     return changes
 
 
+def _proposal_identity(proposed_fields: dict) -> dict:
+    """Stable write identity without nondeterministic explanatory prose."""
+    return {
+        key: value
+        for key, value in proposed_fields.items()
+        if key != "score_reason"
+    }
+
+
 def summarize_close_lead(lead_id: int, body: "CloseLeadIn") -> str:
     with get_conn() as conn:
         old = fetch_lead(conn, lead_id)
@@ -632,7 +641,10 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
     response_lead = {**candidate, "score": score, "score_reason": reason}
 
     with get_conn() as conn:
-        audit(conn, "agent", "score_lead", {"lead_id": lead_id},
+        score_inputs = {"lead_id": lead_id}
+        if source_event:
+            score_inputs["source_event_id"] = int(source_event["id"])
+        audit(conn, "agent", "score_lead", score_inputs,
               {"score": score, "reason": reason, "pending": bool(proposed_fields)},
               lead_id)
         audit(conn, "agent", "draft_followup", {"lead_id": lead_id},
@@ -644,23 +656,38 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
                     f"lead-process:{lead_id}:event:{source_event['id']}"
                 )
                 legacy_row = conn.execute(
-                    "SELECT payload FROM pending_changes WHERE dedupe_key = ?",
+                    "SELECT operation, lead_id, payload FROM pending_changes "
+                    "WHERE dedupe_key = ?",
                     (legacy_key,),
                 ).fetchone()
                 legacy_payload = None
                 if legacy_row:
+                    if (
+                        legacy_row["operation"] != "update_lead"
+                        or legacy_row["lead_id"] != lead_id
+                    ):
+                        raise RuntimeError(
+                            "pending change dedupe key conflicts with another proposal"
+                        )
                     try:
                         legacy_payload = json.loads(legacy_row["payload"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                    except (json.JSONDecodeError, TypeError) as exc:
+                        raise RuntimeError(
+                            "legacy pending change payload is not a valid JSON object"
+                        ) from exc
+                    if not isinstance(legacy_payload, dict):
+                        raise RuntimeError(
+                            "legacy pending change payload is not a valid JSON object"
+                        )
+                proposal_identity = _proposal_identity(proposed_fields)
                 if (
                     isinstance(legacy_payload, dict)
-                    and legacy_payload == proposed_fields
+                    and _proposal_identity(legacy_payload) == proposal_identity
                 ):
                     dedupe_key = legacy_key
                 else:
                     serialized_proposal = json.dumps(
-                        proposed_fields,
+                        proposal_identity,
                         sort_keys=True,
                         separators=(",", ":"),
                         default=str,

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import pytest
+from fastapi import HTTPException
 
 from .conftest import TEST_DB, make_lead
 from app.integrations import poller
@@ -457,7 +458,15 @@ class _ReviewableExtractionDriver:
         return "Hi Test, would you like to discuss Kirkland homes this week?"
 
 
-def _seed_legacy_event_proposal(lead_id, event_id, payload, status):
+def _seed_legacy_event_proposal(
+    lead_id,
+    event_id,
+    payload,
+    status,
+    *,
+    operation="update_lead",
+    row_lead_id=None,
+):
     legacy_key = f"lead-process:{lead_id}:event:{event_id}"
     # Deliberately use indented, insertion-order JSON. Upgrade compatibility
     # must compare parsed values rather than the historical row's raw bytes.
@@ -468,8 +477,8 @@ def _seed_legacy_event_proposal(lead_id, event_id, payload, status):
             "(operation, lead_id, payload, summary, dedupe_key, status) "
             "VALUES (?,?,?,?,?,?)",
             (
-                "update_lead",
-                lead_id,
+                operation,
+                lead_id if row_lead_id is None else row_lead_id,
                 serialized,
                 "Legacy source-event proposal",
                 legacy_key,
@@ -482,10 +491,15 @@ def _seed_legacy_event_proposal(lead_id, event_id, payload, status):
 def test_reply_processing_uses_exact_inserted_or_existing_event_id(client, monkeypatch):
     lead = make_lead(client)
     processed = []
+    real_process = leads_router.process_lead
+
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: _ReviewableExtractionDriver()
+    )
 
     async def capture_process(lead_id, source_event_id=None):
         processed.append((lead_id, source_event_id))
-        return {}
+        return await real_process(lead_id, source_event_id=source_event_id)
 
     monkeypatch.setattr(leads_router, "process_lead", capture_process)
 
@@ -501,6 +515,107 @@ def test_reply_processing_uses_exact_inserted_or_existing_event_id(client, monke
     assert first_inserted is True
     assert retry_inserted is False
     assert processed == [(lead["id"], first_event_id)]
+    score_audits = [
+        row for row in client.get("/api/audit?limit=50").json()
+        if row["tool"] == "score_lead"
+    ]
+    assert json.loads(score_audits[0]["input"])["source_event_id"] == first_event_id
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type"),
+    [
+        (RuntimeError("gateway failed with audit-secret"), "RuntimeError"),
+        (HTTPException(503, "gateway failed with audit-secret"), "HTTPException"),
+    ],
+    ids=["generic", "non-409-http"],
+)
+def test_failed_reply_processing_retries_until_success(
+    client, monkeypatch, failure, error_type
+):
+    lead = make_lead(client)
+    real_process = leads_router.process_lead
+    processed = []
+    monkeypatch.setenv("OHI_API_TOKEN", "audit-secret")
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: _ReviewableExtractionDriver()
+    )
+
+    async def flaky_process(lead_id, source_event_id=None):
+        processed.append((lead_id, source_event_id))
+        if len(processed) == 1:
+            raise failure
+        return await real_process(lead_id, source_event_id=source_event_id)
+
+    monkeypatch.setattr(leads_router, "process_lead", flaky_process)
+
+    first_event_id, first_inserted = poller._log_reply(
+        lead, f"retry-{error_type}", "Please retry processing"
+    )
+    second_event_id, second_inserted = poller._log_reply(
+        lead, f"retry-{error_type}", "Please retry processing"
+    )
+    third_event_id, third_inserted = poller._log_reply(
+        lead, f"retry-{error_type}", "Please retry processing"
+    )
+
+    assert (first_event_id, second_event_id, third_event_id) == (
+        first_event_id,
+        first_event_id,
+        first_event_id,
+    )
+    assert (first_inserted, second_inserted, third_inserted) == (True, False, False)
+    assert processed == [
+        (lead["id"], first_event_id),
+        (lead["id"], first_event_id),
+    ]
+    monkeypatch.delenv("OHI_API_TOKEN")
+    failures = [
+        row for row in client.get("/api/audit?limit=50").json()
+        if row["tool"] == "agent_processing_failed"
+    ]
+    assert len(failures) == 1
+    failure_input = json.loads(failures[0]["input"])
+    failure_result = json.loads(failures[0]["output"])
+    assert failure_input == {
+        "lead_id": lead["id"],
+        "event_id": first_event_id,
+        "message_id": f"retry-{error_type}",
+    }
+    assert failure_result["error_type"] == error_type
+    assert "[redacted]" in failure_result["message"]
+    assert "audit-secret" not in json.dumps(failures[0])
+
+
+def test_deferred_reply_processing_retries_until_success(client, monkeypatch):
+    lead = make_lead(client)
+    real_process = leads_router.process_lead
+    processed = []
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: _ReviewableExtractionDriver()
+    )
+
+    async def deferred_once(lead_id, source_event_id=None):
+        processed.append((lead_id, source_event_id))
+        if len(processed) == 1:
+            raise HTTPException(409, "deterministic fallback")
+        return await real_process(lead_id, source_event_id=source_event_id)
+
+    monkeypatch.setattr(leads_router, "process_lead", deferred_once)
+
+    first_event_id, _ = poller._log_reply(
+        lead, "retry-deferred", "Please retry processing"
+    )
+    poller._log_reply(lead, "retry-deferred", "Please retry processing")
+    poller._log_reply(lead, "retry-deferred", "Please retry processing")
+
+    assert processed == [
+        (lead["id"], first_event_id),
+        (lead["id"], first_event_id),
+    ]
+    tools = [row["tool"] for row in client.get("/api/audit?limit=50").json()]
+    assert tools.count("agent_processing_deferred") == 1
+    assert "agent_processing_failed" not in tools
 
 
 def test_changed_payload_for_same_event_can_be_proposed_after_denial(
@@ -541,6 +656,47 @@ def test_changed_payload_for_same_event_can_be_proposed_after_denial(
     pending = client.get("/api/pending-changes").json()
     assert len(pending) == 1
     assert pending[0]["payload"]["area"] == "Kirkland"
+
+
+def test_rephrased_score_reason_reuses_source_event_proposal_after_denial(
+    client, monkeypatch
+):
+    lead = make_lead(client, area="Bellevue")
+    event = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "I prefer Redmond."},
+    ).json()
+    first_reason = "The lead has a strong timeline and confirmed budget."
+    second_reason = "Confirmed budget and timing make this lead strong."
+    reasons = iter([first_reason, second_reason])
+
+    class RephrasingDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            return {"area": "Redmond"}
+
+        async def explain_score(self, lead, score):
+            return next(reasons)
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: RephrasingDriver())
+
+    first = asyncio.run(
+        leads_router.process_lead(lead["id"], source_event_id=event["id"])
+    )
+    denied = client.post(
+        f"/api/pending-changes/{first['pending_change']['id']}/deny",
+        json={"reason": "reviewed"},
+    )
+    assert denied.status_code == 200, denied.text
+    second = asyncio.run(
+        leads_router.process_lead(lead["id"], source_event_id=event["id"])
+    )
+
+    assert second["pending_change"]["id"] == first["pending_change"]["id"]
+    assert second["pending_change"]["status"] == "denied"
+    assert client.get("/api/pending-changes").json() == []
+    denied_rows = client.get("/api/pending-changes?status=denied").json()
+    assert len(denied_rows) == 1
+    assert denied_rows[0]["payload"]["score_reason"] == first_reason
 
 
 @pytest.mark.parametrize("legacy_status", ["pending", "denied"])
@@ -623,6 +779,81 @@ def test_changed_payload_bypasses_denied_legacy_source_event_proposal(
     assert json.loads(rows[1][1])["area"] == "Kirkland"
     assert rows[1][2].startswith(f"{legacy_key}:candidate:")
     assert rows[1][3] == "pending"
+
+
+@pytest.mark.parametrize(
+    ("operation", "use_other_lead"),
+    [("add_event", False), ("update_lead", True)],
+    ids=["wrong-operation", "wrong-lead"],
+)
+def test_legacy_source_event_key_conflict_fails_closed(
+    client, monkeypatch, operation, use_other_lead
+):
+    lead = make_lead(client, email="primary@example.com")
+    other = make_lead(client, email="other@example.com")
+    event = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "I prefer Redmond."},
+    ).json()
+    legacy_payload = {
+        "score_reason": "Derived score 69 from the proposed details.",
+        "area": "Kirkland",
+        "score": 69,
+    }
+    _seed_legacy_event_proposal(
+        lead["id"],
+        event["id"],
+        legacy_payload,
+        "pending",
+        operation=operation,
+        row_lead_id=other["id"] if use_other_lead else lead["id"],
+    )
+
+    class SameProposalDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            return {"area": "Redmond"}
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: SameProposalDriver())
+
+    with pytest.raises(
+        RuntimeError,
+        match="pending change dedupe key conflicts with another proposal",
+    ):
+        asyncio.run(
+            leads_router.process_lead(lead["id"], source_event_id=event["id"])
+        )
+
+
+def test_malformed_legacy_source_event_payload_fails_closed(client, monkeypatch):
+    lead = make_lead(client)
+    event = client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "email", "content": "I prefer Redmond."},
+    ).json()
+    legacy_key = f"lead-process:{lead['id']}:event:{event['id']}"
+    with sqlite3.connect(TEST_DB) as conn:
+        conn.execute(
+            "INSERT INTO pending_changes "
+            "(operation, lead_id, payload, summary, dedupe_key) VALUES (?,?,?,?,?)",
+            (
+                "update_lead",
+                lead["id"],
+                "{not-valid-json",
+                "Corrupt legacy proposal",
+                legacy_key,
+            ),
+        )
+
+    class SameProposalDriver(_ReviewableExtractionDriver):
+        async def extract(self, raw_text):
+            return {"area": "Redmond"}
+
+    monkeypatch.setattr(leads_router, "get_driver", lambda: SameProposalDriver())
+
+    with pytest.raises(RuntimeError, match="legacy pending change payload"):
+        asyncio.run(
+            leads_router.process_lead(lead["id"], source_event_id=event["id"])
+        )
 
 
 def test_no_source_processing_preserves_existing_candidate_key(client, monkeypatch):
