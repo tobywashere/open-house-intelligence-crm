@@ -125,10 +125,12 @@ Instead, the helper:
 The gateway file is `$OPENCLAW_STATE_DIR/.env` when `OPENCLAW_STATE_DIR` is
 set. Otherwise it is `~/.openclaw/.env`, or `~/.openclaw-PROFILE/.env` for a
 named `OPENCLAW_PROFILE`. `OPENCLAW_HOME` replaces `~` when configured. The
-helper refuses unsafe token characters, unsafe profile names, duplicate token
-lines, symbolic links, and non-file targets before it changes OpenClaw. If the
-installed CLI cannot create or read back the required SecretRef, setup stops
-and asks you to upgrade OpenClaw. It does not fall back to plaintext storage.
+helper refuses unsafe token characters, unsafe profile names, symbolic links,
+and non-file targets before it changes OpenClaw. If the gateway file already
+has multiple `OHI_API_TOKEN` lines, the helper normalizes them to one assignment.
+If the installed CLI cannot create or read back the required SecretRef, setup
+stops and asks you to upgrade OpenClaw. It does not fall back to plaintext
+storage.
 
 These details follow OpenClaw's current official
 [skills configuration](https://docs.openclaw.ai/tools/skills-config) and
@@ -230,9 +232,11 @@ be reviewed. It is never represented as a verified local-AI response.
 
 ## If Gmail or Calendar stops retrying
 
-Most temporary integration failures retry automatically. After the fifth
-failed attempt, the job stops in an `exhausted` state so a broken provider
-cannot loop indefinitely. First list the stopped jobs:
+Most temporary integration failures retry automatically. A job stops in an
+`exhausted` state after five claimed attempts have not completed delivery, so a
+broken provider cannot loop indefinitely. A recovered stale fifth claim may
+stop without another provider call because that claim already counted as an
+attempt. First list the stopped jobs:
 
 ```bash
 export CRM_API_URL=http://localhost:8080/api
