@@ -631,11 +631,6 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
     }
     response_lead = {**candidate, "score": score, "score_reason": reason}
 
-    serialized_proposal = json.dumps(
-        proposed_fields, sort_keys=True, separators=(",", ":"), default=str
-    ).encode()
-    proposal_digest = hashlib.sha256(serialized_proposal).hexdigest()
-
     with get_conn() as conn:
         audit(conn, "agent", "score_lead", {"lead_id": lead_id},
               {"score": score, "reason": reason, "pending": bool(proposed_fields)},
@@ -645,11 +640,41 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
         proposal = None
         if proposed_fields:
             if source_event:
-                dedupe_key = (
-                    f"lead-process:{lead_id}:event:{source_event['id']}:"
-                    f"candidate:{proposal_digest}"
+                legacy_key = (
+                    f"lead-process:{lead_id}:event:{source_event['id']}"
                 )
+                legacy_row = conn.execute(
+                    "SELECT payload FROM pending_changes WHERE dedupe_key = ?",
+                    (legacy_key,),
+                ).fetchone()
+                legacy_payload = None
+                if legacy_row:
+                    try:
+                        legacy_payload = json.loads(legacy_row["payload"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if (
+                    isinstance(legacy_payload, dict)
+                    and legacy_payload == proposed_fields
+                ):
+                    dedupe_key = legacy_key
+                else:
+                    serialized_proposal = json.dumps(
+                        proposed_fields,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode()
+                    proposal_digest = hashlib.sha256(serialized_proposal).hexdigest()
+                    dedupe_key = (
+                        f"{legacy_key}:candidate:{proposal_digest}"
+                    )
             else:
+                # Preserve the serializer used by existing no-source keys.
+                serialized_proposal = json.dumps(
+                    proposed_fields, sort_keys=True, default=str
+                ).encode()
+                proposal_digest = hashlib.sha256(serialized_proposal).hexdigest()
                 dedupe_key = f"lead-process:{lead_id}:candidate:{proposal_digest}"
             proposal = insert_pending_change(
                 conn,
