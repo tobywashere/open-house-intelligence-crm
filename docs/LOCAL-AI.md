@@ -128,6 +128,8 @@ named `OPENCLAW_PROFILE`. `OPENCLAW_HOME` replaces `~` when configured. The
 helper refuses unsafe token characters, unsafe profile names, symbolic links,
 and non-file targets before it changes OpenClaw. If the gateway file already
 has multiple `OHI_API_TOKEN` lines, the helper normalizes them to one assignment.
+It completes the read-only agent, configuration, and approval checks before it
+writes that file, so a validation problem leaves the existing token untouched.
 If the installed CLI cannot create or read back the required SecretRef, setup
 stops and asks you to upgrade OpenClaw. It does not fall back to plaintext
 storage.

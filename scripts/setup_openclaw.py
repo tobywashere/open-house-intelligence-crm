@@ -177,7 +177,9 @@ def _updated_gateway_env(contents: str, token: str) -> str:
     for line in contents.splitlines(keepends=True):
         body = line.rstrip("\r\n")
         ending = line[len(body) :]
-        if re.fullmatch(r"(?:export\s+)?OHI_API_TOKEN=.*", body):
+        if re.fullmatch(
+            r"[ \t]*(?:export[ \t]+)?OHI_API_TOKEN[ \t]*=.*", body
+        ):
             if not replaced:
                 output.append(assignment + (ending or "\n"))
                 replaced = True
@@ -1079,8 +1081,6 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
             _run_required(cli, ["openclaw", "config", "file"], "config file")
             gateway_env_path = _gateway_env_path()
-            if not options.dry_run:
-                _upsert_gateway_env(gateway_env_path, token)
         listed = _run_required(
             cli, ["openclaw", "agents", "list", "--json"], "agents list --json"
         )
@@ -1182,6 +1182,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     f"{options.agent_id} --bind discord:ACCOUNT --json"
                 )
             return SetupResult(True, messages)
+
+        if token and gateway_env_path is not None:
+            _upsert_gateway_env(gateway_env_path, token)
 
         repo = Path(__file__).resolve().parents[1]
         sync_skills(repo, options.workspace, dry_run=False)

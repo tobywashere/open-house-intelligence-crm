@@ -1122,6 +1122,79 @@ def test_gateway_env_is_provisioned_before_first_openclaw_mutation(
     assert result.ok, result.render()
 
 
+def test_late_read_only_validation_failure_does_not_create_gateway_env(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    approvals = (
+        "openclaw",
+        "approvals",
+        "get",
+        "--gateway",
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            approvals: CommandResult(
+                0,
+                json.dumps(gateway_approval_payload(entries=["/unexpected/tool"])),
+                "",
+            )
+        },
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "approval policy" in result.render()
+    assert not (state_dir / ".env").exists()
+    assert cli.mutating_calls == []
+
+
+def test_late_read_only_validation_failure_does_not_change_gateway_env(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    env_path = state_dir / ".env"
+    original = "OTHER=kept\nOHI_API_TOKEN=old-secret\n"
+    env_path.write_text(original)
+    env_path.chmod(0o640)
+    original_inode = env_path.stat().st_ino
+    config_path = tmp_path / "config" / "openclaw.json"
+    config_path.parent.mkdir()
+    approvals = (
+        "openclaw",
+        "approvals",
+        "get",
+        "--gateway",
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            approvals: CommandResult(
+                0,
+                json.dumps(gateway_approval_payload(entries=["/unexpected/tool"])),
+                "",
+            )
+        },
+        config_path=config_path,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert env_path.read_text() == original
+    assert env_path.stat().st_ino == original_inode
+    assert env_path.stat().st_mode & 0o777 == 0o640
+    assert cli.mutating_calls == []
+
+
 def test_token_env_upsert_preserves_other_lines_and_second_run_is_idempotent(
     tmp_path, monkeypatch
 ):
@@ -1148,6 +1221,42 @@ def test_token_env_upsert_preserves_other_lines_and_second_run_is_idempotent(
         "OTHER=value\nOHI_API_TOKEN=new-secret\nTRAILING=kept\n"
     )
     assert env_path.stat().st_ino == first_inode
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_token_env_upsert_normalizes_supported_dotenv_assignment_spacing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    env_path = state_dir / ".env"
+    env_path.write_text(
+        "OTHER=value\n"
+        "  OHI_API_TOKEN = first-old\n"
+        "export OHI_API_TOKEN=second-old\n"
+        "\texport\tOHI_API_TOKEN \t= third-old\n"
+        "# OHI_API_TOKEN=commented\n"
+        "  # export OHI_API_TOKEN = also-commented\n"
+        "OHI_API_TOKEN invalid-without-equals\n"
+        "TRAILING=kept\n"
+    )
+    env_path.chmod(0o644)
+    cli = FakeCLI(config_path=config_path)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert env_path.read_text() == (
+        "OTHER=value\n"
+        "OHI_API_TOKEN=new-secret\n"
+        "# OHI_API_TOKEN=commented\n"
+        "  # export OHI_API_TOKEN = also-commented\n"
+        "OHI_API_TOKEN invalid-without-equals\n"
+        "TRAILING=kept\n"
+    )
     assert env_path.stat().st_mode & 0o777 == 0o600
 
 
