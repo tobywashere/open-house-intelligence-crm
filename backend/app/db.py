@@ -177,11 +177,6 @@ def _migrate_hook_outbox_terminal_statuses(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hook_outbox'"
     ).fetchone()
-    sql = row["sql"] if row else ""
-    compact = "".join((sql or "").lower().split())
-    if all(status in compact for status in ("'cancelled'", "'exhausted'")):
-        return
-
     stranded = conn.execute(
         "SELECT type FROM sqlite_master WHERE name = 'hook_outbox_before_terminal'"
     ).fetchone()
@@ -190,6 +185,11 @@ def _migrate_hook_outbox_terminal_statuses(conn: sqlite3.Connection) -> None:
             "hook_outbox temporary migration table already exists; "
             "restore or remove it before retrying startup"
         )
+
+    sql = row["sql"] if row else ""
+    compact = "".join((sql or "").lower().split())
+    if all(status in compact for status in ("'cancelled'", "'exhausted'")):
+        return
 
     savepoint = "migrate_hook_outbox_terminal_statuses"
     conn.execute(f"SAVEPOINT {savepoint}")
@@ -216,6 +216,14 @@ def _migrate_hook_outbox_terminal_statuses(conn: sqlite3.Connection) -> None:
             "FROM hook_outbox_before_terminal"
         )
         conn.execute("DROP TABLE hook_outbox_before_terminal")
+        conn.execute(
+            "CREATE INDEX idx_hook_outbox_delivery "
+            "ON hook_outbox (status, claimed_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_hook_outbox_retry "
+            "ON hook_outbox (status, next_attempt_at, claimed_at, id)"
+        )
     except BaseException:
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")

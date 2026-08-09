@@ -155,13 +155,23 @@ def test_hook_outbox_status_migration_preserves_rows_and_allows_terminal_states(
     conn.close()
 
     db.init_db()
-    db.init_db()
 
     conn = sqlite3.connect(db_path)
     preserved = conn.execute(
         "SELECT id, pending_change_id, status, attempts, last_error "
         "FROM hook_outbox WHERE id = 7"
     ).fetchone()
+    indexes = {
+        row[1]: row for row in conn.execute("PRAGMA index_list(hook_outbox)")
+    }
+    unique_columns = {
+        tuple(
+            column[2]
+            for column in conn.execute(f"PRAGMA index_info({index_name})")
+        )
+        for index_name, index in indexes.items()
+        if index[2]
+    }
     conn.execute("UPDATE hook_outbox SET status = 'cancelled' WHERE id = 7")
     conn.execute("UPDATE hook_outbox SET status = 'exhausted' WHERE id = 7")
     conn.commit()
@@ -172,6 +182,8 @@ def test_hook_outbox_status_migration_preserves_rows_and_allows_terminal_states(
 
     assert preserved == (7, 11, "failed", 3, "temporary failure")
     assert migrated == "exhausted"
+    assert {"idx_hook_outbox_delivery", "idx_hook_outbox_retry"} <= indexes.keys()
+    assert {("pending_change_id",), ("idempotency_key",)} <= unique_columns
 
 
 def test_hook_outbox_status_migration_rolls_back_failed_copy(tmp_path):
@@ -262,6 +274,44 @@ def test_hook_outbox_status_migration_rejects_stranded_temp_table(tmp_path):
 
     assert tuple(original) == (1, "failed")
     assert tuple(stranded) == (2, "keep-me")
+
+
+def test_init_db_refuses_interrupted_outbox_rebuild(tmp_path, monkeypatch):
+    import app.db as db
+
+    db_path = tmp_path / "interrupted-outbox-rebuild.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(db.SCHEMA_PATH.read_text())
+    conn.execute(
+        "ALTER TABLE hook_outbox RENAME TO hook_outbox_before_terminal"
+    )
+    conn.execute(db.HOOK_OUTBOX_DDL)
+    conn.execute(
+        "INSERT INTO hook_outbox_before_terminal "
+        "(id, pending_change_id, idempotency_key, hook_type, object_id, "
+        "delivery_mode, status, attempts, last_error) "
+        "VALUES (13, 23, 'pending-change:23', 'reminder_created', 33, "
+        "'live', 'failed', 4, 'preserve this row')"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="temporary migration table already exists"):
+        db.init_db()
+
+    conn = sqlite3.connect(db_path)
+    current_count = conn.execute(
+        "SELECT COUNT(*) FROM hook_outbox"
+    ).fetchone()[0]
+    preserved = conn.execute(
+        "SELECT id, pending_change_id, status, attempts, last_error "
+        "FROM hook_outbox_before_terminal"
+    ).fetchone()
+    conn.close()
+
+    assert current_count == 0
+    assert preserved == (13, 23, "failed", 4, "preserve this row")
 
 
 def test_pending_change_dedupe_key_migration_is_additive(tmp_path, monkeypatch):
