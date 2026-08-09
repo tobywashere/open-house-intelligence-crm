@@ -309,23 +309,24 @@ in only after a person records a real run.
 
 - [ ] Operating system and version:
 - [ ] Hardware, including whether this is a Mac mini:
-- [ ] Memory, including confirmation of at least 16 GB on a Mac mini:
+- [ ] Memory: confirm at least 16 GB on a Mac mini.
 - [ ] OpenClaw version:
 - [ ] Model/provider:
 - [ ] Date and operator:
 
 Verify the dashboard first, then Discord and external providers in this order:
 
-1. [ ] Dashboard CRM capability check reports `CRM verified`.
-2. [ ] Dashboard chat lists real CRM leads.
-3. [ ] Dashboard chat proposes a disposable write that appears in Pending
+- [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
+- [ ] 2. Dashboard chat lists real CRM leads.
+- [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.
-4. [ ] Discord lists the same real CRM leads through the dedicated agent.
-5. [ ] Discord proposes a disposable write that appears in the same Pending
+- [ ] 4. Optional Discord binding lists the same real CRM leads through the
+   dedicated agent.
+- [ ] 5. Discord proposes a disposable write that appears in the same Pending
    approvals.
-6. [ ] With live integrations enabled, approve one disposable booking and
+- [ ] 6. With live integrations enabled, approve one disposable booking and
    verify one Google Calendar event.
-7. [ ] Approve one disposable lead with an email and verify one Calendar call
+- [ ] 7. Approve one disposable lead with an email and verify one Calendar call
    block plus one Gmail draft.
 
 Optional feature checks after the ordered acceptance run:
