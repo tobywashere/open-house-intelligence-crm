@@ -254,12 +254,15 @@ If `OHI_API_TOKEN` is enabled, run these commands from the project folder to
 load your own `.env`, then include its token header:
 
 ```bash
+bash -c '
 source scripts/load-env.sh
 load_repo_env .env
+CRM_API_URL="${CRM_API_URL:-http://localhost:8080/api}"
 curl -H "X-API-Token: $OHI_API_TOKEN" \
   "$CRM_API_URL/integrations/outbox?status=exhausted"
 curl -X POST -H "X-API-Token: $OHI_API_TOKEN" \
   "$CRM_API_URL/integrations/outbox/JOB_ID/retry"
+'
 ```
 
 Keep `bash scripts/serve.sh` running so the worker can pick up the requeued job.
