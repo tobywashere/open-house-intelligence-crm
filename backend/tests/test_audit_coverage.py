@@ -3,6 +3,8 @@ fix round 1 — docs/CONTRACT.md §3 previously claimed this while three write
 endpoints silently skipped it). Pins the fix so it can't regress."""
 import json
 
+from app.db import get_conn
+
 
 AGENT = {"X-Actor": "agent"}
 
@@ -93,6 +95,28 @@ def test_agent_cannot_complete_reminder_or_advance_demo_time(client):
         "last_activity_at"
     ]
     assert client.get("/api/audit?limit=50").json() == audit_before
+
+
+def test_agent_can_run_neglect_check_without_advancing_time(client):
+    lead = _mk(client)
+    idle_since = "2026-07-01T09:00:00"
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE leads SET last_activity_at = ? WHERE id = ?",
+            (idle_since, lead["id"]),
+        )
+
+    response = client.post(
+        "/api/demo/advance-time", json={"days": 0}, headers=AGENT
+    )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["neglected"]] == [lead["id"]]
+    updated = client.get(f"/api/leads/{lead['id']}").json()
+    assert updated["last_activity_at"] == idle_since
+    assert updated["is_neglected"] == 1
+    row = _last_audit_row(client, "find_neglected_leads")
+    assert row["actor"] == "cron"
 
 
 def test_direct_note_booking_and_reminder_are_user_audited(client):

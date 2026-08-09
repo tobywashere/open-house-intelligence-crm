@@ -144,7 +144,7 @@ def run_neglect_check(conn) -> list[dict]:
 @router.post("/demo/advance-time")
 def advance_time(body: AdvanceTimeIn, request: Request):
     """Demo helper: backdate all activity so the neglect check fires on stage."""
-    if is_agent_write(request):
+    if is_agent_write(request) and body.days != 0:
         raise HTTPException(403, "This action requires a dashboard user")
     with get_conn() as conn:
         if body.days:
