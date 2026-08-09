@@ -254,9 +254,8 @@ If `OHI_API_TOKEN` is enabled, run these commands from the project folder to
 load your own `.env`, then include its token header:
 
 ```bash
-set -a
-source .env
-set +a
+source scripts/load-env.sh
+load_repo_env .env
 curl -H "X-API-Token: $OHI_API_TOKEN" \
   "$CRM_API_URL/integrations/outbox?status=exhausted"
 curl -X POST -H "X-API-Token: $OHI_API_TOKEN" \
@@ -285,8 +284,11 @@ CRM fields can create a new proposal for review.
 
 - **404 / endpoint disabled:** rerun the endpoint-enable command and restart
   the gateway.
-- **401 / 403:** set the matching `AGENT_GATEWAY_TOKEN` in `.env`, then restart
-  the CRM.
+- **OpenClaw gateway 401 / 403:** set its matching token as
+  `AGENT_GATEWAY_TOKEN` in `.env`, then restart the CRM.
+- **CRM API 401:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in `.env`.
+  Include `X-API-Token` in direct API commands, rerun
+  `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
 - **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
   It checks the agent workspace, eligible skill, allowlist, and restart.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
