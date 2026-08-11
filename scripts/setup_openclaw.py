@@ -1136,9 +1136,8 @@ def _validate_authoritative_tools(payload: Any) -> None:
         )
 
 
-def _config_actions(options: SetupOptions, index: int) -> list[Action]:
+def _config_actions(options: SetupOptions, prefix: str) -> list[Action]:
     token = os.environ.get("OHI_API_TOKEN", "")
-    prefix = f"agents.list[{index}]"
     actions = [
         Action(
             "Restrict the CRM agent to shipped skills",
@@ -1195,6 +1194,23 @@ def _config_actions(options: SetupOptions, index: int) -> list[Action]:
     return actions
 
 
+def _deferred_agent_config_messages(options: SetupOptions) -> list[str]:
+    messages = [
+        "Would configure the dedicated CRM agent's shipped skills after agent creation, "
+        "once OpenClaw selects the exact roster path.",
+        "Would configure the dedicated CRM agent's exec-only tools after agent creation, "
+        "once OpenClaw selects the exact roster path.",
+        "Would configure the dedicated CRM agent's sandbox mode after agent creation, "
+        "once OpenClaw selects the exact roster path.",
+        "Would configure the CRM API URL.",
+    ]
+    if os.environ.get("OHI_API_TOKEN", ""):
+        messages.append(
+            "Would configure the CRM API token from environment SecretRef OHI_API_TOKEN."
+        )
+    return messages
+
+
 def _render_action(action: Action) -> str:
     return _redact_api_token(f"{action.description}: {' '.join(action.argv)}")
 
@@ -1224,13 +1240,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         listed = _run_required(
             cli, ["openclaw", "agents", "list", "--json"], "agents list --json"
         )
-        agents = _agents(_json(listed, "agents list"))
-        configured = _run_required(
-            cli,
-            ["openclaw", "config", "get", "agents.list", "--json"],
-            "config get agents.list --json",
+        agents = _cli_agents(_json(listed, "agents list"))
+        configured_roster = _read_agent_roster(
+            cli, allow_missing=True, label="initial agents config"
         )
-        configured_agents = _agents(_json(configured, "agents.list"))
+        configured_agents = configured_roster.records
         listed_agent = next(
             (agent for agent in agents if agent.get("id") == options.agent_id), None
         )
@@ -1300,15 +1314,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     and action.argv[-1] in existing_patterns
                 )
             ]
-            index = next(
-                (
-                    i
-                    for i, agent in enumerate(configured_agents)
-                    if agent.get("id") == options.agent_id
-                ),
-                len(configured_agents),
-            )
-            planned.extend(_config_actions(options, index))
+            prefix = configured_roster.prefixes.get(options.agent_id)
+            if prefix is None:
+                messages.extend(_deferred_agent_config_messages(options))
+            else:
+                planned.extend(_config_actions(options, prefix))
             messages.append("Dry run only. No files or OpenClaw configuration were changed.")
             if gateway_env_path is not None:
                 messages.append(
@@ -1341,26 +1351,16 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 )
             messages.append(action.description)
 
-        refreshed = _run_required(
-            cli,
-            ["openclaw", "config", "get", "agents.list", "--json"],
-            "config get agents.list after agent creation",
+        refreshed_roster = _read_agent_roster(
+            cli, allow_missing=False, label="agents config after agent creation"
         )
-        refreshed_agents = _agents(_json(refreshed, "agents.list"))
-        index = next(
-            (
-                i
-                for i, agent in enumerate(refreshed_agents)
-                if agent.get("id") == options.agent_id
-            ),
-            None,
-        )
-        if index is None:
+        prefix = refreshed_roster.prefixes.get(options.agent_id)
+        if prefix is None:
             raise SetupConflict(
                 f"OpenClaw did not expose the {options.agent_id} agent after creation"
             )
 
-        actions = _config_actions(options, index)
+        actions = _config_actions(options, prefix)
         actions.extend(
             action
             for action in initial_actions
@@ -1445,7 +1445,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "openclaw",
                 "config",
                 "get",
-                f"agents.list[{index}].tools",
+                f"{prefix}.tools",
                 "--json",
             ],
             "authoritative dedicated-agent tools",

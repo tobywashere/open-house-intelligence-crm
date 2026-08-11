@@ -144,8 +144,14 @@ class FakeCLI:
             return CommandResult(
                 0, json.dumps({"agents": [self.created_agent] if self.created_agent else []}), ""
             )
-        if args == ["openclaw", "config", "get", "agents.list", "--json"]:
-            return CommandResult(0, json.dumps([self.created_agent] if self.created_agent else []), "")
+        if args == ["openclaw", "config", "get", "agents", "--json"]:
+            return CommandResult(
+                0,
+                json.dumps(
+                    {"defaults": {}, "list": [self.created_agent] if self.created_agent else []}
+                ),
+                "",
+            )
         if args == [
             "openclaw",
             "config",
@@ -180,8 +186,8 @@ class FakeCLI:
             return CommandResult(0, json.dumps(env), "")
         if (
             args[1:3] == ["config", "get"]
-            and args[3].startswith("agents.list[")
-            and args[3].endswith("].tools")
+            and args[3].startswith("agents.")
+            and args[3].endswith(".tools")
             and args[-1] == "--json"
         ):
             return CommandResult(0, json.dumps(setup_openclaw.DESIRED_TOOLS), "")
@@ -222,6 +228,45 @@ class FakeCLI:
             payload = gateway_approval_payload(entries=entries)
             return CommandResult(0, json.dumps(payload), "")
         return CommandResult(0, "{}", "")
+
+
+class FreshRosterCLI(FakeCLI):
+    def __init__(self, *, schema, config_path=None):
+        super().__init__(config_path=config_path)
+        self.schema = schema
+
+    def run(self, args, *, mutate=False):
+        if args == ["openclaw", "config", "get", "agents.list", "--json"]:
+            self.calls.append(args)
+            return CommandResult(1, "", "Config path not found: agents.list")
+        if args == ["openclaw", "config", "get", "agents", "--json"]:
+            self.calls.append(args)
+            if self.schema == "list":
+                payload = {"defaults": {}, "list": [self.created_agent] if self.created_agent else []}
+            else:
+                payload = {
+                    "defaults": {},
+                    "entries": {self.created_agent["id"]: self.created_agent}
+                    if self.created_agent
+                    else {},
+                }
+            return CommandResult(0, json.dumps(payload), "")
+        return super().run(args, mutate=mutate)
+
+
+class PostCreateRosterCLI(FreshRosterCLI):
+    def __init__(self, *, schema, after_creation):
+        super().__init__(schema=schema)
+        self.after_creation = after_creation
+
+    def run(self, args, *, mutate=False):
+        if (
+            args == ["openclaw", "config", "get", "agents", "--json"]
+            and self.created_agent is not None
+        ):
+            self.calls.append(args)
+            return self.after_creation
+        return super().run(args, mutate=mutate)
 
 
 @pytest.fixture
@@ -391,6 +436,201 @@ def test_existing_agent_is_not_recreated(tmp_path):
     assert not any(action.argv[1:3] == ["agents", "add"] for action in actions)
 
 
+def test_fresh_install_discovers_legacy_roster_after_agent_creation(tmp_path):
+    cli = FreshRosterCLI(schema="list")
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    rendered = [" ".join(call) for call in cli.mutating_calls]
+    assert any("agents.list[0].skills" in call for call in rendered)
+    assert any("agents.list[0].tools" in call for call in rendered)
+    assert any("agents.list[0].sandbox" in call for call in rendered)
+    assert not any("agents.entries" in call for call in rendered)
+
+
+def test_fresh_install_discovers_modern_roster_after_agent_creation(tmp_path):
+    cli = FreshRosterCLI(schema="entries", config_path=tmp_path / "openclaw.json")
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    rendered = [" ".join(call) for call in cli.mutating_calls]
+    assert any('agents.entries["openhouse-crm"].skills' in call for call in rendered)
+    assert any('agents.entries["openhouse-crm"].tools' in call for call in rendered)
+    assert any('agents.entries["openhouse-crm"].sandbox' in call for call in rendered)
+    assert not any("agents.list" in call for call in rendered)
+
+
+def test_fresh_dry_run_defers_agent_paths_until_creation(tmp_path, monkeypatch):
+    monkeypatch.setenv("OHI_API_TOKEN", "oh_live_abcdefghijklmnopqrstuvwxyz")
+    cli = FreshRosterCLI(schema="entries", config_path=tmp_path / "openclaw.json")
+
+    result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.mutating_calls == []
+    rendered = result.render()
+    assert "agents.list[0]" not in rendered
+    assert "agents.entries" not in rendered
+    assert "skills" in rendered
+    assert "exec-only tools" in rendered
+    assert "sandbox mode" in rendered
+    assert "CRM API URL" in rendered
+    assert "SecretRef" in rendered
+    assert "allowlist" in rendered
+    assert "exact roster path" in rendered
+
+
+def _roster_payload(schema, agents):
+    if schema == "list":
+        return {"defaults": {}, "list": agents}
+    return {"defaults": {}, "entries": {agent["id"]: agent for agent in agents}}
+
+
+@pytest.mark.parametrize("schema", ["list", "entries"])
+def test_existing_agent_is_idempotent_for_each_roster_schema(tmp_path, schema):
+    options = make_options(tmp_path)
+    agent = {"id": options.agent_id, "workspace": str(options.workspace)}
+    prefix = "agents.list[0]" if schema == "list" else 'agents.entries["openhouse-crm"]'
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps(_roster_payload(schema, [agent])), ""
+            ),
+        }
+    )
+
+    first = configure_openclaw(options, cli=cli)
+    second = configure_openclaw(options, cli=cli)
+
+    assert first.ok, first.render()
+    assert second.ok, second.render()
+    assert not any(call[1:3] == ["agents", "add"] for call in cli.mutating_calls)
+    assert f"{prefix}.tools" in " ".join(" ".join(call) for call in cli.calls)
+
+
+@pytest.mark.parametrize("schema", ["list", "entries"])
+def test_cli_config_agent_mismatch_fails_before_mutation_for_each_roster_schema(
+    tmp_path, schema
+):
+    options = make_options(tmp_path, dry_run=True)
+    agent = {"id": options.agent_id, "workspace": str(options.workspace)}
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps(_roster_payload(schema, [])), ""
+            ),
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "inconsistent" in result.render()
+    assert cli.mutating_calls == []
+
+
+@pytest.mark.parametrize("schema", ["list", "entries"])
+@pytest.mark.parametrize(
+    ("field", "current"),
+    [
+        ("skills", ["unrelated-skill"]),
+        ("tools", {"allow": ["web_fetch"]}),
+        ("sandbox", {"mode": "on"}),
+    ],
+)
+def test_incompatible_existing_agent_fields_fail_before_mutation_for_each_schema(
+    tmp_path, schema, field, current
+):
+    options = make_options(tmp_path, dry_run=True)
+    agent = {"id": options.agent_id, "workspace": str(options.workspace), field: current}
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps(_roster_payload(schema, [agent])), ""
+            ),
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert field in result.render()
+    assert cli.mutating_calls == []
+
+
+def test_ambiguous_legacy_and_modern_rosters_fail_before_mutation(tmp_path):
+    options = make_options(tmp_path, dry_run=True)
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "defaults": {},
+                        "list": [],
+                        "entries": {"other": {"workspace": "/other"}},
+                    }
+                ),
+                "",
+            )
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "ambiguous" in result.render()
+    assert cli.mutating_calls == []
+
+
+def test_authoritative_tool_readback_uses_discovered_modern_prefix(tmp_path):
+    cli = FreshRosterCLI(schema="entries")
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert [
+        "openclaw",
+        "config",
+        "get",
+        'agents.entries["openhouse-crm"].tools',
+        "--json",
+    ] in cli.calls
+
+
+@pytest.mark.parametrize(
+    "after_creation",
+    [
+        CommandResult(1, "", "Config path not found: agents"),
+        CommandResult(0, json.dumps({"defaults": {}, "list": []}), ""),
+    ],
+    ids=["missing-roster", "missing-target"],
+)
+def test_missing_roster_or_target_after_agent_creation_stops_before_config_writes(
+    tmp_path, after_creation
+):
+    cli = PostCreateRosterCLI(schema="list", after_creation=after_creation)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert not any(
+        call[1:3] == ["config", "set"] and call[3].startswith("agents.")
+        for call in cli.mutating_calls
+    )
+
+
 def test_conflicting_agent_workspace_requires_explicit_repair(tmp_path):
     options = make_options(tmp_path)
 
@@ -416,7 +656,7 @@ def test_setup_allowlists_only_shipped_skill_entrypoints(tmp_path):
 
 
 def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
-    actions = setup_openclaw._config_actions(make_options(tmp_path), 0)
+    actions = setup_openclaw._config_actions(make_options(tmp_path), "agents.list[0]")
     tools_action = next(
         action for action in actions if action.argv[3] == "agents.list[0].tools"
     )
@@ -593,8 +833,8 @@ def test_setup_never_reports_ready_without_unambiguous_effective_ask_off(
             ("openclaw", "agents", "list", "--json"): CommandResult(
                 0, json.dumps({"agents": [agent]}), ""
             ),
-            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
-                0, json.dumps([agent]), ""
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps({"defaults": {}, "list": [agent]}), ""
             ),
             ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
                 0, json.dumps(payload), ""
@@ -1817,8 +2057,8 @@ def test_inconsistent_agent_indexes_fail_before_sync_or_mutation(tmp_path):
                 ),
                 "",
             ),
-            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
-                0, "[]", ""
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps({"defaults": {}, "list": []}), ""
             ),
         }
     )
@@ -1904,8 +2144,8 @@ def test_unsafe_effective_gateway_policy_fails_before_existing_agent_mutation(
             ("openclaw", "agents", "list", "--json"): CommandResult(
                 0, json.dumps({"agents": [agent]}), ""
             ),
-            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
-                0, json.dumps([agent]), ""
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps({"defaults": {}, "list": [agent]}), ""
             ),
             ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
                 0, json.dumps(payload), ""
@@ -1931,8 +2171,8 @@ def test_mismatched_effective_scope_identity_is_rejected(tmp_path):
             ("openclaw", "agents", "list", "--json"): CommandResult(
                 0, json.dumps({"agents": [agent]}), ""
             ),
-            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
-                0, json.dumps([agent]), ""
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps({"defaults": {}, "list": [agent]}), ""
             ),
             ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
                 0, json.dumps(payload), ""
@@ -1955,8 +2195,8 @@ def test_configuration_updates_only_dedicated_agent_fields(tmp_path, monkeypatch
             ("openclaw", "agents", "list", "--json"): CommandResult(
                 0, json.dumps({"agents": agents}), ""
             ),
-            ("openclaw", "config", "get", "agents.list", "--json"): CommandResult(
-                0, json.dumps(agents), ""
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0, json.dumps({"defaults": {}, "list": agents}), ""
             ),
         }
     )
