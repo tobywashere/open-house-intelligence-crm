@@ -80,6 +80,13 @@ class CommandResult:
 
 
 @dataclass(frozen=True)
+class AgentRoster:
+    schema: str | None
+    records: list[dict[str, Any]]
+    prefixes: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SetupResult:
     ok: bool
     messages: list[str]
@@ -567,15 +574,132 @@ def _json(result: CommandResult, label: str) -> Any:
         raise SetupConflict(f"{label} returned invalid JSON") from exc
 
 
-def _agents(payload: Any) -> list[dict]:
+def _agent_id(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise SetupConflict(f"OpenClaw returned an invalid agent ID at {label}")
+    return value
+
+
+def _agent_list_records(value: Any, label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise SetupConflict(f"OpenClaw returned an unsupported agents JSON shape at {label}")
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise SetupConflict(
+                f"OpenClaw returned an unsupported agent record at {label}[{index}]"
+            )
+        record = dict(entry)
+        agent_id = _agent_id(record.get("id"), f"{label}[{index}].id")
+        if agent_id in seen:
+            raise SetupConflict(f"OpenClaw returned duplicate agent ID: {agent_id}")
+        seen.add(agent_id)
+        records.append(record)
+    return records
+
+
+def _agent_entry_records(
+    value: Any, label: str
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    if not isinstance(value, dict):
+        raise SetupConflict(f"OpenClaw returned an unsupported agents JSON shape at {label}")
+    records: list[dict[str, Any]] = []
+    prefixes: dict[str, str] = {}
+    seen: set[str] = set()
+    for agent_id, entry in value.items():
+        agent_id = _agent_id(agent_id, f"{label} key")
+        if not isinstance(entry, dict):
+            raise SetupConflict(
+                f"OpenClaw returned an unsupported agent record at {label}[{json.dumps(agent_id)}]"
+            )
+        record = dict(entry)
+        embedded_id = record.get("id")
+        if embedded_id is not None and embedded_id != agent_id:
+            raise SetupConflict(
+                f"OpenClaw returned mismatched agent IDs at {label}[{json.dumps(agent_id)}]"
+            )
+        if agent_id in seen:
+            raise SetupConflict(f"OpenClaw returned duplicate agent ID: {agent_id}")
+        seen.add(agent_id)
+        record["id"] = agent_id
+        records.append(record)
+        prefixes[agent_id] = f'{label}[{json.dumps(agent_id)}]'
+    return records, prefixes
+
+
+def _configured_agent_roster(payload: Any) -> AgentRoster:
+    if not isinstance(payload, dict):
+        raise SetupConflict("OpenClaw returned an unsupported agents config JSON shape")
+    if "defaults" in payload and not isinstance(payload["defaults"], dict):
+        raise SetupConflict("OpenClaw returned an unsupported agents defaults JSON shape")
+    has_list = "list" in payload
+    has_entries = "entries" in payload
+    if has_list and has_entries:
+        raise SetupConflict("OpenClaw returned ambiguous legacy and modern agents config")
+    if has_list:
+        records = _agent_list_records(payload["list"], "agents.list")
+        return AgentRoster(
+            "list",
+            records,
+            {agent["id"]: f"agents.list[{index}]" for index, agent in enumerate(records)},
+        )
+    if has_entries:
+        records, prefixes = _agent_entry_records(payload["entries"], "agents.entries")
+        return AgentRoster("entries", records, prefixes)
+    if set(payload) <= {"defaults"}:
+        return AgentRoster(None, [], {})
+    raise SetupConflict("OpenClaw returned an unsupported agents config JSON shape")
+
+
+def _cli_agents(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if isinstance(payload, dict):
-        for key in ("agents", "list", "entries"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    raise SetupConflict("OpenClaw returned an unsupported agents JSON shape")
+        return _agent_list_records(payload, "agents")
+    if not isinstance(payload, dict):
+        raise SetupConflict("OpenClaw returned an unsupported agents JSON shape")
+    shapes = [key for key in ("agents", "list", "entries") if key in payload]
+    if len(shapes) != 1:
+        raise SetupConflict("OpenClaw returned an ambiguous agents JSON shape")
+    shape = shapes[0]
+    if shape == "entries":
+        records, _ = _agent_entry_records(payload[shape], "entries")
+        return records
+    return _agent_list_records(payload[shape], shape)
+
+
+def _agents(payload: Any) -> list[dict[str, Any]]:
+    return _cli_agents(payload)
+
+
+def _is_missing_config_path(result: CommandResult, path: str) -> bool:
+    if result.returncode != 1:
+        return False
+    expected_text = f"Config path not found: {path}"
+    streams = (result.stdout.strip(), result.stderr.strip())
+    nonempty = [stream for stream in streams if stream]
+    if len(nonempty) != 1:
+        return False
+    diagnostic = nonempty[0]
+    if diagnostic == expected_text:
+        return True
+    try:
+        return json.loads(diagnostic) == {"error": expected_text}
+    except json.JSONDecodeError:
+        return False
+
+
+def _read_agent_roster(
+    cli: OpenClawCLI, *, allow_missing: bool, label: str
+) -> AgentRoster:
+    argv = ["openclaw", "config", "get", "agents", "--json"]
+    result = cli.run(argv)
+    if result.returncode != 0:
+        if allow_missing and _is_missing_config_path(result, "agents"):
+            return AgentRoster(None, [], {})
+        detail = (result.stderr or result.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise SetupConflict(f"unsupported OpenClaw installation: {label} failed{suffix}")
+    return _configured_agent_roster(_json(result, label))
 
 
 def _eligible_skills(payload: Any) -> set[str]:

@@ -234,6 +234,123 @@ def isolated_openclaw_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path / "openclaw-state"))
 
 
+def test_configured_roster_normalizes_modern_entries():
+    roster = setup_openclaw._configured_agent_roster(
+        {
+            "defaults": {"workspace": "/default"},
+            "entries": {
+                "main": {"default": True},
+                "openhouse-crm": {"workspace": "/crm"},
+            },
+        }
+    )
+
+    assert roster.schema == "entries"
+    assert [agent["id"] for agent in roster.records] == ["main", "openhouse-crm"]
+    assert roster.prefixes["openhouse-crm"] == 'agents.entries["openhouse-crm"]'
+
+
+def test_configured_roster_normalizes_legacy_list():
+    roster = setup_openclaw._configured_agent_roster(
+        {"defaults": {}, "list": [{"id": "main"}, {"id": "openhouse-crm"}]}
+    )
+
+    assert roster.schema == "list"
+    assert roster.prefixes["openhouse-crm"] == "agents.list[1]"
+
+
+def test_configured_roster_accepts_defaults_only_as_empty():
+    roster = setup_openclaw._configured_agent_roster({"defaults": {}})
+
+    assert roster.schema is None
+    assert roster.records == []
+    assert roster.prefixes == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"list": {}},
+        {"entries": []},
+        {"list": [{"id": "same"}, {"id": "same"}]},
+        {"entries": {"openhouse-crm": {"id": "different"}}},
+        {"list": [{"id": "legacy"}], "entries": {"modern": {}}},
+    ],
+)
+def test_configured_roster_rejects_ambiguous_or_malformed_state(payload):
+    with pytest.raises(SetupConflict):
+        setup_openclaw._configured_agent_roster(payload)
+
+
+def test_cli_agents_normalizes_list_and_keyed_entries():
+    listed = setup_openclaw._cli_agents(
+        {"agents": [{"id": "main"}, {"id": "openhouse-crm"}]}
+    )
+    entries = setup_openclaw._cli_agents(
+        {"entries": {"openhouse-crm": {"workspace": "/crm"}}}
+    )
+
+    assert [agent["id"] for agent in listed] == ["main", "openhouse-crm"]
+    assert entries == [{"workspace": "/crm", "id": "openhouse-crm"}]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"agents": ["not-an-object"]},
+        {"agents": [{"workspace": "/crm"}]},
+        {"agents": [{"id": "same"}, {"id": "same"}]},
+        {"entries": {"openhouse-crm": {"id": "different"}}},
+    ],
+)
+def test_cli_agents_rejects_invalid_agent_records(payload):
+    with pytest.raises(SetupConflict):
+        setup_openclaw._cli_agents(payload)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CommandResult(1, '{"error":"Config path not found: agents"}', ""),
+        CommandResult(1, "", "Config path not found: agents"),
+    ],
+)
+def test_agent_root_exact_missing_path_is_empty_before_creation(tmp_path, result):
+    cli = FakeCLI({("openclaw", "config", "get", "agents", "--json"): result})
+
+    roster = setup_openclaw._read_agent_roster(
+        cli, allow_missing=True, label="initial agents config"
+    )
+
+    assert roster.schema is None
+    assert roster.records == []
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CommandResult(1, '{"error":"Config path not found: agents.list"}', ""),
+        CommandResult(1, "", "Config path not found: agentsExtra"),
+        CommandResult(1, "", "permission denied"),
+        CommandResult(1, '{"error":', ""),
+        CommandResult(2, '{"error":"Config path not found: agents"}', ""),
+        CommandResult(
+            1,
+            '{"error":"Config path not found: agents", "code":"not-found"}',
+            "",
+        ),
+    ],
+)
+def test_agent_root_rejects_inexact_or_noncanonical_missing_path(tmp_path, result):
+    cli = FakeCLI({("openclaw", "config", "get", "agents", "--json"): result})
+
+    with pytest.raises(SetupConflict):
+        setup_openclaw._read_agent_roster(
+            cli, allow_missing=True, label="initial agents config"
+        )
+
+
 def test_missing_agent_plan_creates_only_dedicated_agent(tmp_path):
     options = make_options(tmp_path)
 
