@@ -799,6 +799,34 @@ def _run_sensitive_required(
     return result
 
 
+def _command_entries(output: str) -> set[str]:
+    lines = output.splitlines()
+    commands_indent: int | None = None
+    direct_indent: int | None = None
+    entries: set[str] = set()
+    in_commands = False
+    for raw in lines:
+        stripped = raw.strip()
+        indent = len(raw) - len(raw.lstrip(" \t"))
+        if not in_commands:
+            if re.fullmatch(r"(?:available\s+)?commands?\s*:", stripped, re.I):
+                in_commands = True
+                commands_indent = indent
+            continue
+        if stripped and commands_indent is not None and indent <= commands_indent:
+            break
+        if not stripped:
+            continue
+        token = stripped.split(maxsplit=1)[0]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", token):
+            continue
+        if direct_indent is None:
+            direct_indent = indent
+        if indent == direct_indent:
+            entries.add(token)
+    return entries
+
+
 def _require_help(
     cli: OpenClawCLI, argv: list[str], label: str, required: tuple[str, ...]
 ) -> None:
@@ -810,20 +838,7 @@ def _require_help(
             output,
         )
     )
-    command_entries: set[str] = set()
-    in_commands = False
-    for line in output.splitlines():
-        stripped = line.strip()
-        if re.fullmatch(r"(?:available\s+)?commands?\s*:", stripped, re.I):
-            in_commands = True
-            continue
-        if in_commands and re.fullmatch(r"[A-Za-z][A-Za-z ]*\s*:", stripped):
-            in_commands = False
-            continue
-        if in_commands and stripped:
-            entry = stripped.split(maxsplit=1)[0]
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", entry):
-                command_entries.add(entry)
+    command_entries = _command_entries(output)
     missing = [
         token
         for token in required

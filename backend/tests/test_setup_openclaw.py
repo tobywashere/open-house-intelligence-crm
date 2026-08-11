@@ -1566,6 +1566,41 @@ def test_capability_failure_reports_openclaw_version_before_mutation(tmp_path):
     assert not options.workspace.exists()
 
 
+def test_preflight_keeps_commands_after_nested_examples(tmp_path):
+    help_text = """Commands:
+  get <path>
+  patch [options]
+    Examples:
+      openclaw config patch --file changes.json
+  set <path> <value>
+  validate
+  file
+  unset
+"""
+    cli = FakeCLI(
+        {("openclaw", "config", "--help"): CommandResult(0, help_text, "")}
+    )
+
+    result = configure_openclaw(make_options(tmp_path, dry_run=True), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.mutating_calls == []
+
+
+def test_command_parser_uses_only_direct_children_of_commands_section():
+    output = """Commands:
+  get
+  patch
+    Examples:
+      validate
+  set
+Options:
+  validate
+"""
+
+    assert setup_openclaw._command_entries(output) == {"get", "patch", "set"}
+
+
 @pytest.mark.parametrize(
     ("help_command", "help_text"),
     [
@@ -1596,9 +1631,9 @@ def test_preflight_rejects_successful_help_missing_required_surfaces(
             "--json",
         ),
         (
-            ("openclaw", "agents", "--help"),
-            "Commands:\n  add-more\n  list-all\n\nDescription: supports add and list workflows",
-            "add",
+            ("openclaw", "config", "--help"),
+            "Commands:\n  get\n  set-more\n  validate",
+            "set",
         ),
     ],
 )
