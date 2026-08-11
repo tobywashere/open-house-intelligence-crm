@@ -55,6 +55,12 @@ python3 scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
+On a new OpenClaw install, it is normal for the config to contain agent
+defaults but no explicit agent roster yet. Setup creates the dedicated CRM
+agent, then safely detects whether that OpenClaw version uses current keyed
+agent entries or the older list format. You do not need to edit either format
+by hand.
+
 Keep the server running. In a second Terminal, start in the directory where
 you cloned the project, then run:
 
@@ -153,7 +159,10 @@ The helper uses the following agent policy on purpose:
 
 OpenClaw's skill and configuration interfaces change over time. If the helper
 reports an unsupported command or configuration shape, update OpenClaw and
-rerun it rather than manually broadening the agent's permissions.
+rerun it rather than manually broadening the agent's permissions. If setup
+still fails, share `openclaw --version`, the failing command, and its exact
+redacted output with the project maintainers rather than patching the script
+locally.
 
 ## Live checks and status
 
