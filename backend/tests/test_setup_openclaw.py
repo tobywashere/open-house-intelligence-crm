@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -112,6 +113,12 @@ class FakeCLI:
                     }
                 elif "--strict-json" in args:
                     self.config_values[path] = json.loads(args[-2])
+                    match = re.fullmatch(
+                        r'agents\.(?:list\[\d+\]|entries\["[^\"]+"\])\.(.+)',
+                        path,
+                    )
+                    if match and self.created_agent is not None:
+                        self.created_agent[match.group(1)] = self.config_values[path]
             elif args[1:3] == ["config", "unset"]:
                 if args[3] == LEGACY_TOKEN_CONFIG_PATH:
                     self.legacy_token = None
@@ -190,7 +197,7 @@ class FakeCLI:
             and args[3].endswith(".tools")
             and args[-1] == "--json"
         ):
-            return CommandResult(0, json.dumps(setup_openclaw.DESIRED_TOOLS), "")
+            return CommandResult(0, json.dumps(self.config_values.get(args[3])), "")
         if args == ["openclaw", "skills", "check", "--agent", "openhouse-crm", "--json"]:
             return CommandResult(0, '{"eligible": ["crm-db-operations"]}', "")
         if args == ["openclaw", "sandbox", "explain", "--agent", "openhouse-crm", "--json"]:
@@ -227,28 +234,62 @@ class FakeCLI:
             ]
             payload = gateway_approval_payload(entries=entries)
             return CommandResult(0, json.dumps(payload), "")
+        if args[1:3] == ["agents", "add"] and self.created_agent is not None:
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "agentId": self.created_agent["id"],
+                        "workspace": self.created_agent["workspace"],
+                    }
+                ),
+                "",
+            )
         return CommandResult(0, "{}", "")
 
 
 class FreshRosterCLI(FakeCLI):
-    def __init__(self, *, schema, config_path=None):
+    def __init__(
+        self,
+        *,
+        schema,
+        config_path=None,
+        initial_root="defaults",
+        ignored_config_paths=(),
+    ):
         super().__init__(config_path=config_path)
         self.schema = schema
+        self.initial_root = initial_root
+        self.ignored_config_paths = set(ignored_config_paths)
 
     def run(self, args, *, mutate=False):
-        if args == ["openclaw", "config", "get", "agents.list", "--json"]:
+        if (
+            mutate
+            and args[1:3] == ["config", "set"]
+            and args[3] in self.ignored_config_paths
+        ):
             self.calls.append(args)
-            return CommandResult(1, "", "Config path not found: agents.list")
+            self.mutating_calls.append(args)
+            return CommandResult(0, "", "")
         if args == ["openclaw", "config", "get", "agents", "--json"]:
             self.calls.append(args)
+            if self.created_agent is None:
+                if self.initial_root == "missing":
+                    return CommandResult(
+                        1, '{"error":"Config path not found: agents"}', ""
+                    )
+                return CommandResult(0, json.dumps({"defaults": {}}), "")
             if self.schema == "list":
-                payload = {"defaults": {}, "list": [self.created_agent] if self.created_agent else []}
+                payload = {"defaults": {}, "list": [self.created_agent]}
             else:
+                custom = dict(self.created_agent)
+                custom.pop("id")
                 payload = {
                     "defaults": {},
-                    "entries": {self.created_agent["id"]: self.created_agent}
-                    if self.created_agent
-                    else {},
+                    "entries": {
+                        "main": {"default": True},
+                        self.created_agent["id"]: custom,
+                    },
                 }
             return CommandResult(0, json.dumps(payload), "")
         return super().run(args, mutate=mutate)
@@ -266,6 +307,36 @@ class PostCreateRosterCLI(FreshRosterCLI):
         ):
             self.calls.append(args)
             return self.after_creation
+        return super().run(args, mutate=mutate)
+
+
+class ReorderingLegacyCLI(FakeCLI):
+    def __init__(self, *, options, reorder_on_read):
+        super().__init__()
+        self.options = options
+        self.reorder_on_read = reorder_on_read
+        self.roster_reads = 0
+
+    def run(self, args, *, mutate=False):
+        target = {
+            "id": self.options.agent_id,
+            "workspace": str(self.options.workspace),
+        }
+        main = {"id": "main", "workspace": "/main"}
+        if args == ["openclaw", "agents", "list", "--json"]:
+            self.calls.append(args)
+            return CommandResult(0, json.dumps({"agents": [main, target]}), "")
+        if args == ["openclaw", "config", "get", "agents", "--json"]:
+            self.calls.append(args)
+            self.roster_reads += 1
+            records = (
+                [target, main]
+                if self.roster_reads >= self.reorder_on_read
+                else [main, target]
+            )
+            return CommandResult(
+                0, json.dumps({"defaults": {}, "list": records}), ""
+            )
         return super().run(args, mutate=mutate)
 
 
@@ -295,6 +366,21 @@ def test_configured_roster_normalizes_modern_entries():
     assert roster.prefixes["openhouse-crm"] == 'agents.entries["openhouse-crm"]'
 
 
+def test_configured_roster_compares_canonical_ids_and_preserves_raw_key_prefix():
+    roster = setup_openclaw._configured_agent_roster(
+        {
+            "defaults": {"workspace": "/default"},
+            "entries": {
+                "main": {"default": True},
+                "OpenHouse-CRM": {"workspace": "/crm"},
+            },
+        }
+    )
+
+    assert [agent["id"] for agent in roster.records] == ["main", "openhouse-crm"]
+    assert roster.prefixes["openhouse-crm"] == 'agents.entries["OpenHouse-CRM"]'
+
+
 def test_configured_roster_does_not_mutate_keyed_input_records():
     payload = {"entries": {"openhouse-crm": {"workspace": "/crm"}}}
 
@@ -319,6 +405,29 @@ def test_configured_roster_accepts_defaults_only_as_empty():
     assert roster.schema is None
     assert roster.records == []
     assert roster.prefixes == {}
+
+
+def test_configured_roster_rejects_bare_object_as_ambiguous():
+    with pytest.raises(SetupConflict):
+        setup_openclaw._configured_agent_roster({})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"list": [{"id": "Same"}, {"id": "same"}]},
+        {"entries": {"Same": {}, "same": {}}},
+    ],
+)
+def test_configured_roster_rejects_canonical_agent_id_collisions(payload):
+    with pytest.raises(SetupConflict, match="duplicate agent ID"):
+        setup_openclaw._configured_agent_roster(payload)
+
+
+@pytest.mark.parametrize("agent_id", ["bad id", ".bad", "a" * 65])
+def test_configured_roster_rejects_noncanonical_agent_id_syntax(agent_id):
+    with pytest.raises(SetupConflict, match="invalid agent ID"):
+        setup_openclaw._configured_agent_roster({"list": [{"id": agent_id}]})
 
 
 @pytest.mark.parametrize(
@@ -364,6 +473,50 @@ def test_cli_agents_rejects_invalid_agent_records(payload):
         setup_openclaw._cli_agents(payload)
 
 
+def test_cli_agents_rejects_canonical_agent_id_collisions():
+    with pytest.raises(SetupConflict, match="duplicate agent ID"):
+        setup_openclaw._cli_agents(
+            {"agents": [{"id": "OpenHouse-CRM"}, {"id": "openhouse-crm"}]}
+        )
+
+
+def test_cli_json_rejects_duplicate_object_keys_before_mutation(tmp_path):
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0,
+                '{"agents":[],"agents":[{"id":"openhouse-crm"}]}',
+                "",
+            )
+        }
+    )
+    options = make_options(tmp_path, dry_run=True)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "invalid JSON" in result.render()
+    assert cli.mutating_calls == []
+    assert not options.workspace.exists()
+
+
+def test_keyed_roster_raw_json_rejects_duplicate_keys():
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0,
+                '{"defaults":{},"entries":{"same":{},"same":{}}}',
+                "",
+            )
+        }
+    )
+
+    with pytest.raises(SetupConflict, match="invalid JSON"):
+        setup_openclaw._read_agent_roster(
+            cli, allow_missing=True, label="initial agents config"
+        )
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -395,6 +548,14 @@ def test_agent_root_exact_missing_path_is_empty_before_creation(tmp_path, result
             '{"error":"Config path not found: agents", "code":"not-found"}',
             "",
         ),
+        CommandResult(
+            1,
+            '{"error":"Config path not found: agents",'
+            '"error":"Config path not found: agents"}',
+            "",
+        ),
+        CommandResult(1, "Config path not found: agents", ""),
+        CommandResult(1, "", '{"error":"Config path not found: agents"}'),
     ],
 )
 def test_agent_root_rejects_inexact_or_noncanonical_missing_path(tmp_path, result):
@@ -436,8 +597,11 @@ def test_existing_agent_is_not_recreated(tmp_path):
     assert not any(action.argv[1:3] == ["agents", "add"] for action in actions)
 
 
-def test_fresh_install_discovers_legacy_roster_after_agent_creation(tmp_path):
-    cli = FreshRosterCLI(schema="list")
+@pytest.mark.parametrize("initial_root", ["defaults", "missing"])
+def test_fresh_install_discovers_legacy_roster_after_agent_creation(
+    tmp_path, initial_root
+):
+    cli = FreshRosterCLI(schema="list", initial_root=initial_root)
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
@@ -449,8 +613,15 @@ def test_fresh_install_discovers_legacy_roster_after_agent_creation(tmp_path):
     assert not any("agents.entries" in call for call in rendered)
 
 
-def test_fresh_install_discovers_modern_roster_after_agent_creation(tmp_path):
-    cli = FreshRosterCLI(schema="entries", config_path=tmp_path / "openclaw.json")
+@pytest.mark.parametrize("initial_root", ["defaults", "missing"])
+def test_fresh_install_discovers_modern_roster_after_agent_creation(
+    tmp_path, initial_root
+):
+    cli = FreshRosterCLI(
+        schema="entries",
+        config_path=tmp_path / "openclaw.json",
+        initial_root=initial_root,
+    )
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
@@ -609,6 +780,60 @@ def test_authoritative_tool_readback_uses_discovered_modern_prefix(tmp_path):
     ] in cli.calls
 
 
+def test_modern_roster_writes_through_raw_key_after_canonical_match(tmp_path):
+    options = make_options(tmp_path)
+    listed_agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+    }
+    cli = FakeCLI(
+        {
+            ("openclaw", "agents", "list", "--json"): CommandResult(
+                0, json.dumps({"agents": [listed_agent]}), ""
+            ),
+            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "defaults": {},
+                        "entries": {
+                            "main": {"default": True},
+                            "OpenHouse-CRM": {
+                                "workspace": str(options.workspace),
+                            },
+                        },
+                    }
+                ),
+                "",
+            ),
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert any(
+        call[1:4]
+        == ["config", "set", 'agents.entries["OpenHouse-CRM"].tools']
+        for call in cli.mutating_calls
+    )
+
+
+def test_ignored_agent_config_write_is_detected_by_path_specific_readback(tmp_path):
+    tools_path = 'agents.entries["openhouse-crm"].tools'
+    cli = FreshRosterCLI(
+        schema="entries",
+        ignored_config_paths={tools_path},
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "authoritative" in result.render().lower()
+    assert ["openclaw", "config", "get", tools_path, "--json"] in cli.calls
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
 @pytest.mark.parametrize(
     "after_creation",
     [
@@ -629,6 +854,34 @@ def test_missing_roster_or_target_after_agent_creation_stops_before_config_write
         call[1:3] == ["config", "set"] and call[3].startswith("agents.")
         for call in cli.mutating_calls
     )
+
+
+@pytest.mark.parametrize(
+    ("reorder_on_read", "forbidden_operation"),
+    [
+        (4, ["config", "set", "agents.list[1].tools"]),
+        (6, ["config", "get", "agents.list[1].tools"]),
+    ],
+    ids=["before-second-mutation", "before-authoritative-readback"],
+)
+def test_legacy_prefix_reordering_fails_closed_before_stale_index_use(
+    tmp_path, reorder_on_read, forbidden_operation
+):
+    options = make_options(tmp_path)
+    cli = ReorderingLegacyCLI(
+        options=options,
+        reorder_on_read=reorder_on_read,
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "legacy agent roster changed" in result.render()
+    assert not any(
+        call[1 : 1 + len(forbidden_operation)] == forbidden_operation
+        for call in cli.calls
+    )
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
 
 
 def test_conflicting_agent_workspace_requires_explicit_repair(tmp_path):
@@ -1155,13 +1408,51 @@ def test_setup_rejects_blank_runtime_agent_id(tmp_path, monkeypatch, capsys):
     assert "AGENT_ID must not be blank" in capsys.readouterr().err
 
 
-def test_setup_normalizes_matching_explicit_agent_id(tmp_path, monkeypatch):
+def test_setup_rejects_noncanonical_matching_explicit_agent_id(
+    tmp_path, monkeypatch, capsys
+):
     (tmp_path / ".env").write_text("AGENT_ID=custom-crm\n")
     monkeypatch.delenv("AGENT_ID", raising=False)
 
-    options = parse_args(["--agent-id", " custom-crm "], repo=tmp_path)
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--agent-id", " custom-crm "], repo=tmp_path)
 
-    assert options.agent_id == "custom-crm"
+    assert exc_info.value.code == 2
+    assert "canonical lowercase" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "agent_id",
+    [
+        "",
+        "OpenHouse-CRM",
+        " openhouse-crm ",
+        "bad.id",
+        "a" * 65,
+        "main",
+        "openclaw",
+        "crestodian",
+    ],
+)
+def test_invalid_or_reserved_requested_agent_id_fails_before_any_io(
+    tmp_path, agent_id
+):
+    base = make_options(tmp_path)
+    options = SetupOptions(
+        agent_id=agent_id,
+        workspace=base.workspace,
+        crm_api_url=base.crm_api_url,
+        bind_discord=base.bind_discord,
+        dry_run=base.dry_run,
+    )
+    cli = FakeCLI()
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert cli.calls == []
+    assert cli.mutating_calls == []
+    assert not options.workspace.exists()
 
 
 def test_setup_defaults_prefer_exported_values_and_explicit_cli_args(tmp_path, monkeypatch):
@@ -1968,6 +2259,19 @@ Options:
     assert setup_openclaw._command_entries(output) == {"get", "patch", "set"}
 
 
+def test_command_parser_chooses_minimum_candidate_indentation_for_section():
+    output = """Commands:
+    nested-valid-token
+      deeper-token
+  get
+  set
+Options:
+  validate
+"""
+
+    assert setup_openclaw._command_entries(output) == {"get", "set"}
+
+
 @pytest.mark.parametrize(
     ("help_command", "help_text"),
     [
@@ -2229,6 +2533,40 @@ def test_mutation_failure_stops_before_later_changes(tmp_path):
 
     assert not result.ok
     assert cli.mutating_calls == [list(failing)]
+
+
+@pytest.mark.parametrize(
+    "add_stdout",
+    [
+        '{"agentId":"different-agent"}',
+        '{}',
+    ],
+    ids=["mismatch", "missing-agent-id"],
+)
+def test_agent_creation_requires_matching_json_agent_id(
+    tmp_path, add_stdout
+):
+    options = make_options(tmp_path)
+    add_command = (
+        "openclaw",
+        "agents",
+        "add",
+        options.agent_id,
+        "--workspace",
+        str(options.workspace),
+        "--non-interactive",
+        "--json",
+    )
+    cli = FakeCLI({add_command: CommandResult(0, add_stdout, "")})
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert not any(
+        call[1:3] == ["config", "set"] and call[3].startswith("agents.")
+        for call in cli.mutating_calls
+    )
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
 
 
 @pytest.mark.parametrize(

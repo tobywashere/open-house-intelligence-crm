@@ -61,6 +61,11 @@ agent, then safely detects whether that OpenClaw version uses current keyed
 agent entries or the older list format. You do not need to edit either format
 by hand.
 
+Run setup while no other process is writing OpenClaw configuration. Setup
+rechecks legacy list indexes immediately before each agent-specific write and
+readback, but it still expects no concurrent OpenClaw config writer during the
+short setup run.
+
 Keep the server running. In a second Terminal, start in the directory where
 you cloned the project, then run:
 

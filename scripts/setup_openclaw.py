@@ -54,6 +54,9 @@ TOKEN_SECRETREF_REDACTED = {
     **TOKEN_SECRETREF,
     "id": "__OPENCLAW_REDACTED__",
 }
+VALID_AGENT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
+RESERVED_AGENT_IDS = frozenset({"main", "openclaw", "crestodian"})
+LEGACY_AGENT_PREFIX_RE = re.compile(r"agents\.list\[\d+\]")
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,10 @@ class OpenClawCLI:
 
 
 class SetupConflict(RuntimeError):
+    pass
+
+
+class _DuplicateJSONKey(ValueError):
     pass
 
 
@@ -567,17 +574,56 @@ def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
         raise SetupConflict(f"skill synchronization failed: {exc}") from exc
 
 
-def _json(result: CommandResult, label: str) -> Any:
+def _decode_json(raw: str, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        decoded: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise _DuplicateJSONKey(key)
+            decoded[key] = value
+        return decoded
+
     try:
-        return json.loads(result.stdout or "null")
-    except json.JSONDecodeError as exc:
+        return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except (json.JSONDecodeError, _DuplicateJSONKey) as exc:
         raise SetupConflict(f"{label} returned invalid JSON") from exc
 
 
-def _agent_id(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value:
+def _json(result: CommandResult, label: str) -> Any:
+    return _decode_json(result.stdout or "null", label)
+
+
+def _canonical_agent_id(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not VALID_AGENT_ID_RE.fullmatch(value):
         raise SetupConflict(f"OpenClaw returned an invalid agent ID at {label}")
-    return value
+    return value.lower()
+
+
+def _require_canonical_agent_id(value: Any, label: str) -> str:
+    canonical = _canonical_agent_id(value, label)
+    if value != canonical:
+        raise SetupConflict(
+            f"{label} must already use canonical lowercase OpenClaw agent-ID syntax"
+        )
+    return canonical
+
+
+def _validate_requested_agent_id(value: Any) -> str:
+    try:
+        canonical = _require_canonical_agent_id(value, "requested agent ID")
+    except SetupConflict as exc:
+        raise SetupConflict(
+            "AGENT_ID must be nonblank, use 1-64 letters, numbers, underscore, "
+            "or hyphen, start with a letter or number, and already be canonical "
+            "lowercase"
+        ) from exc
+    if canonical in RESERVED_AGENT_IDS:
+        raise SetupConflict(f'AGENT_ID "{canonical}" is reserved by OpenClaw')
+    return canonical
+
+
+def _agent_id(value: Any, label: str) -> str:
+    return _canonical_agent_id(value, label)
 
 
 def _agent_list_records(value: Any, label: str) -> list[dict[str, Any]]:
@@ -595,6 +641,7 @@ def _agent_list_records(value: Any, label: str) -> list[dict[str, Any]]:
         if agent_id in seen:
             raise SetupConflict(f"OpenClaw returned duplicate agent ID: {agent_id}")
         seen.add(agent_id)
+        record["id"] = agent_id
         records.append(record)
     return records
 
@@ -607,25 +654,26 @@ def _agent_entry_records(
     records: list[dict[str, Any]] = []
     prefixes: dict[str, str] = {}
     seen: set[str] = set()
-    for agent_id, entry in value.items():
-        agent_id = _agent_id(agent_id, f"{label} key")
+    for raw_agent_id, entry in value.items():
+        agent_id = _agent_id(raw_agent_id, f"{label} key")
+        rendered_raw_id = json.dumps(raw_agent_id)
         if not isinstance(entry, dict):
             raise SetupConflict(
-                f"OpenClaw returned an unsupported agent record at {label}[{json.dumps(agent_id)}]"
+                f"OpenClaw returned an unsupported agent record at {label}[{rendered_raw_id}]"
             )
         record = dict(entry)
         if "id" in record and _agent_id(
-            record["id"], f"{label}[{json.dumps(agent_id)}].id"
+            record["id"], f"{label}[{rendered_raw_id}].id"
         ) != agent_id:
             raise SetupConflict(
-                f"OpenClaw returned mismatched agent IDs at {label}[{json.dumps(agent_id)}]"
+                f"OpenClaw returned mismatched agent IDs at {label}[{rendered_raw_id}]"
             )
         if agent_id in seen:
             raise SetupConflict(f"OpenClaw returned duplicate agent ID: {agent_id}")
         seen.add(agent_id)
         record["id"] = agent_id
         records.append(record)
-        prefixes[agent_id] = f'{label}[{json.dumps(agent_id)}]'
+        prefixes[agent_id] = f"{label}[{rendered_raw_id}]"
     return records, prefixes
 
 
@@ -648,7 +696,7 @@ def _configured_agent_roster(payload: Any) -> AgentRoster:
     if has_entries:
         records, prefixes = _agent_entry_records(payload["entries"], "agents.entries")
         return AgentRoster("entries", records, prefixes)
-    if set(payload) <= {"defaults"}:
+    if set(payload) == {"defaults"}:
         return AgentRoster(None, [], {})
     raise SetupConflict("OpenClaw returned an unsupported agents config JSON shape")
 
@@ -676,17 +724,18 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
     if result.returncode != 1:
         return False
     expected_text = f"Config path not found: {path}"
-    streams = (result.stdout.strip(), result.stderr.strip())
-    nonempty = [stream for stream in streams if stream]
-    if len(nonempty) != 1:
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    if stdout and stderr:
         return False
-    diagnostic = nonempty[0]
-    if diagnostic == expected_text:
-        return True
-    try:
-        return json.loads(diagnostic) == {"error": expected_text}
-    except json.JSONDecodeError:
-        return False
+    if stdout:
+        try:
+            return _decode_json(stdout, "config missing-path diagnostic") == {
+                "error": expected_text
+            }
+        except SetupConflict:
+            return False
+    return stderr == expected_text
 
 
 def _read_agent_roster(
@@ -701,6 +750,19 @@ def _read_agent_roster(
         suffix = f": {detail}" if detail else ""
         raise SetupConflict(f"unsupported OpenClaw installation: {label} failed{suffix}")
     return _configured_agent_roster(_json(result, label))
+
+
+def _revalidate_legacy_agent_prefix(
+    cli: OpenClawCLI, *, agent_id: str, prefix: str, label: str
+) -> None:
+    if not LEGACY_AGENT_PREFIX_RE.fullmatch(prefix):
+        return
+    roster = _read_agent_roster(cli, allow_missing=False, label=label)
+    if roster.schema != "list" or roster.prefixes.get(agent_id) != prefix:
+        raise SetupConflict(
+            "legacy agent roster changed during setup; stop concurrent OpenClaw "
+            "configuration writes and rerun setup"
+        )
 
 
 def _eligible_skills(payload: Any) -> set[str]:
@@ -927,8 +989,7 @@ def _run_sensitive_required(
 def _command_entries(output: str) -> set[str]:
     lines = output.splitlines()
     commands_indent: int | None = None
-    direct_indent: int | None = None
-    entries: set[str] = set()
+    candidates: list[tuple[int, str]] = []
     in_commands = False
     for raw in lines:
         stripped = raw.strip()
@@ -945,11 +1006,11 @@ def _command_entries(output: str) -> set[str]:
         token = stripped.split(maxsplit=1)[0]
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", token):
             continue
-        if direct_indent is None:
-            direct_indent = indent
-        if indent == direct_indent:
-            entries.add(token)
-    return entries
+        candidates.append((indent, token))
+    if not candidates:
+        return set()
+    direct_indent = min(indent for indent, _ in candidates)
+    return {token for indent, token in candidates if indent == direct_indent}
 
 
 def _require_help(
@@ -1222,6 +1283,7 @@ def _run_action(cli: OpenClawCLI, action: Action) -> CommandResult:
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
     try:
+        _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
         gateway_env_path: Path | None = None
         if token:
@@ -1349,6 +1411,18 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 raise SetupConflict(
                     f"{action.description} failed: {(result.stderr or result.stdout).strip()}"
                 )
+            created_payload = _json(result, "agents add --json")
+            if not isinstance(created_payload, dict):
+                raise SetupConflict(
+                    "agents add --json returned an unsupported JSON shape"
+                )
+            created_agent_id = _require_canonical_agent_id(
+                created_payload.get("agentId"), "agents add --json agentId"
+            )
+            if created_agent_id != options.agent_id:
+                raise SetupConflict(
+                    "agents add --json returned a different agentId than requested"
+                )
             messages.append(action.description)
 
         refreshed_roster = _read_agent_roster(
@@ -1371,6 +1445,16 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         )
         for action in actions:
+            if (
+                action.argv[1:3] == ["config", "set"]
+                and action.argv[3].startswith(f"{prefix}.")
+            ):
+                _revalidate_legacy_agent_prefix(
+                    cli,
+                    agent_id=options.agent_id,
+                    prefix=prefix,
+                    label=f"legacy roster revalidation before {action.description}",
+                )
             result = _run_action(cli, action)
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()
@@ -1439,6 +1523,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         "OpenClaw did not remove the legacy plaintext CRM API token setting"
                     )
 
+        _revalidate_legacy_agent_prefix(
+            cli,
+            agent_id=options.agent_id,
+            prefix=prefix,
+            label="legacy roster revalidation before authoritative tools readback",
+        )
         authoritative_tools = _run_required(
             cli,
             [
@@ -1536,9 +1626,7 @@ def _parse_args(
     _load_repo_env(repo or Path(__file__).resolve().parents[1])
     configured_agent_id = os.environ.get("AGENT_ID")
     default_agent_id = (
-        configured_agent_id.strip()
-        if configured_agent_id is not None
-        else "openhouse-crm"
+        configured_agent_id if configured_agent_id is not None else "openhouse-crm"
     )
     parser = argparse.ArgumentParser(
         description="Safely configure a dedicated OpenClaw CRM agent"
@@ -1558,7 +1646,16 @@ def _parse_args(
             "AGENT_ID must not be blank; set AGENT_ID=openhouse-crm in .env "
             "so setup and runtime target the dedicated CRM agent"
         )
-    if args.agent_id is not None and args.agent_id.strip() != default_agent_id:
+    try:
+        _validate_requested_agent_id(default_agent_id)
+    except SetupConflict as exc:
+        parser.error(str(exc))
+    if args.agent_id is not None:
+        try:
+            _validate_requested_agent_id(args.agent_id)
+        except SetupConflict as exc:
+            parser.error(str(exc))
+    if args.agent_id is not None and args.agent_id != default_agent_id:
         parser.error(
             f"--agent-id {args.agent_id!r} conflicts with runtime "
             f"AGENT_ID={default_agent_id!r}; set AGENT_ID={args.agent_id} in .env "
@@ -1566,7 +1663,7 @@ def _parse_args(
         )
     return SetupOptions(
         agent_id=(
-            args.agent_id.strip() if args.agent_id is not None else default_agent_id
+            args.agent_id if args.agent_id is not None else default_agent_id
         ),
         workspace=args.workspace.expanduser(),
         crm_api_url=args.crm_api_url or _default_crm_api_url(),
