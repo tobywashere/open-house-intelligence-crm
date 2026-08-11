@@ -614,8 +614,9 @@ def _agent_entry_records(
                 f"OpenClaw returned an unsupported agent record at {label}[{json.dumps(agent_id)}]"
             )
         record = dict(entry)
-        embedded_id = record.get("id")
-        if embedded_id is not None and embedded_id != agent_id:
+        if "id" in record and _agent_id(
+            record["id"], f"{label}[{json.dumps(agent_id)}].id"
+        ) != agent_id:
             raise SetupConflict(
                 f"OpenClaw returned mismatched agent IDs at {label}[{json.dumps(agent_id)}]"
             )

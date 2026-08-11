@@ -250,6 +250,15 @@ def test_configured_roster_normalizes_modern_entries():
     assert roster.prefixes["openhouse-crm"] == 'agents.entries["openhouse-crm"]'
 
 
+def test_configured_roster_does_not_mutate_keyed_input_records():
+    payload = {"entries": {"openhouse-crm": {"workspace": "/crm"}}}
+
+    roster = setup_openclaw._configured_agent_roster(payload)
+
+    assert roster.records == [{"workspace": "/crm", "id": "openhouse-crm"}]
+    assert payload == {"entries": {"openhouse-crm": {"workspace": "/crm"}}}
+
+
 def test_configured_roster_normalizes_legacy_list():
     roster = setup_openclaw._configured_agent_roster(
         {"defaults": {}, "list": [{"id": "main"}, {"id": "openhouse-crm"}]}
@@ -275,6 +284,7 @@ def test_configured_roster_accepts_defaults_only_as_empty():
         {"entries": []},
         {"list": [{"id": "same"}, {"id": "same"}]},
         {"entries": {"openhouse-crm": {"id": "different"}}},
+        {"entries": {"openhouse-crm": {"id": None}}},
         {"list": [{"id": "legacy"}], "entries": {"modern": {}}},
     ],
 )
