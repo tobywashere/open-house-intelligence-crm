@@ -521,6 +521,7 @@ def test_keyed_roster_raw_json_rejects_duplicate_keys():
     "result",
     [
         CommandResult(1, '{"error":"Config path not found: agents"}', ""),
+        CommandResult(1, "Config path not found: agents", ""),
         CommandResult(1, "", "Config path not found: agents"),
     ],
 )
@@ -554,7 +555,6 @@ def test_agent_root_exact_missing_path_is_empty_before_creation(tmp_path, result
             '"error":"Config path not found: agents"}',
             "",
         ),
-        CommandResult(1, "Config path not found: agents", ""),
         CommandResult(1, "", '{"error":"Config path not found: agents"}'),
     ],
 )

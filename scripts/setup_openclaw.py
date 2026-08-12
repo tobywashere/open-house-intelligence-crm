@@ -729,6 +729,8 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
     if stdout and stderr:
         return False
     if stdout:
+        if stdout == expected_text:
+            return True
         try:
             return _decode_json(stdout, "config missing-path diagnostic") == {
                 "error": expected_text
