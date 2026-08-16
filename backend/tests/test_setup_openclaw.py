@@ -112,7 +112,22 @@ class FakeCLI:
                         "id": args[args.index("--ref-id") + 1],
                     }
                 elif "--strict-json" in args:
-                    self.config_values[path] = json.loads(args[-2])
+                    value = json.loads(args[-2])
+                    if path.endswith(".tools") and isinstance(value, dict):
+                        exec_policy = value.get("exec")
+                        if (
+                            isinstance(exec_policy, dict)
+                            and "mode" in exec_policy
+                            and ({"security", "ask"} & set(exec_policy))
+                        ):
+                            return CommandResult(
+                                1,
+                                "",
+                                "Error: Config validation failed: "
+                                f"{path}.exec.mode: tools.exec.mode cannot be combined "
+                                "with tools.exec.security or tools.exec.ask",
+                            )
+                    self.config_values[path] = value
                     match = re.fullmatch(
                         r'agents\.(?:list\[\d+\]|entries\["[^\"]+"\])\.(.+)',
                         path,
@@ -928,8 +943,9 @@ def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
     assert policy["exec"] == {
         "mode": "allowlist",
         "host": "gateway",
-        "ask": "off",
     }
+    assert "security" not in policy["exec"]
+    assert "ask" not in policy["exec"]
 
 
 @pytest.mark.parametrize(
@@ -938,7 +954,7 @@ def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
         {
             "allow": ["exec", "web_fetch"],
             "deny": ["write", "edit", "browser"],
-            "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
+            "exec": {"mode": "allowlist", "host": "gateway"},
         },
         {},
     ],
@@ -999,7 +1015,7 @@ def test_setup_rejects_any_authoritative_deny_set_mismatch(tmp_path, deny):
     tools = {
         "allow": ["exec"],
         "deny": deny,
-        "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
+        "exec": {"mode": "allowlist", "host": "gateway"},
     }
     cli = FakeCLI({command: CommandResult(0, json.dumps(tools), "")})
 
@@ -1022,7 +1038,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
     tools = {
         "allow": ["exec"],
         "deny": list(reversed(_EXPECTED_TOOL_DENY)),
-        "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
+        "exec": {"mode": "allowlist", "host": "gateway"},
     }
     cli = FakeCLI({command: CommandResult(0, json.dumps(tools), "")})
 
@@ -1032,7 +1048,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
     assert "Validated the restricted agent" in result.render()
 
 
-def test_setup_reads_back_exact_exec_tools_with_ask_off_and_is_idempotent(tmp_path):
+def test_setup_reads_back_normalized_exec_mode_and_is_idempotent(tmp_path):
     cli = FakeCLI()
     options = make_options(tmp_path)
 

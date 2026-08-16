@@ -38,7 +38,7 @@ DESIRED_TOOL_DENY = (
 DESIRED_TOOLS = {
     "allow": ["exec"],
     "deny": list(DESIRED_TOOL_DENY),
-    "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
+    "exec": {"mode": "allowlist", "host": "gateway"},
 }
 DESIRED_SANDBOX = {"mode": "off"}
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'

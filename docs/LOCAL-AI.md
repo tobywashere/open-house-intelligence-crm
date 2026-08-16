@@ -207,8 +207,9 @@ availability is checked again when approval happens. New-lead preferences are
 shown as one item per line; editing them changes what is saved, and clearing
 the box saves an empty preference list.
 
-OpenClaw's `ask: off` setting only disables a second command-execution prompt
-inside the restricted agent. It does not bypass this CRM review screen.
+OpenClaw's normalized `allowlist` execution mode disables a second
+command-execution prompt for approved commands inside the restricted agent. It
+does not bypass this CRM review screen.
 
 This is also true for the optional Discord binding:
 
