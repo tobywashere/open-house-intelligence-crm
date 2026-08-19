@@ -82,6 +82,13 @@ conflicting values so the helper and CRM runtime cannot select different agents.
 It restricts command execution to the shipped CRM wrapper and daily-brief
 runner, rather than allowing a general shell command.
 
+If an earlier run stopped halfway through, rerun the same command. Setup repairs
+the CRM agent's skills, sandbox, and execution policy before checking the final
+result. It does not change the global `tools.exec` settings used by other agents.
+If a later check fails, setup restores the CRM agent fields that existed before
+that run. It will not take over an existing `openhouse-crm` agent whose workspace
+points somewhere else.
+
 The helper prints `openclaw --version` in both success and failure diagnostics.
 Compatibility is capability-based because this repository has no evidence for
 a safe numeric version range. Before changing files or configuration, the
@@ -164,10 +171,10 @@ The helper uses the following agent policy on purpose:
 
 OpenClaw's skill and configuration interfaces change over time. If the helper
 reports an unsupported command or configuration shape, update OpenClaw and
-rerun it rather than manually broadening the agent's permissions. If setup
-still fails, share `openclaw --version`, the failing command, and its exact
-redacted output with the project maintainers rather than patching the script
-locally.
+rerun it rather than manually changing global `tools.exec` settings or broadening
+the agent's permissions. If setup still fails, share `openclaw --version`, the
+failing command, and its exact redacted output with the project maintainers
+rather than patching the script locally.
 
 ## Live checks and status
 
@@ -310,7 +317,8 @@ CRM fields can create a new proposal for review.
   Include `X-API-Token` in direct API commands, rerun
   `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
 - **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
-  It checks the agent workspace, eligible skill, allowlist, and restart.
+  It repairs partial dedicated-agent setup, then checks the workspace, eligible
+  skill, allowlist, and restart. Do not change global `tools.exec` settings.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
   Confirm `AGENT_ID=openhouse-crm`, rerun setup, and repeat the live CRM check.
 - **OpenClaw unreachable:** start the gateway and verify

@@ -165,8 +165,10 @@ agent configuration and the same review-before-apply CRM rules.
   `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
   API commands must also send that value in `X-API-Token`.
 - **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
-  It checks the dedicated agent, eligible `crm-db-operations` skill, and its
-  restricted tool access. See [recovery steps](docs/LOCAL-AI.md#recovery).
+  It repairs a partial dedicated-agent setup, then checks the eligible
+  `crm-db-operations` skill and restricted tool access. It does not require
+  changes to global `tools.exec` settings. See
+  [recovery steps](docs/LOCAL-AI.md#recovery).
 - **OpenClaw unreachable:** check that the gateway is running on port 18789
   and that `AGENT_GATEWAY_URL` in `.env` is correct.
 - **Voice transcription failed:** run the exact command in

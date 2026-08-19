@@ -138,6 +138,12 @@ class FakeCLI:
                 if args[3] == LEGACY_TOKEN_CONFIG_PATH:
                     self.legacy_token = None
                 self.config_values.pop(args[3], None)
+                match = re.fullmatch(
+                    r'agents\.(?:list\[\d+\]|entries\["[^\"]+"\])\.(.+)',
+                    args[3],
+                )
+                if match and self.created_agent is not None:
+                    self.created_agent.pop(match.group(1), None)
         if response is not None:
             return response
         if args[-1:] == ["--help"]:
@@ -307,6 +313,76 @@ class FreshRosterCLI(FakeCLI):
                     },
                 }
             return CommandResult(0, json.dumps(payload), "")
+        return super().run(args, mutate=mutate)
+
+
+class PartialPolicyCLI(FakeCLI):
+    """Expose the real policy transition for an existing partial CRM agent."""
+
+    def __init__(self, agent, responses=None):
+        super().__init__(responses)
+        self.created_agent = agent
+
+    def run(self, args, *, mutate=False):
+        result = super().run(args, mutate=mutate)
+        if args != ["openclaw", "approvals", "get", "--gateway", "--json"]:
+            return result
+        payload = json.loads(result.stdout)
+        tools = self.created_agent.get("tools", {})
+        if tools.get("exec") != {"mode": "allowlist", "host": "gateway"}:
+            scope = payload["effectivePolicy"]["scopes"][0]
+            scope["host"] = {"requested": "auto"}
+            scope["mode"] = {"effective": "full"}
+            scope["security"] = {"effective": "full"}
+        return CommandResult(0, json.dumps(payload), "")
+
+
+class RollbackWorkspaceChangeCLI(PartialPolicyCLI):
+    def __init__(self, agent):
+        self.validation_failed = False
+        super().__init__(
+            agent,
+            {
+                ("openclaw", "config", "validate", "--json"): CommandResult(
+                    1, "", "simulated validation failure"
+                )
+            },
+        )
+
+    def run(self, args, *, mutate=False):
+        if args == ["openclaw", "config", "validate", "--json"]:
+            self.validation_failed = True
+        if (
+            self.validation_failed
+            and args == ["openclaw", "config", "get", "agents", "--json"]
+        ):
+            self.calls.append(args)
+            changed = {**self.created_agent, "workspace": "/reassigned-workspace"}
+            return CommandResult(
+                0, json.dumps({"defaults": {}, "list": [changed]}), ""
+            )
+        return super().run(args, mutate=mutate)
+
+
+class RepairWorkspaceChangeCLI(PartialPolicyCLI):
+    def __init__(self, agent, *, change_on_read=3):
+        super().__init__(agent)
+        self.roster_reads = 0
+        self.change_on_read = change_on_read
+
+    def run(self, args, *, mutate=False):
+        if args == ["openclaw", "config", "get", "agents", "--json"]:
+            self.calls.append(args)
+            self.roster_reads += 1
+            workspace = (
+                "/reassigned-workspace"
+                if self.roster_reads >= self.change_on_read
+                else self.created_agent["workspace"]
+            )
+            changed = {**self.created_agent, "workspace": workspace}
+            return CommandResult(
+                0, json.dumps({"defaults": {}, "list": [changed]}), ""
+            )
         return super().run(args, mutate=mutate)
 
 
@@ -725,34 +801,130 @@ def test_cli_config_agent_mismatch_fails_before_mutation_for_each_roster_schema(
 
 @pytest.mark.parametrize("schema", ["list", "entries"])
 @pytest.mark.parametrize(
-    ("field", "current"),
+    ("field", "current", "expected"),
     [
-        ("skills", ["unrelated-skill"]),
-        ("tools", {"allow": ["web_fetch"]}),
-        ("sandbox", {"mode": "on"}),
+        (
+            "skills",
+            ["unrelated-skill"],
+            [
+                "crm-db-operations",
+                "business-card-scanner",
+                "daily-command-center",
+                "daily-brief",
+            ],
+        ),
+        (
+            "tools",
+            {"allow": ["web_fetch"]},
+            {
+                "allow": ["exec"],
+                "deny": [
+                    "web_fetch",
+                    "web_search",
+                    "browser",
+                    "read",
+                    "write",
+                    "edit",
+                    "apply_patch",
+                    "canvas",
+                    "nodes",
+                    "cron",
+                ],
+                "exec": {"mode": "allowlist", "host": "gateway"},
+            },
+        ),
+        ("sandbox", {"mode": "on"}, {"mode": "off"}),
     ],
 )
-def test_incompatible_existing_agent_fields_fail_before_mutation_for_each_schema(
-    tmp_path, schema, field, current
+def test_existing_managed_agent_fields_are_repaired_for_each_schema(
+    tmp_path, schema, field, current, expected
 ):
-    options = make_options(tmp_path, dry_run=True)
+    options = make_options(tmp_path)
     agent = {"id": options.agent_id, "workspace": str(options.workspace), field: current}
-    cli = FakeCLI(
-        {
-            ("openclaw", "agents", "list", "--json"): CommandResult(
-                0, json.dumps({"agents": [agent]}), ""
-            ),
-            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
-                0, json.dumps(_roster_payload(schema, [agent])), ""
-            ),
-        }
-    )
+    cli = PartialPolicyCLI(agent)
+    if schema == "entries":
+        cli = FakeCLI(
+            {
+                ("openclaw", "agents", "list", "--json"): CommandResult(
+                    0, json.dumps({"agents": [agent]}), ""
+                ),
+                ("openclaw", "config", "get", "agents", "--json"): CommandResult(
+                    0, json.dumps(_roster_payload(schema, [agent])), ""
+                ),
+            }
+        )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    prefix = "agents.list[0]" if schema == "list" else 'agents.entries["openhouse-crm"]'
+    matching = [
+        call
+        for call in cli.mutating_calls
+        if call[1:3] == ["config", "set"] and call[3] == f"{prefix}.{field}"
+    ]
+    assert matching
+    assert json.loads(matching[-1][-2]) == expected
+
+
+def test_existing_agent_with_different_workspace_is_not_claimed(tmp_path):
+    options = make_options(tmp_path)
+    agent = {"id": options.agent_id, "workspace": "/someone-elses-agent"}
+    cli = PartialPolicyCLI(agent)
 
     result = configure_openclaw(options, cli=cli)
 
     assert not result.ok
-    assert field in result.render()
+    assert "workspace" in result.render()
     assert cli.mutating_calls == []
+
+
+def test_repair_stops_if_agent_workspace_changes_before_write(tmp_path):
+    options = make_options(tmp_path)
+    agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "tools": {"allow": ["web_fetch"]},
+    }
+    cli = RepairWorkspaceChangeCLI(agent)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "workspace changed during setup" in result.render()
+    assert not any(
+        call[1:3] == ["config", "set"] and call[3].startswith("agents.")
+        for call in cli.mutating_calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("bind_discord", "forbidden_prefix"),
+    [
+        ("team", ["agents", "bind"]),
+        (None, ["approvals", "allowlist", "add"]),
+    ],
+    ids=["discord-binding", "executable-approval"],
+)
+def test_agent_addressed_actions_recheck_workspace(
+    tmp_path, bind_discord, forbidden_prefix
+):
+    options = make_options(tmp_path, bind_discord=bind_discord)
+    agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "tools": {"allow": ["web_fetch"]},
+    }
+    cli = RepairWorkspaceChangeCLI(agent, change_on_read=6)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "workspace changed during setup" in result.render()
+    assert not any(
+        call[1 : 1 + len(forbidden_prefix)] == forbidden_prefix
+        for call in cli.mutating_calls
+    )
 
 
 def test_ambiguous_legacy_and_modern_rosters_fail_before_mutation(tmp_path):
@@ -1089,7 +1261,7 @@ def test_setup_reads_back_normalized_exec_mode_and_is_idempotent(tmp_path):
 def test_setup_never_reports_ready_without_unambiguous_effective_ask_off(
     tmp_path, ask_state
 ):
-    options = make_options(tmp_path, dry_run=True)
+    options = make_options(tmp_path)
     agent = {"id": "openhouse-crm", "workspace": str(options.workspace)}
     payload = gateway_approval_payload()
     scope = payload["effectivePolicy"]["scopes"][0]
@@ -2444,44 +2616,83 @@ def test_incompatible_gateway_approval_document_fails_before_mutation(
     assert cli.mutating_calls == []
 
 
-@pytest.mark.parametrize(
-    "effective",
-    [
-        {"security": {"effective": "full"}},
-        {"mode": {"effective": "full"}},
-        {"askFallback": {"effective": "full"}},
-        {"host": {"requested": "auto"}},
-    ],
-)
-def test_unsafe_effective_gateway_policy_fails_before_existing_agent_mutation(
-    tmp_path, effective
-):
-    options = make_options(tmp_path, dry_run=True)
-    agent = {"id": "openhouse-crm", "workspace": str(options.workspace)}
-    payload = gateway_approval_payload(effective=effective)
-    cli = FakeCLI(
-        {
-            ("openclaw", "agents", "list", "--json"): CommandResult(
-                0, json.dumps({"agents": [agent]}), ""
-            ),
-            ("openclaw", "config", "get", "agents", "--json"): CommandResult(
-                0, json.dumps({"defaults": {}, "list": [agent]}), ""
-            ),
-            ("openclaw", "approvals", "get", "--gateway", "--json"): CommandResult(
-                0, json.dumps(payload), ""
-            ),
-        }
+def test_partial_agent_policy_is_repaired_before_effective_validation(tmp_path):
+    options = make_options(tmp_path)
+    original = {
+        "id": "openhouse-crm",
+        "workspace": str(options.workspace),
+        "skills": ["crm-db-operations", "daily-brief"],
+        "tools": {
+            "allow": ["exec"],
+            "deny": list(_EXPECTED_TOOL_DENY),
+            "exec": {"host": "auto", "mode": "full"},
+        },
+        "sandbox": {"mode": "off"},
+    }
+    cli = PartialPolicyCLI(original)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.created_agent["tools"]["exec"] == {
+        "host": "gateway",
+        "mode": "allowlist",
+    }
+    assert not any(
+        call[1:3] == ["config", "set"] and call[3].startswith("tools.exec")
+        for call in cli.mutating_calls
+    )
+
+
+def test_failed_existing_agent_repair_restores_managed_fields(tmp_path):
+    options = make_options(tmp_path)
+    original = {
+        "id": "openhouse-crm",
+        "workspace": str(options.workspace),
+        "skills": ["legacy-skill"],
+        "tools": {"allow": ["web_fetch"]},
+        "sandbox": {"mode": "on"},
+    }
+    validate = ("openclaw", "config", "validate", "--json")
+    cli = PartialPolicyCLI(
+        dict(original),
+        {validate: CommandResult(1, "", "simulated validation failure")},
     )
 
     result = configure_openclaw(options, cli=cli)
 
     assert not result.ok
-    assert "effective" in result.render()
-    assert cli.mutating_calls == []
+    assert "simulated validation failure" in result.render()
+    assert cli.created_agent == original
+    assert "Restored the previous dedicated-agent configuration" in result.render()
+
+
+def test_rollback_stops_if_agent_workspace_changes(tmp_path):
+    options = make_options(tmp_path)
+    original = {
+        "id": "openhouse-crm",
+        "workspace": str(options.workspace),
+        "tools": {"allow": ["web_fetch"]},
+    }
+    cli = RollbackWorkspaceChangeCLI(dict(original))
+
+    result = configure_openclaw(options, cli=cli)
+
+    validate_index = cli.calls.index(
+        ["openclaw", "config", "validate", "--json"]
+    )
+    rollback_mutations = [
+        call
+        for call in cli.calls[validate_index + 1 :]
+        if call[1:3] in (["config", "set"], ["config", "unset"])
+    ]
+    assert not result.ok
+    assert rollback_mutations == []
+    assert "Could not fully restore" in result.render()
 
 
 def test_mismatched_effective_scope_identity_is_rejected(tmp_path):
-    options = make_options(tmp_path, dry_run=True)
+    options = make_options(tmp_path)
     agent = {"id": "openhouse-crm", "workspace": str(options.workspace)}
     payload = gateway_approval_payload()
     scope = payload["effectivePolicy"]["scopes"][0]

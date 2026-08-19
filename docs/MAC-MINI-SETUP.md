@@ -128,7 +128,9 @@ still proposed for review in the dashboard before they apply.
 - **Unauthorized:** add the matching `AGENT_GATEWAY_TOKEN` to `.env`, then
   restart `bash scripts/serve.sh`.
 - **Chat verified, CRM capability failed:** rerun
-  `python3 scripts/setup_openclaw.py`; it validates the agent and skill setup.
+  `python3 scripts/setup_openclaw.py`; it repairs a partial dedicated-agent
+  setup, then validates the agent and skills. Do not change global
+  `tools.exec` settings.
 - **OpenClaw unreachable:** make sure its gateway is listening on port 18789
   and `AGENT_GATEWAY_URL` is correct in `.env`.
 - **Slow responses:** choose a smaller model. The 16 GB minimum does not mean
