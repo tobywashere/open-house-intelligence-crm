@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Native OpenClaw tool for audited Open House CRM operations.",
   "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "files": [
     "dist",
     "operations.json",
