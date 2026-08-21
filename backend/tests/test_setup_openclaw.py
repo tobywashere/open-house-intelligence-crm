@@ -124,7 +124,15 @@ def gateway_approval_payload(
 
 
 class FakeCLI:
-    def __init__(self, responses=None, *, config_path=None, legacy_token=None):
+    def __init__(
+        self,
+        responses=None,
+        *,
+        config_path=None,
+        legacy_token=None,
+        plugin_path=None,
+        plugin_enabled=False,
+    ):
         self.calls = []
         self.mutating_calls = []
         self.responses = responses or {}
@@ -132,6 +140,9 @@ class FakeCLI:
         self.config_path = config_path
         self.config_values = {}
         self.legacy_token = legacy_token
+        self.plugin_path = plugin_path
+        self.plugin_enabled = plugin_enabled
+        self.approval_patterns = set()
 
     def run(self, args, *, mutate=False):
         self.calls.append(args)
@@ -188,6 +199,19 @@ class FakeCLI:
                 )
                 if match and self.created_agent is not None:
                     self.created_agent.pop(match.group(1), None)
+            elif args[1:3] == ["plugins", "install"]:
+                self.plugin_path = args[args.index("--link") + 1]
+            elif args[1:3] == ["plugins", "enable"]:
+                self.plugin_enabled = True
+            elif args[1:3] == ["plugins", "disable"]:
+                self.plugin_enabled = False
+            elif args[1:3] == ["plugins", "uninstall"]:
+                self.plugin_path = None
+                self.plugin_enabled = False
+            elif args[1:4] == ["approvals", "allowlist", "add"]:
+                self.approval_patterns.add(args[-1])
+            elif args[1:4] == ["approvals", "allowlist", "remove"]:
+                self.approval_patterns.discard(args[-1])
         if response is not None:
             return response
         if args[-1:] == ["--help"]:
@@ -196,6 +220,7 @@ class FakeCLI:
                 "Commands:\n"
                 "  agents\n  add\n  list\n  bind\n  config\n  get\n  set\n"
                 "  unset\n  file\n  validate\n  skills\n  check\n  approvals\n  allowlist\n"
+                "  plugins\n  install\n  inspect\n  enable\n  disable\n  uninstall\n  remove\n"
                 "  exec-policy\n  show\n  sandbox\n  explain\n  gateway\n"
                 "  restart\n"
                 "Options:\n"
@@ -203,7 +228,7 @@ class FakeCLI:
                 "  --agent ID\n  --bind TARGET\n  --strict-json VALUE\n"
                 "  --ref-provider NAME\n  --ref-source SOURCE\n  --ref-id ID\n"
                 "  --dry-run\n"
-                "  --gateway",
+                "  --gateway\n  --link\n  --force\n  --runtime\n  --keep-files",
                 "",
             )
         if args == ["openclaw", "--version"]:
@@ -224,6 +249,49 @@ class FakeCLI:
                 ),
                 "",
             )
+        if args == ["openclaw", "plugins", "list", "--json"]:
+            plugins = []
+            if self.plugin_path is not None:
+                plugins.append(
+                    {
+                        "id": "openhouse-crm",
+                        "enabled": self.plugin_enabled,
+                        "format": "openclaw",
+                        "source": "linked",
+                        "rootDir": self.plugin_path,
+                        "dependencyStatus": {"ok": True},
+                    }
+                )
+            return CommandResult(0, json.dumps({"plugins": plugins}), "")
+        if args == [
+            "openclaw",
+            "plugins",
+            "inspect",
+            "openhouse-crm",
+            "--runtime",
+            "--json",
+        ]:
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "plugin": {
+                            "id": "openhouse-crm",
+                            "enabled": self.plugin_enabled,
+                            "rootDir": self.plugin_path,
+                        },
+                        "runtime": {
+                            "tools": [{"name": "openhouse_crm"}],
+                            "diagnostics": [],
+                        },
+                    }
+                ),
+                "",
+            )
+        if args == ["openclaw", "config", "get", "plugins.allow", "--json"]:
+            if "plugins.allow" not in self.config_values:
+                return CommandResult(1, "", "Config path not found: plugins.allow")
+            return CommandResult(0, json.dumps(self.config_values["plugins.allow"]), "")
         if args == [
             "openclaw",
             "config",
@@ -274,28 +342,9 @@ class FakeCLI:
         if args == ["openclaw", "exec-policy", "show", "--json"]:
             return CommandResult(0, '{"requested": {"host": "gateway", "mode": "allowlist"}}', "")
         if args == ["openclaw", "approvals", "get", "--gateway", "--json"]:
-            wrapper = next(
-                (
-                    call[-1]
-                    for call in self.mutating_calls
-                    if call[1:4] == ["approvals", "allowlist", "add"]
-                    and "crm-db-operations/cli.py" in call[-1]
-                ),
-                "",
-            )
-            daily = next(
-                (
-                    call[-1]
-                    for call in self.mutating_calls
-                    if call[1:4] == ["approvals", "allowlist", "add"]
-                    and "daily-brief/scripts/run_daily_brief.py" in call[-1]
-                ),
-                "",
-            )
             entries = [
                 {"pattern": pattern, "lastUsedAt": 1}
-                for pattern in (wrapper, daily)
-                if pattern
+                for pattern in sorted(self.approval_patterns)
             ]
             payload = gateway_approval_payload(entries=entries)
             return CommandResult(0, json.dumps(payload), "")
@@ -858,10 +907,10 @@ def test_cli_config_agent_mismatch_fails_before_mutation_for_each_roster_schema(
             ],
         ),
         (
-            "tools",
-            {"allow": ["web_fetch"]},
-            {
-                "allow": ["exec"],
+                "tools",
+                {"allow": ["web_fetch"]},
+                {
+                    "allow": ["openhouse_crm", "exec"],
                 "deny": [
                     "web_fetch",
                     "web_search",
@@ -1125,7 +1174,7 @@ def test_conflicting_agent_workspace_requires_explicit_repair(tmp_path):
         )
 
 
-def test_setup_allowlists_only_shipped_skill_entrypoints(tmp_path):
+def test_setup_keeps_only_daily_brief_on_the_exec_allowlist(tmp_path):
     options = make_options(tmp_path)
 
     actions = build_setup_actions(options, agents=[{"id": "openhouse-crm"}])
@@ -1133,20 +1182,197 @@ def test_setup_allowlists_only_shipped_skill_entrypoints(tmp_path):
     rendered = [" ".join(action.argv) for action in actions]
     wrapper = str(options.workspace / "skills/crm-db-operations/cli.py")
     daily = str(options.workspace / "skills/daily-brief/scripts/run_daily_brief.py")
-    assert any("approvals allowlist add" in command and wrapper in command for command in rendered)
+    assert any("approvals allowlist remove" in command and wrapper in command for command in rendered)
     assert any("approvals allowlist add" in command and daily in command for command in rendered)
-    assert all("--gateway" in command for command in rendered if "approvals allowlist add" in command)
+    assert all("--gateway" in command for command in rendered if "approvals allowlist" in command)
     assert not any(command.endswith(" python3") for command in rendered)
 
 
-def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
+def test_setup_links_enables_and_runtime_verifies_repository_plugin(tmp_path):
+    cli = FakeCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    expected_plugin = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+    assert [
+        "openclaw",
+        "plugins",
+        "install",
+        "--link",
+        expected_plugin,
+        "--force",
+    ] in cli.mutating_calls
+    assert ["openclaw", "plugins", "enable", "openhouse-crm"] in cli.mutating_calls
+    assert [
+        "openclaw",
+        "plugins",
+        "inspect",
+        "openhouse-crm",
+        "--runtime",
+        "--json",
+    ] in cli.calls
+    assert cli.plugin_path == expected_plugin
+    assert cli.plugin_enabled is True
+
+
+def test_setup_repairs_legacy_crm_exec_approval_and_keeps_daily_runner(tmp_path):
+    options = make_options(tmp_path)
+    wrapper, daily = setup_openclaw._entrypoints(options)
+    cli = FakeCLI()
+    cli.approval_patterns.update({str(wrapper), str(daily)})
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.approval_patterns == {str(daily)}
+    assert [
+        "openclaw",
+        "approvals",
+        "allowlist",
+        "remove",
+        "--agent",
+        "openhouse-crm",
+        "--gateway",
+        str(wrapper),
+    ] in cli.mutating_calls
+
+
+def test_setup_refuses_same_plugin_id_from_an_unrelated_path(tmp_path):
+    cli = FakeCLI(plugin_path="/unrelated/openhouse-crm", plugin_enabled=True)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "different source" in result.render().lower()
+    assert cli.mutating_calls == []
+
+
+def test_setup_does_not_restart_when_runtime_plugin_tool_is_missing(tmp_path):
+    command = (
+        "openclaw",
+        "plugins",
+        "inspect",
+        "openhouse-crm",
+        "--runtime",
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            command: CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "plugin": {"id": "openhouse-crm", "enabled": True},
+                        "runtime": {"tools": [], "diagnostics": []},
+                    }
+                ),
+                "",
+            )
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "openhouse_crm" in result.render()
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_setup_accepts_real_top_level_runtime_inspection_shape(tmp_path):
+    command = (
+        "openclaw",
+        "plugins",
+        "inspect",
+        "openhouse-crm",
+        "--runtime",
+        "--json",
+    )
+    plugin_root = REPO_ROOT / "openclaw-plugins" / "openhouse-crm"
+    cli = FakeCLI(
+        {
+            command: CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "workspaceDir": str(tmp_path / "workspace-openhouse-crm"),
+                        "plugin": {
+                            "id": "openhouse-crm",
+                            "enabled": True,
+                            "source": str(plugin_root / "dist" / "index.js"),
+                            "status": "loaded",
+                        },
+                        "tools": [{"name": "openhouse_crm"}],
+                        "diagnostics": [],
+                    }
+                ),
+                "",
+            )
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+
+
+def test_setup_preserves_unrelated_plugin_allowlist_entries(tmp_path):
+    cli = FakeCLI()
+    cli.config_values["plugins.allow"] = ["discord", "voice-call"]
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.config_values["plugins.allow"] == [
+        "discord",
+        "voice-call",
+        "openhouse-crm",
+    ]
+
+
+def test_runtime_failure_restores_legacy_approvals_and_new_plugin_state(tmp_path):
+    options = make_options(tmp_path)
+    wrapper, daily = setup_openclaw._entrypoints(options)
+    command = (
+        "openclaw",
+        "plugins",
+        "inspect",
+        "openhouse-crm",
+        "--runtime",
+        "--json",
+    )
+    cli = FakeCLI(
+        {
+            command: CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "plugin": {"id": "openhouse-crm", "enabled": True},
+                        "runtime": {"tools": [], "diagnostics": []},
+                    }
+                ),
+                "",
+            )
+        }
+    )
+    cli.approval_patterns.update({str(wrapper), str(daily)})
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert cli.approval_patterns == {str(wrapper), str(daily)}
+    assert cli.plugin_path is None
+    assert cli.plugin_enabled is False
+
+
+def test_dedicated_agent_allows_only_native_crm_tool_and_daily_brief_exec(tmp_path):
     actions = setup_openclaw._config_actions(make_options(tmp_path), "agents.list[0]")
     tools_action = next(
         action for action in actions if action.argv[3] == "agents.list[0].tools"
     )
     policy = json.loads(tools_action.argv[-2])
 
-    assert policy["allow"] == ["exec"]
+    assert policy["allow"] == ["openhouse_crm", "exec"]
     assert {
         "web_fetch",
         "web_search",
@@ -1168,7 +1394,7 @@ def test_dedicated_agent_allows_only_exec_and_denies_general_tools(tmp_path):
     "authoritative_tools",
     [
         {
-            "allow": ["exec", "web_fetch"],
+            "allow": ["openhouse_crm", "exec", "web_fetch"],
             "deny": ["write", "edit", "browser"],
             "exec": {"mode": "allowlist", "host": "gateway"},
         },
@@ -1193,7 +1419,7 @@ def test_setup_rejects_non_authoritative_or_broad_effective_tools(
 
     assert not result.ok
     assert "authoritative" in result.render().lower()
-    assert "Validated the restricted agent" not in result.render()
+    assert "Validated the native CRM tool" not in result.render()
     assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
 
 
@@ -1229,7 +1455,7 @@ def test_setup_rejects_any_authoritative_deny_set_mismatch(tmp_path, deny):
         "--json",
     )
     tools = {
-        "allow": ["exec"],
+        "allow": ["openhouse_crm", "exec"],
         "deny": deny,
         "exec": {"mode": "allowlist", "host": "gateway"},
     }
@@ -1239,7 +1465,7 @@ def test_setup_rejects_any_authoritative_deny_set_mismatch(tmp_path, deny):
 
     assert not result.ok
     assert "authoritative" in result.render().lower()
-    assert "Validated the restricted agent" not in result.render()
+    assert "Validated the native CRM tool" not in result.render()
     assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
 
 
@@ -1252,7 +1478,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
         "--json",
     )
     tools = {
-        "allow": ["exec"],
+        "allow": ["exec", "openhouse_crm"],
         "deny": list(reversed(_EXPECTED_TOOL_DENY)),
         "exec": {"mode": "allowlist", "host": "gateway"},
     }
@@ -1261,7 +1487,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
     assert result.ok, result.render()
-    assert "Validated the restricted agent" in result.render()
+    assert "Validated the native CRM tool" in result.render()
 
 
 @pytest.mark.parametrize(
@@ -1375,7 +1601,7 @@ def test_setup_reads_back_normalized_exec_mode_and_is_idempotent(tmp_path):
         and call[3].endswith("].tools")
     ]
     assert len(readbacks) == 2
-    assert "Validated the restricted agent" in second.render()
+    assert "Validated the native CRM tool" in second.render()
 
 
 @pytest.mark.parametrize(
@@ -1425,7 +1651,7 @@ def test_setup_never_reports_ready_without_unambiguous_effective_ask_off(
 
     assert not result.ok
     assert "ask" in result.render()
-    assert "Validated the restricted agent" not in result.render()
+    assert "Validated the native CRM tool" not in result.render()
 
 
 def test_dashboard_refresh_uses_the_installed_allowlisted_daily_runner(tmp_path):
@@ -1444,10 +1670,7 @@ def test_dashboard_refresh_uses_the_installed_allowlisted_daily_runner(tmp_path)
     ).read_text()
     skill = (REPO_ROOT / "skills" / "daily-brief" / "SKILL.md").read_text()
 
-    assert allowed == [
-        str(options.workspace / "skills" / "crm-db-operations" / "cli.py"),
-        daily_runner,
-    ]
+    assert allowed == [daily_runner]
     assert "daily-brief skill in Mode 1" in overlay
     assert "python3 skills/" not in overlay
     assert "{baseDir}/scripts/run_daily_brief.py" in skill
@@ -2897,7 +3120,19 @@ def test_mutation_failure_stops_before_later_changes(tmp_path):
     result = configure_openclaw(options, cli=cli)
 
     assert not result.ok
-    assert cli.mutating_calls == [list(failing)]
+    assert list(failing) in cli.mutating_calls
+    assert not any(
+        call[1:3] == ["config", "set"] and call[3].startswith("agents.")
+        for call in cli.mutating_calls
+    )
+    assert [
+        "openclaw",
+        "plugins",
+        "uninstall",
+        "openhouse-crm",
+        "--keep-files",
+        "--force",
+    ] in cli.mutating_calls
 
 
 @pytest.mark.parametrize(
