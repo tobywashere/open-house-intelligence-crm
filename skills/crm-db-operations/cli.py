@@ -3,38 +3,30 @@
 
 import argparse
 import json
+from pathlib import Path
+import re
 import sys
 
 import tools
 
 
-OPERATIONS = {
-    name: getattr(tools, name)
-    for name in (
-        "create_lead",
-        "update_lead",
-        "add_note",
-        "close_lead",
-        "find_duplicate_leads",
-        "merge_leads",
-        "get_lead_context",
-        "list_leads",
-        "score_lead",
-        "draft_followup",
-        "check_availability",
-        "list_appointments",
-        "book_appointment",
-        "schedule_followup",
-        "find_neglected_leads",
-        "generate_dashboard_insights",
-        "post_briefing",
-        "get_research_settings",
-        "get_insights",
-        "get_summary",
-        "delete_lead",
-        "search_knowledge",
-    )
-}
+def _load_operation_names() -> tuple[str, ...]:
+    catalog_path = Path(__file__).with_name("operations.json")
+    names = json.loads(catalog_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(names, list)
+        or not names
+        or len(names) != len(set(names))
+        or not all(
+            isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]*", name)
+            for name in names
+        )
+    ):
+        raise RuntimeError("invalid CRM operation catalog")
+    return tuple(names)
+
+
+OPERATIONS = {name: getattr(tools, name) for name in _load_operation_names()}
 
 
 def dispatch(operation: str, arguments: dict):
