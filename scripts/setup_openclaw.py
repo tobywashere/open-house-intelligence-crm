@@ -1326,7 +1326,7 @@ def _deferred_agent_config_messages(options: SetupOptions) -> list[str]:
     messages = [
         "Would configure the dedicated CRM agent's shipped skills after agent creation, "
         "once OpenClaw selects the exact roster path.",
-        "Would configure the dedicated CRM agent's exec-only tools after agent creation, "
+        "Would configure the dedicated CRM agent's native CRM tool and daily-brief exec policy after agent creation, "
         "once OpenClaw selects the exact roster path.",
         "Would configure the dedicated CRM agent's sandbox mode after agent creation, "
         "once OpenClaw selects the exact roster path.",

@@ -85,7 +85,9 @@ def test_each_guide_independently_explains_the_agent_and_trust_boundaries():
 
         assert "AGENT_ID=openhouse-crm" in text, path
         assert "crm-db-operations" in text, path
+        assert "openhouse_crm" in text, path
         assert "openhouse-crm skill" not in text.lower(), path
+        assert "CRM wrapper and daily-brief runner" not in text, path
         assert "crm_verified" in text or "CRM verified" in text, path
         assert "Pending approvals" in text, path
         assert "deterministic fallback" in text, path

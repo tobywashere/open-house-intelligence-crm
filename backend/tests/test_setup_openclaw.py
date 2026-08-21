@@ -829,7 +829,7 @@ def test_fresh_dry_run_defers_agent_paths_until_creation(tmp_path, monkeypatch):
     assert "agents.list[0]" not in rendered
     assert "agents.entries" not in rendered
     assert "skills" in rendered
-    assert "exec-only tools" in rendered
+    assert "native CRM tool and daily-brief exec policy" in rendered
     assert "sandbox mode" in rendered
     assert "CRM API URL" in rendered
     assert "SecretRef" in rendered

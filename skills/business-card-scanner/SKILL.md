@@ -74,9 +74,12 @@ Use the `image` tool to analyze the business card image. Read all visible text:
 
 Before creating the lead, search existing leads to see if this person is already in the CRM:
 
-```bash
-{baseDir}/../crm-db-operations/cli.py list_leads --args '{"sort":"priority"}'
+```json
+{"operation":"list_leads","arguments":{"sort":"priority"}}
 ```
+
+Call the registered `openhouse_crm` tool with that input. Do not call the
+`crm-db-operations` skill name as a tool and do not use `exec` for this CRM read.
 
 Look for an exact phone or email match in the returned result. Also consider a
 close name match, but do not treat a name alone as proof that two people are
@@ -90,8 +93,10 @@ If no strong match, proceed to create.
 
 ### 4. Create the lead
 
-```bash
-{baseDir}/../crm-db-operations/cli.py create_lead --args '{"name":"Jessica Martinez","phone":"(555) 123-4567","email":"jessica@leaprealestate.com","area":"San Diego, CA","source":"form","raw_text":"LEAP Real Estate. Specialties: Buying, Selling, Investing. Website: www.leaprealestate.com. Address: 123 Market St., Suite 200, San Diego, CA 92101"}'
+Call `openhouse_crm` with:
+
+```json
+{"operation":"create_lead","arguments":{"name":"Jessica Martinez","phone":"(555) 123-4567","email":"jessica@leaprealestate.com","area":"San Diego, CA","source":"form","raw_text":"LEAP Real Estate. Specialties: Buying, Selling, Investing. Website: www.leaprealestate.com. Address: 123 Market St., Suite 200, San Diego, CA 92101"}}
 ```
 
 The CRM returns a pending-change record for human review. Do not claim the lead

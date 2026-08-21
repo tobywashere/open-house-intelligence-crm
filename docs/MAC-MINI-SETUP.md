@@ -6,7 +6,7 @@ You should see a clear result after each step.
 ## What you need
 
 - An Apple-silicon Mac mini with **16 GB** unified memory or more
-- macOS, 25 GB free disk space, Git, Python 3.11+, and Node.js 20+
+- macOS, 25 GB free disk space, Git, Python 3.11+, and Node.js 22.22.3+
 - OpenClaw with a tool-capable model that can answer a basic prompt
 
 Sixteen gigabytes is the minimum for the CRM plus a modest quantized model. It
@@ -69,13 +69,15 @@ Open [http://localhost:8080](http://localhost:8080). Keep the Terminal running
 `bash scripts/serve.sh` open while you use the CRM.
 
 The setup helper creates `openhouse-crm`, copies the shipped skills to its own
-workspace, enables the `crm-db-operations` skill for that agent, and sets its
-restricted command access. The configuration in `.env` is
+workspace, enables the `crm-db-operations` guidance for that agent, links the
+bundled `openhouse_crm` tool plugin, and sets restricted access. The
+configuration in `.env` is
 `AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
-required capabilities before changing anything, and allows only `exec` with
-the CRM wrapper and daily-brief runner on its executable allowlist. General
-web, browser, and file tools are denied. It then reads that tool policy back
-from OpenClaw and will not report success if broader tools remain available.
+required capabilities before changing anything, and allows only
+`openhouse_crm` plus `exec`. CRM work uses the typed plugin without a shell;
+only the daily-brief runner remains on the executable allowlist. General web,
+browser, and file tools are denied. It reads that policy and the plugin's live
+tool registration back from OpenClaw before reporting success.
 
 The doctor command should finish with **CRM capability: crm_verified**. A chat
 answer alone is not enough because it could come from a generic agent without
@@ -141,8 +143,8 @@ still proposed for review in the dashboard before they apply.
   restart `bash scripts/serve.sh`.
 - **Chat verified, CRM capability failed:** rerun
   `python3 scripts/setup_openclaw.py`; it repairs a partial dedicated-agent
-  setup, then validates the agent and skills. Do not change global
-  `tools.exec` settings.
+  setup, relinks the bundled CRM plugin, and verifies the real
+  `openhouse_crm` tool. Do not change global `tools.exec` settings.
 - **OpenClaw unreachable:** make sure its gateway is listening on port 18789
   and `AGENT_GATEWAY_URL` is correct in `.env`.
 - **Slow responses:** choose a smaller model. The 16 GB minimum does not mean

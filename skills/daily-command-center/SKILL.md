@@ -13,8 +13,9 @@ suggestions and a recommendation for a real appointment.
 
 ## Non-negotiable trust rules
 
-1. Use only the allowlisted `crm-db-operations` wrapper. Never read or write
-   SQL, and do not use general web, network, browser, or filesystem tools.
+1. Use only the registered `openhouse_crm` tool. `crm-db-operations` is a skill
+   name, not a tool ID. Never use `exec` for CRM work, read or write SQL, or use
+   general web, network, browser, or filesystem tools.
 2. Never invent a lead, appointment, time, location, score, preference,
    relationship fact, travel time, market fact, or outstanding response.
 3. Never add a plausible appointment or schedule block when the calendar is
@@ -27,18 +28,18 @@ suggestions and a recommendation for a real appointment.
 
 ## Pull today's data
 
-1. Run:
+1. Call `openhouse_crm` with:
 
-   ```bash
-   {baseDir}/../crm-db-operations/cli.py list_appointments --args '{}'
+   ```json
+   {"operation":"list_appointments","arguments":{}}
    ```
 
 2. Filter appointments to today's local `YYYY-MM-DD` date using `start_ts`.
-3. For every unique `lead_id` in those appointments, run the wrapper with that
-   real ID:
+3. For every unique `lead_id` in those appointments, call `openhouse_crm` with
+   that real ID:
 
-   ```bash
-   {baseDir}/../crm-db-operations/cli.py get_lead_context --args '{"lead_id":4}'
+   ```json
+   {"operation":"get_lead_context","arguments":{"lead_id":4}}
    ```
 
 4. Use the returned lead fields and events only to decide whether a short
@@ -99,10 +100,10 @@ the API drops them.
 
 ## Publish
 
-Call the wrapper with the complete payload as the named argument:
+Call `openhouse_crm` with the complete payload as the named argument:
 
-```bash
-{baseDir}/../crm-db-operations/cli.py post_briefing --args '{"payload":{"date":"2026-07-28","generated_at":"2026-07-28T07:00:12","meeting_briefs":[]}}'
+```json
+{"operation":"post_briefing","arguments":{"payload":{"date":"2026-07-28","generated_at":"2026-07-28T07:00:12","meeting_briefs":[]}}}
 ```
 
 Replace the example values with today's grounded payload. If the command

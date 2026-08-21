@@ -12,7 +12,7 @@ installation with a WSL copy of this repository.
 - Windows 11 with WSL2 and a Linux distribution such as Ubuntu
 - 16 GB system memory or more
 - About 25 GB of free space, plus whatever your chosen model needs
-- Git, Python 3.11+, and Node.js 20+ inside WSL2
+- Git, Python 3.11+, and Node.js 22.22.3+ inside WSL2
 - OpenClaw and a tool-capable model that can run inside WSL2
 
 Sixteen gigabytes is enough for the CRM and a modest quantized model. Larger
@@ -157,8 +157,10 @@ python3 scripts/setup_openclaw.py 2>&1 | tee openhouse-setup.txt
 python3 scripts/setup_openclaw.py 2>&1 | tee -a openhouse-setup.txt
 ```
 
-Do not manually edit the agent's exec host, mode, security, or global
-`tools.exec` settings between runs. If setup fails, stop here and keep
+Setup links the bundled `openhouse_crm` plugin, verifies that OpenClaw really
+registered the tool, and leaves only the deterministic daily brief on the exec
+allowlist. Do not manually edit the agent's plugin, exec host, mode, security,
+or global `tools.exec` settings between runs. If setup fails, stop here and keep
 `openhouse-setup.txt` for the maintainer.
 
 ## 7. Start the product

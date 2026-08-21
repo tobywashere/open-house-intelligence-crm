@@ -67,22 +67,23 @@ important proof: it checks that chat works **and** that the agent actually made
 one safe, read-only CRM tool call.
 
 The setup helper reads `AGENT_ID` from `.env`, creates that dedicated agent,
-installs the `crm-db-operations` skill into its workspace, and limits its
-command access to the CRM wrapper and daily-brief runner. `exec` is the agent's
-only allowed tool; general web, browser, and file tools are denied. The default
-is `AGENT_ID=openhouse-crm`. If you use `--agent-id`, set `AGENT_ID` to the same
-value in `.env`; setup rejects a conflict so the CRM runtime cannot silently
-target a different agent.
+installs the `crm-db-operations` guidance in its workspace, and links the
+bundled `openhouse_crm` tool plugin. The model can use that one typed tool for
+CRM work. `exec` remains available only for the deterministic daily-brief
+runner; general web, browser, and file tools are denied. CRM writes still go to
+**Pending approvals**. The default is `AGENT_ID=openhouse-crm`. If you use
+`--agent-id`, set `AGENT_ID` to the same value in `.env`; setup rejects a
+conflict so the CRM runtime cannot silently target a different agent.
 
 The helper prints the installed OpenClaw version for troubleshooting. Support
 is capability-based, not tied to a guessed version number: setup checks the
 documented commands and prerequisite policy surfaces before it changes
 anything. After configuration, it reads the dedicated agent's tool policy back
-from OpenClaw and reports success only when `exec` is the sole allowed tool and
-its effective execution prompt is off. This lets dashboard and Discord requests
-run unattended, but only through the two allowlisted CRM entry points. If a
-required surface is missing, setup stops and explains what capability needs
-updating.
+from OpenClaw and reports success only when `openhouse_crm` and `exec` are the
+exact allowed tools, the plugin registers the real CRM tool, and only the daily
+brief remains on the executable allowlist. Dashboard and Discord use this same
+agent path. If a required surface is missing, setup stops and explains what
+capability needs updating.
 
 The app is designed around a Mac mini, but it is not tied to Apple hardware:
 
@@ -185,9 +186,9 @@ agent configuration and the same review-before-apply CRM rules.
   `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
   API commands must also send that value in `X-API-Token`.
 - **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
-  It repairs a partial dedicated-agent setup, then checks the eligible
-  `crm-db-operations` skill and restricted tool access. It does not require
-  changes to global `tools.exec` settings. See
+  It repairs a partial dedicated-agent setup, relinks the bundled CRM plugin,
+  verifies the actual `openhouse_crm` runtime tool, and removes the old CRM
+  shell approval. It does not require changes to global `tools.exec` settings. See
   [recovery steps](docs/LOCAL-AI.md#recovery).
 - **OpenClaw unreachable:** check that the gateway is running on port 18789
   and that `AGENT_GATEWAY_URL` in `.env` is correct.

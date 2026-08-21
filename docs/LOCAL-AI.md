@@ -10,7 +10,7 @@ setup in the README. Mac mini owners can follow
 
 Required for real local-AI mode:
 
-- Python 3.11+, Node.js 20+ for the CRM, and a current OpenClaw installation
+- Python 3.11+, Node.js 22.22.3+ for real local AI, and a current OpenClaw installation
 - A tool-capable model configured in OpenClaw
 - The enabled `/v1/chat/completions` endpoint
 - The dedicated `openhouse-crm` agent and the `crm-db-operations` skill
@@ -84,11 +84,13 @@ python3 scripts/doctor.py --live-agent --live-crm
 
 The helper is safe to rerun. It creates or validates the agent selected by
 `AGENT_ID` in `.env`, installs the shipped skills in that agent's workspace,
-and validates that `crm-db-operations` is eligible. If you pass `--agent-id`,
+links and enables the bundled `openhouse_crm` plugin, and validates that
+`crm-db-operations` is eligible. The plugin ships as runnable JavaScript, so
+setup does not download a compiler or plugin dependencies. If you pass `--agent-id`,
 set `AGENT_ID` to the same nonblank value in `.env`; setup rejects blank or
 conflicting values so the helper and CRM runtime cannot select different agents.
-It restricts command execution to the shipped CRM wrapper and daily-brief
-runner, rather than allowing a general shell command.
+CRM reads and proposals use the typed `openhouse_crm` tool without a shell.
+Command execution remains available only for the deterministic daily-brief runner.
 
 If an earlier run stopped halfway through, rerun the same command. Setup repairs
 the CRM agent's skills, sandbox, and execution policy before checking the final
@@ -103,15 +105,18 @@ a safe numeric version range. Before changing files or configuration, the
 helper requires the documented CLI commands, options, and prerequisite JSON
 and policy-inspection surfaces. After configuration, it reads the dedicated
 agent's authoritative tool policy back and requires the allowed-tool list to be
-exactly `exec`, with general web, browser, and file tools denied. It also
+exactly `openhouse_crm` and `exec`, with general web, browser, and file tools
+denied. It also loads the plugin through OpenClaw's runtime inspection and
+requires exactly one registered tool named `openhouse_crm`. It then
 requires OpenClaw's effective execution prompt mode to be exactly `off`; a
 missing, interactive, or contradictory value is not treated as ready. A
 missing or ambiguous surface stops setup instead of guessing or widening
 permissions.
 
-The checks come from separate authoritative surfaces. Agent configuration
-proves that exec requests the gateway in allowlist mode. Gateway approvals prove
-the effective host, security, prompt behavior, and exact executable patterns.
+The checks come from separate authoritative surfaces. Plugin runtime inspection
+proves that `openhouse_crm` is registered. Agent configuration proves that exec
+requests the gateway in allowlist mode. Gateway approvals prove the effective
+host, security, prompt behavior, and daily-brief executable pattern.
 `sandbox explain` proves only that this restricted agent is running directly
 with sandbox mode off; it is not expected to repeat exec-host policy.
 
@@ -174,12 +179,13 @@ The helper uses the following agent policy on purpose:
 
 - Allowed skills include `crm-db-operations` plus the shipped card and briefing
   skills.
-- `exec` is the only allowed OpenClaw tool. General web fetch/search, browser,
-  and filesystem tools are explicitly denied.
+- `openhouse_crm` is the only CRM tool. It accepts a fixed operation name and
+  argument object, then invokes the audited wrapper without a shell. General
+  web fetch/search, browser, and filesystem tools are explicitly denied.
 - `exec` runs on the gateway in allowlist mode with its OpenClaw prompt set to
-  `off`. The only permitted executable entry points are the CRM wrapper and
-  deterministic daily-brief runner, so unattended dashboard and Discord chat
-  cannot turn into general shell access.
+  `off`. The only permitted executable entry point is the deterministic
+  daily-brief runner, so dashboard and Discord chat cannot turn CRM requests
+  into general shell access.
 - The daily-brief runner performs its own fixed-source retrieval and validation;
   the agent cannot replace it with a general web tool or hand-built payload.
 
@@ -205,6 +211,15 @@ completion. `--live-crm` asks the selected agent for one audited, read-only
 `generate_dashboard_insights` capability call. The CRM check is successful
 only after the backend sees that new agent-tagged audit record. It does not
 trust the model's text alone.
+
+To inspect the installed tool directly, run:
+
+```bash
+openclaw plugins inspect openhouse-crm --runtime --json
+```
+
+Its runtime tools must include `openhouse_crm`. This proves registration,
+while `crm_verified` additionally proves the tool reached the audited CRM API.
 
 Run `bash scripts/serve.sh` first and leave it running. Setup output and unit
 tests are not runtime proof. The required proof is the second command above,
@@ -235,9 +250,8 @@ availability is checked again when approval happens. New-lead preferences are
 shown as one item per line; editing them changes what is saved, and clearing
 the box saves an empty preference list.
 
-OpenClaw's normalized `allowlist` execution mode disables a second
-command-execution prompt for approved commands inside the restricted agent. It
-does not bypass this CRM review screen.
+The native CRM tool does not use OpenClaw command execution. The remaining
+daily-brief command allowlist does not bypass this CRM review screen.
 
 This is also true for the optional Discord binding:
 
@@ -338,8 +352,9 @@ CRM fields can create a new proposal for review.
   Include `X-API-Token` in direct API commands, rerun
   `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
 - **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
-  It repairs partial dedicated-agent setup, then checks the workspace, eligible
-  skill, allowlist, and restart. Do not change global `tools.exec` settings.
+  It repairs partial dedicated-agent setup, relinks the bundled plugin, verifies
+  the `openhouse_crm` runtime tool, and removes the obsolete CRM wrapper
+  approval. Do not change global `tools.exec` settings.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
   Confirm `AGENT_ID=openhouse-crm`, rerun setup, and repeat the live CRM check.
 - **OpenClaw unreachable:** start the gateway and verify

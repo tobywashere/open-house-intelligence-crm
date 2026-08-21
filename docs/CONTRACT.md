@@ -220,7 +220,12 @@ Composio tool calls (Gmail/Calendar) made on the live path, not local-LLM
 inference — it's always `0` in off mode and never counts the openclaw
 driver's requests, which stay on-box.
 
-## 3. Agent tools (OpenClaw skill ⇄ REST mapping)
+## 3. Agent tools (`openhouse_crm` ⇄ REST mapping)
+
+OpenClaw registers one native tool named `openhouse_crm`. Its input contains a
+catalog operation and an object of named arguments. The bundled plugin invokes
+the fixed audited wrapper without a shell. The `crm-db-operations` skill is
+model guidance, not a callable tool ID.
 
 **Audit reality (corrected 2026-07-27, refined 2026-07-28 — the previous
 "every tool call MUST write an audit_log row" claim here was false):** every
@@ -241,9 +246,11 @@ without tripping the 2-day threshold left zero record of the mutation (see
 fixes). Two reads also audit, as an exception, since they're treated as
 agent tool calls for activity-stream purposes: `GET /availability`
 (`check_availability`) and `GET /leads/{id}/duplicates`
-(`find_duplicate_leads`). All other reads write nothing (`GET /leads`, `GET
-/leads/{id}`, `GET /metrics`, `GET /audit` itself, `GET /knowledge/search`
-(additive, recorded 2026-07-28), etc.). The optional
+(`find_duplicate_leads`). Other ordinary reads write nothing (`GET /leads`,
+`GET /leads/{id}`, ordinary `GET /metrics`, `GET /audit` itself, and `GET
+/knowledge/search`, which was added 2026-07-28). An agent-tagged `GET /metrics`
+with a capability nonce is audited so `crm_verified` requires real tool
+evidence. The optional
 `composio-email-calendar` skill's **direct** Composio calls (used when a
 human explicitly wants to send/schedule something outside the CRM's closed
 loop) bypass the backend entirely and are **not** audited — only the
@@ -310,7 +317,8 @@ keep separate proposals.
 | `get_summary(date)` | `GET /summary?date=` — returns the persisted daily market summary |
 | `search_knowledge(query, k=3)` | `GET /knowledge/search?q=&k=` — precise agent-invoked access to the same local BM25 retrieval that `POST /chat` may use as best-effort grounding |
 
-Curl examples for each live in [`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
+Model-facing input examples for each operation live in
+[`skills/crm-db-operations/SKILL.md`](../skills/crm-db-operations/SKILL.md).
 `POST /summary` remains a trusted application endpoint, but it is not exposed
 through the model-callable CRM wrapper. The validating `daily-brief` runner is
 the only supported agent publication path.
