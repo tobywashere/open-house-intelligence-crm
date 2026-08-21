@@ -373,7 +373,7 @@ Discord and external providers in this order:
 - [ ] 2. Dashboard chat lists real CRM leads.
 - [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.
-- [ ] 4. Voice note reaches editable review without creating a lead first.
+- [ ] 4. Voice note reaches the review screen without creating a lead first.
 - [ ] 5. Daily briefing uses stored CRM facts and leaves missing market
    information unavailable.
 - [ ] 6. Optional Discord binding lists the same real CRM leads through the
