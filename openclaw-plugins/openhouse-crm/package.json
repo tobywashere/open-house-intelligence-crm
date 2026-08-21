@@ -1,0 +1,29 @@
+{
+  "name": "@open-house-intelligence/openclaw-crm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Native OpenClaw tool for audited Open House CRM operations.",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "operations.json",
+    "openclaw.plugin.json"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.7.1",
+      "minGatewayVersion": "2026.7.1"
+    },
+    "build": {
+      "openclawVersion": "2026.7.1",
+      "pluginSdkVersion": "2026.7.1"
+    }
+  }
+}

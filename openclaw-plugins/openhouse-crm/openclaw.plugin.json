@@ -1,0 +1,17 @@
+{
+  "id": "openhouse-crm",
+  "name": "Open House CRM",
+  "description": "Adds one audited CRM tool with human-reviewed writes.",
+  "contracts": {
+    "tools": [
+      "openhouse_crm"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}
