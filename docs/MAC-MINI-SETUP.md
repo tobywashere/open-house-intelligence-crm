@@ -9,9 +9,10 @@ You should see a clear result after each step.
 - macOS, 25 GB free disk space, Git, Python 3.11+, and Node.js 20+
 - OpenClaw with a tool-capable model that can answer a basic prompt
 
-Sixteen gigabytes is the minimum for the CRM plus a modest quantized model.
-Choose a smaller model if responses are slow. The CRM does not require a
-specific model, provider, or GB10.
+Sixteen gigabytes is the minimum for the CRM plus a modest quantized model. It
+does not mean every local model will fit. Choose a smaller quantized model if
+responses are slow or memory pressure is high. The CRM does not require a
+specific model, provider, GPU, or GB10.
 
 ## 1. Check the basics
 
@@ -80,6 +81,17 @@ The doctor command should finish with **CRM capability: crm_verified**. A chat
 answer alone is not enough because it could come from a generic agent without
 the CRM tool.
 
+If someone else is helping you test, create one sanitized report after the live
+check succeeds:
+
+```bash
+python3 scripts/doctor.py --live-agent --live-crm --json \
+  | tee openhouse-compatibility.json
+```
+
+Inspect the file before sharing it. The report is designed to omit tokens, CRM
+records, chat content, model responses, and your home-directory path.
+
 ## 4. Check the visible behavior
 
 1. Ask chat to add a disposable lead. It should appear in **Pending approvals**,
@@ -145,10 +157,12 @@ Do not check these boxes until someone has completed the run on this machine.
 - [ ] macOS version:
 - [ ] Memory:
 - [ ] Date and operator:
+- [ ] Product revision from the compatibility report:
 - [ ] `--live-agent --live-crm` reports CRM capability verified
 - [ ] Dashboard chat proposes a reviewed CRM write
 - [ ] Voice note reaches the review screen
 - [ ] Optional Discord binding, if used, reaches the same agent
+- [ ] Sanitized compatibility report inspected and attached
 
 For private-network access, advanced configuration, or further troubleshooting,
 see [LOCAL-AI.md](LOCAL-AI.md).

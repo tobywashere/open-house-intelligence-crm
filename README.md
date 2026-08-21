@@ -84,13 +84,22 @@ run unattended, but only through the two allowlisted CRM entry points. If a
 required surface is missing, setup stops and explains what capability needs
 updating.
 
-For a Mac mini, start with [the Mac mini guide](docs/MAC-MINI-SETUP.md). An
-Apple-silicon Mac mini with **16 GB** unified memory is the minimum supported
-host. It is enough for the CRM and a modest quantized model. A larger model
-needs more memory and changes speed and quality. Linux hosts are supported too;
-the [general OpenClaw guide](docs/LOCAL-AI.md) explains the choices. The
-[GB10 guide](docs/GB10-SETUP.md) is an optional hardware-specific variant,
-not a requirement.
+The app is designed around a Mac mini, but it is not tied to Apple hardware:
+
+| Computer | Support |
+|---|---|
+| Apple-silicon Mac mini, 16 GB or more | Primary setup path |
+| Linux x86_64 or ARM64, 16 GB or more | Supported |
+| Windows 11 with WSL2, 16 GB or more | Supported through Linux in WSL2 |
+| Native Windows PowerShell | Not currently supported |
+
+Sixteen gigabytes is enough for the CRM plus a modest quantized model. It does
+not mean every model will fit or respond quickly. Choose a model that fits your
+machine, and confirm OpenClaw can answer a simple prompt before setting up the
+CRM. Follow the [Mac mini guide](docs/MAC-MINI-SETUP.md), the
+[Windows/WSL2 guide](docs/WINDOWS-WSL-SETUP.md), or the shared
+[local-AI guide](docs/LOCAL-AI.md). The [GB10 guide](docs/GB10-SETUP.md) is an
+optional hardware-specific variant, not a requirement.
 
 ## What the status means
 
@@ -104,6 +113,17 @@ not a requirement.
 Use `python3 scripts/doctor.py` for a read-only local check. Use
 `python3 scripts/doctor.py --live-agent --live-crm` while the product is
 running to repeat both live checks.
+
+When someone else is helping you test, create one sanitized report instead of
+copying several terminal screenshots:
+
+```bash
+python3 scripts/doctor.py --live-agent --live-crm --json
+```
+
+The report includes platform and dependency versions, memory, and verification
+statuses. It excludes tokens, CRM records, chat content, model responses, and
+local home-directory paths.
 
 ## What happens when you ask for a change
 

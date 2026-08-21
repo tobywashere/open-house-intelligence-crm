@@ -1,21 +1,29 @@
 # Run OpenHouse Intelligence with local AI
 
-This guide is for Linux, a Mac mini, or another host running OpenClaw. It
-explains the configuration behind the short setup in the README. Mac mini
-owners can follow [MAC-MINI-SETUP.md](MAC-MINI-SETUP.md) instead.
+This guide is the shared reference for native Linux, a Mac mini, or Windows 11
+running the project inside WSL2. It explains the configuration behind the short
+setup in the README. Mac mini owners can follow
+[MAC-MINI-SETUP.md](MAC-MINI-SETUP.md); Windows owners can follow
+[WINDOWS-WSL-SETUP.md](WINDOWS-WSL-SETUP.md).
 
 ## What is required and what is optional
 
 Required for real local-AI mode:
 
-- Python 3.11+, Node.js 20+, and OpenClaw
+- Python 3.11+, Node.js 20+ for the CRM, and a current OpenClaw installation
 - A tool-capable model configured in OpenClaw
 - The enabled `/v1/chat/completions` endpoint
 - The dedicated `openhouse-crm` agent and the `crm-db-operations` skill
 
-An Apple-silicon Mac mini with **16 GB** is the supported minimum. A modest
-quantized model is appropriate at that size. Linux is supported; a GB10 is an
-optional host, not a dependency.
+An Apple-silicon Mac mini with **16 GB** is the primary supported baseline.
+Linux x86_64 or ARM64 and Windows through WSL2 are supported at the same memory
+baseline. Native PowerShell setup is not supported. A modest quantized model is
+appropriate at 16 GB; larger models can need considerably more memory. A GB10
+is an optional host, not a dependency.
+
+OpenClaw's own Node.js requirements can change independently of this CRM. Use
+its current [installation guide](https://docs.openclaw.ai/install) rather than
+forcing OpenClaw onto the CRM's minimum Node version.
 
 Optional services that use the internet are Gmail, Google Calendar, the
 fixed-source daily-brief runner, and remote model providers. They stay off
@@ -101,6 +109,12 @@ missing, interactive, or contradictory value is not treated as ready. A
 missing or ambiguous surface stops setup instead of guessing or widening
 permissions.
 
+The checks come from separate authoritative surfaces. Agent configuration
+proves that exec requests the gateway in allowlist mode. Gateway approvals prove
+the effective host, security, prompt behavior, and exact executable patterns.
+`sandbox explain` proves only that this restricted agent is running directly
+with sandbox mode off; it is not expected to repeat exec-host policy.
+
 ## Configuration details
 
 The project reads `.env` automatically. These are the normal same-machine
@@ -183,6 +197,7 @@ While `bash scripts/serve.sh` is running, use:
 ```bash
 python3 scripts/doctor.py
 python3 scripts/doctor.py --live-agent --live-crm
+python3 scripts/doctor.py --live-agent --live-crm --json
 ```
 
 The first command changes nothing. `--live-agent` sends one harmless chat
@@ -194,6 +209,12 @@ trust the model's text alone.
 Run `bash scripts/serve.sh` first and leave it running. Setup output and unit
 tests are not runtime proof. The required proof is the second command above,
 with both `--live-agent` and `--live-crm`.
+
+The JSON form is the easiest report to send to a maintainer. It includes the
+product revision, platform, architecture, memory, dependency versions, and the
+same application checks. It does not include tokens, environment values, CRM
+records, chat content, model responses, or home-directory paths. Inspect any
+file yourself before sharing it.
 
 Status meanings:
 
@@ -325,38 +346,47 @@ CRM fields can create a new proposal for review.
   `AGENT_GATEWAY_URL`.
 - **Voice failure:** run the direct transcription command above and verify the
   provider/model selected in OpenClaw.
+- **WSL service does not restart after Windows reboots:** enter the WSL
+  distribution, start OpenClaw and the model runtime, then rerun the doctor.
+  Follow the current OpenClaw and WSL service guidance rather than changing the
+  dedicated CRM agent's policy.
 
 ## Target hardware and live acceptance record
 
 These boxes are intentionally unchecked. Automated tests do not verify a Mac
-mini, model, OpenClaw gateway, provider account, or Discord account. Fill them
-in only after a person records a real run.
+mini, Windows/WSL2 system, model, OpenClaw gateway, provider account, or Discord
+account. Fill them in only after a person records a real run.
 
+- [ ] Product revision from the JSON report:
 - [ ] Operating system and version:
-- [ ] Hardware, including whether this is a Mac mini:
-- [ ] Memory: confirm at least 16 GB on a Mac mini.
+- [ ] Hardware and architecture:
+- [ ] Memory: confirm at least 16 GB for local-AI mode.
 - [ ] OpenClaw version:
 - [ ] Model/provider:
 - [ ] Date and operator:
+- [ ] Sanitized JSON report inspected and attached:
 
-Verify the dashboard first, then Discord and external providers in this order:
+Verify the dashboard, voice intake, and truthful briefing first. Then test
+Discord and external providers in this order:
 
 - [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
 - [ ] 2. Dashboard chat lists real CRM leads.
 - [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.
-- [ ] 4. Optional Discord binding lists the same real CRM leads through the
+- [ ] 4. Voice note reaches editable review without creating a lead first.
+- [ ] 5. Daily briefing uses stored CRM facts and leaves missing market
+   information unavailable.
+- [ ] 6. Optional Discord binding lists the same real CRM leads through the
    dedicated agent.
-- [ ] 5. Discord proposes a disposable write that appears in the same Pending
+- [ ] 7. Discord proposes a disposable write that appears in the same Pending
    approvals.
-- [ ] 6. With live integrations enabled, approve one disposable booking and
+- [ ] 8. With live integrations enabled, approve one disposable booking and
    verify one Google Calendar event.
-- [ ] 7. Approve one disposable lead with an email and verify one Calendar call
+- [ ] 9. Approve one disposable lead with an email and verify one Calendar call
    block plus one Gmail draft.
 
 Optional feature checks after the ordered acceptance run:
 
-- [ ] Voice note reaches the review screen.
 - [ ] Gmail account and result recorded:
 - [ ] Google Calendar account and result recorded:
 - [ ] Discord account and result recorded:
