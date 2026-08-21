@@ -100,10 +100,12 @@ The repository ships runnable JavaScript rather than requiring TypeScript
 compilation on the operator's machine. OpenClaw and Node remain required, but
 setup must not download a plugin build toolchain.
 
-The plugin configuration contains the absolute installed wrapper path. The
-backend URL and optional API token remain in the existing OpenClaw skill
-environment and are passed to the fixed child process by trusted plugin code.
-The tool input cannot override them.
+The OpenClaw tool factory receives the active agent workspace and derives the
+wrapper path as `skills/crm-db-operations/cli.py` inside that trusted workspace.
+The plugin has no operator configuration and no runtime package dependencies.
+The backend URL and optional API token remain in the existing OpenClaw skill
+environment and are inherited by the fixed child process. The tool input cannot
+override the workspace, executable path, or environment.
 
 ## 6. Agent Policy
 
@@ -139,9 +141,10 @@ must explicitly state:
 
 1. Verify the installed OpenClaw exposes the required plugin install, list, and
    inspection surfaces before mutation.
-2. Install or refresh only the repository-owned `openhouse-crm` plugin.
-3. Configure its wrapper path and existing CRM environment without printing
-   secrets.
+2. Link or refresh only the repository-owned `openhouse-crm` plugin through the
+   supported local-plugin CLI, with no dependency download.
+3. Verify that the runtime tool resolves its wrapper only from the dedicated
+   agent workspace and existing CRM skill environment.
 4. Add `openhouse_crm` to the dedicated agent's exact allowed-tool set.
 5. Remove the CRM wrapper from that agent's gateway executable allowlist while
    preserving the daily-brief entry.
