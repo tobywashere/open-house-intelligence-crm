@@ -990,14 +990,19 @@ def _validate_gateway_approval_payload(
     return patterns
 
 
-def _contains_pair(payload: Any, key: str, value: str) -> bool:
-    if isinstance(payload, dict):
-        if payload.get(key) == value:
-            return True
-        return any(_contains_pair(item, key, value) for item in payload.values())
-    if isinstance(payload, list):
-        return any(_contains_pair(item, key, value) for item in payload)
-    return False
+def _validate_sandbox_explain(payload: Any, agent_id: str) -> None:
+    """Validate direct sandbox state without inferring exec policy from it."""
+    root = _require_mapping(payload, "sandbox explain")
+    if root.get("agentId") != agent_id:
+        raise SetupConflict("sandbox explain returned the wrong dedicated agent")
+    sandbox = _require_mapping(root.get("sandbox"), "sandbox explain sandbox")
+    if sandbox.get("mode") != "off":
+        raise SetupConflict("dedicated CRM agent sandbox mode is not off")
+    if (
+        "sessionIsSandboxed" in sandbox
+        and sandbox.get("sessionIsSandboxed") is not False
+    ):
+        raise SetupConflict("dedicated CRM agent session is unexpectedly sandboxed")
 
 
 def _run_required(cli: OpenClawCLI, argv: list[str], label: str) -> CommandResult:
@@ -1692,15 +1697,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             "sandbox explain",
         )
         sandbox_payload = _json(sandbox, "sandbox explain")
-        if not _contains_pair(sandbox_payload, "mode", "off"):
-            raise SetupConflict("dedicated CRM agent sandbox mode is not off")
-        if not _contains_pair(sandbox_payload, "host", "gateway"):
-            raise SetupConflict("dedicated CRM agent exec host is not gateway")
-        if not (
-            _contains_pair(sandbox_payload, "mode", "allowlist")
-            or _contains_pair(sandbox_payload, "security", "allowlist")
-        ):
-            raise SetupConflict("dedicated CRM agent exec mode is not allowlist-only")
+        _validate_sandbox_explain(sandbox_payload, options.agent_id)
         policy = _run_required(
             cli,
             ["openclaw", "exec-policy", "show", "--json"],

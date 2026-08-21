@@ -32,6 +32,50 @@ LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
 LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
 
 
+OPENCLAW_SANDBOX_EXPLAIN_STABLE = {
+    "docsUrl": "https://docs.openclaw.ai/sandbox",
+    "agentId": "openhouse-crm",
+    "sessionKey": "agent:openhouse-crm:main",
+    "mainSessionKey": "agent:openhouse-crm:main",
+    "sandbox": {
+        "mode": "off",
+        "scope": "session",
+        "backend": "docker",
+        "workspaceAccess": "none",
+        "workspaceRoot": "/redacted/sandboxes",
+        "effectiveHostWorkspaceRoot": "/redacted/workspace",
+        "runtimeWorkdir": "/redacted/workspace",
+        "workspaceMounts": [],
+        "workspaceSource": "direct",
+        "sessionIsSandboxed": False,
+        "tools": {
+            "allow": [],
+            "deny": [],
+            "sources": {
+                "allow": {"source": "default", "key": "default"},
+                "deny": {"source": "default", "key": "default"},
+            },
+        },
+    },
+    "elevated": {
+        "enabled": False,
+        "allowedByConfig": False,
+        "alwaysAllowedByConfig": False,
+        "allowFrom": {},
+        "failures": [],
+    },
+    "fixIt": [],
+}
+
+OPENCLAW_SANDBOX_EXPLAIN_BETA = {
+    **OPENCLAW_SANDBOX_EXPLAIN_STABLE,
+    "sandbox": {
+        **OPENCLAW_SANDBOX_EXPLAIN_STABLE["sandbox"],
+        "scope": "agent",
+    },
+}
+
+
 def make_options(tmp_path, *, dry_run=False, bind_discord=None):
     return SetupOptions(
         agent_id="openhouse-crm",
@@ -224,7 +268,7 @@ class FakeCLI:
         if args == ["openclaw", "sandbox", "explain", "--agent", "openhouse-crm", "--json"]:
             return CommandResult(
                 0,
-                '{"mode": "off", "exec": {"host": "gateway", "mode": "allowlist"}}',
+                json.dumps(OPENCLAW_SANDBOX_EXPLAIN_STABLE),
                 "",
             )
         if args == ["openclaw", "exec-policy", "show", "--json"]:
@@ -1218,6 +1262,100 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
 
     assert result.ok, result.render()
     assert "Validated the restricted agent" in result.render()
+
+
+@pytest.mark.parametrize(
+    "sandbox_payload",
+    [OPENCLAW_SANDBOX_EXPLAIN_STABLE, OPENCLAW_SANDBOX_EXPLAIN_BETA],
+    ids=["stable-2026.7.1-2", "beta-2026.8.1-beta.2"],
+)
+def test_setup_accepts_real_sandbox_explain_contract(tmp_path, sandbox_payload):
+    command = (
+        "openclaw",
+        "sandbox",
+        "explain",
+        "--agent",
+        "openhouse-crm",
+        "--json",
+    )
+    cli = FakeCLI({command: CommandResult(0, json.dumps(sandbox_payload), "")})
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+
+
+@pytest.mark.parametrize(
+    ("sandbox_payload", "message"),
+    [
+        (
+            {**OPENCLAW_SANDBOX_EXPLAIN_STABLE, "agentId": "main"},
+            "wrong dedicated agent",
+        ),
+        (
+            {**OPENCLAW_SANDBOX_EXPLAIN_STABLE, "sandbox": []},
+            "sandbox explain sandbox",
+        ),
+        (
+            {
+                **OPENCLAW_SANDBOX_EXPLAIN_STABLE,
+                "sandbox": {
+                    **OPENCLAW_SANDBOX_EXPLAIN_STABLE["sandbox"],
+                    "mode": "all",
+                },
+            },
+            "sandbox mode",
+        ),
+        (
+            {
+                **OPENCLAW_SANDBOX_EXPLAIN_STABLE,
+                "sandbox": {
+                    **OPENCLAW_SANDBOX_EXPLAIN_STABLE["sandbox"],
+                    "sessionIsSandboxed": True,
+                },
+            },
+            "unexpectedly sandboxed",
+        ),
+    ],
+    ids=["wrong-agent", "malformed-sandbox", "sandbox-on", "effective-sandbox"],
+)
+def test_setup_rejects_unsafe_or_wrong_agent_sandbox_explain(
+    tmp_path, sandbox_payload, message
+):
+    command = (
+        "openclaw",
+        "sandbox",
+        "explain",
+        "--agent",
+        "openhouse-crm",
+        "--json",
+    )
+    cli = FakeCLI({command: CommandResult(0, json.dumps(sandbox_payload), "")})
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert message in result.render().lower()
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_setup_accepts_older_sandbox_explain_without_effective_flag(tmp_path):
+    sandbox = dict(OPENCLAW_SANDBOX_EXPLAIN_STABLE["sandbox"])
+    sandbox.pop("sessionIsSandboxed")
+    payload = {**OPENCLAW_SANDBOX_EXPLAIN_STABLE, "sandbox": sandbox}
+    command = (
+        "openclaw",
+        "sandbox",
+        "explain",
+        "--agent",
+        "openhouse-crm",
+        "--json",
+    )
+    cli = FakeCLI({command: CommandResult(0, json.dumps(payload), "")})
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
 
 
 def test_setup_reads_back_normalized_exec_mode_and_is_idempotent(tmp_path):
