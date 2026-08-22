@@ -1528,10 +1528,36 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> None:
     for entry in runtime["tools"]:
         if isinstance(entry, str):
             names.append(entry)
-        elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
-            names.append(entry["name"])
-        else:
+            continue
+        if not isinstance(entry, dict):
             raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+        if "name" in entry:
+            name = entry["name"]
+            if not isinstance(name, str) or not name:
+                raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+            names.append(name)
+            continue
+        factory_names = entry.get("names")
+        if (
+            not isinstance(factory_names, list)
+            or not all(isinstance(name, str) and name for name in factory_names)
+        ):
+            raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+        names.extend(factory_names)
+    reported_names = runtime.get("toolNames")
+    if reported_names is not None:
+        if (
+            not isinstance(reported_names, list)
+            or not all(isinstance(name, str) and name for name in reported_names)
+            or len(reported_names) != len(set(reported_names))
+        ):
+            raise SetupConflict("OpenClaw returned unsupported runtime tool names")
+        if sorted(reported_names) != sorted(names):
+            raise SetupConflict(
+                "OpenClaw runtime tool inventory is internally inconsistent"
+            )
+    if len(names) != len(set(names)):
+        raise SetupConflict("OpenClaw returned duplicate runtime tool names")
     if names != [PLUGIN_TOOL]:
         raise SetupConflict(
             "openhouse-crm runtime must register exactly the openhouse_crm tool"

@@ -17,7 +17,7 @@ test("plugin registers exactly one required CRM tool factory", async () => {
   assert.equal(registrations.length, 1);
   const [factory, metadata] = registrations[0];
   assert.equal(typeof factory, "function");
-  assert.equal(metadata, undefined);
+  assert.deepEqual(metadata, { name: "openhouse_crm" });
 
   const tool = factory({ workspaceDir: "/trusted/workspace" });
   assert.equal(tool.name, "openhouse_crm");

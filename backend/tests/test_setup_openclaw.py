@@ -1264,7 +1264,10 @@ def test_setup_does_not_restart_when_runtime_plugin_tool_is_missing(tmp_path):
                 json.dumps(
                     {
                         "plugin": {"id": "openhouse-crm", "enabled": True},
-                        "runtime": {"tools": [], "diagnostics": []},
+                        "contracts": {"tools": ["openhouse_crm"]},
+                        "toolNames": [],
+                        "tools": [{"names": [], "optional": False}],
+                        "diagnostics": [],
                     }
                 ),
                 "",
@@ -1303,6 +1306,46 @@ def test_setup_accepts_real_top_level_runtime_inspection_shape(tmp_path):
                             "status": "loaded",
                         },
                         "tools": [{"name": "openhouse_crm"}],
+                        "diagnostics": [],
+                    }
+                ),
+                "",
+            )
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+
+
+def test_setup_accepts_beta_runtime_factory_name_shape(tmp_path):
+    command = (
+        "openclaw",
+        "plugins",
+        "inspect",
+        "openhouse-crm",
+        "--runtime",
+        "--json",
+    )
+    plugin_root = REPO_ROOT / "openclaw-plugins" / "openhouse-crm"
+    cli = FakeCLI(
+        {
+            command: CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "plugin": {
+                            "id": "openhouse-crm",
+                            "enabled": True,
+                            "source": str(plugin_root / "dist" / "index.js"),
+                            "status": "loaded",
+                        },
+                        "contracts": {"tools": ["openhouse_crm"]},
+                        "toolNames": ["openhouse_crm"],
+                        "tools": [
+                            {"names": ["openhouse_crm"], "optional": False}
+                        ],
                         "diagnostics": [],
                     }
                 ),
