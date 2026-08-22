@@ -151,7 +151,8 @@ def test_lead_directory_call_renders_exact_total_and_current_page():
         "15 leads total. Showing 2 (offset 0): Jordan Ellis (ID 4, new, score 72, "
         "Kirkland, buy); Alex Rivera (ID 8, contacted, score 61, Bellevue, sell, neglected)."
     )
-    assert gateway.invoke_calls[0]["idempotency_key"] == "ohi:dashboard:call-1"
+    assert gateway.invoke_calls[0]["idempotency_key"].startswith("ohi:v1:")
+    assert len(gateway.invoke_calls[0]["idempotency_key"]) == len("ohi:v1:") + 64
     assert gateway.invoke_calls[0]["session_key"] == "dashboard:dashboard"
 
 
@@ -568,7 +569,7 @@ def test_narrative_message_is_bounded_and_strips_unsupported_mutation_success():
 
     reply = render_verified_reply(decision, receipts)
 
-    assert reply.startswith("Here is the draft.")
+    assert reply == "Draft follow-up:\nHi Jordan, ..."
     assert "created" not in reply.lower()
     assert "saved" not in reply.lower()
     assert len(reply) <= 4000
@@ -615,3 +616,336 @@ def test_chat_route_persists_only_final_verified_reply(client, monkeypatch):
         ("user", "Add Jordan"),
         ("agent", "Queued Pending approval #7: Create lead Jordan. Status: pending; the change has not been applied."),
     ]
+
+
+# Fix round 1: receipt/evidence hardening regressions.
+
+
+def test_failed_finish_after_proposal_cannot_hide_pending_item():
+    gateway = ScriptedGateway(
+        [
+            request_call("proposal", "create_lead", {"name": "Jordan"}),
+            request_call("rejected-write", "create_lead", {"name": "Alex"}),
+            finish_call("failed", "Nothing happened.", ["rejected-write"], call_id="bad-finish"),
+            finish_call("queued", "Queued.", ["proposal"], 51),
+        ],
+        [proposal_receipt("create_lead", 51, "Create lead Jordan")],
+    )
+
+    reply = run(gateway)
+
+    assert reply.startswith("Queued Pending approval #51: Create lead Jordan.")
+    assert len(gateway.chat_calls) == 4
+    correction = next(
+        message for message in gateway.chat_calls[3]["payload"]["messages"]
+        if message.get("tool_call_id") == "bad-finish"
+    )
+    assert "proposal" in correction["content"].lower()
+
+
+def test_clarification_after_proposal_cannot_hide_pending_item():
+    gateway = ScriptedGateway(
+        [
+            request_call("proposal", "create_lead", {"name": "Jordan"}),
+            finish_call("needs_clarification", "What email should I add?", [], call_id="bad-finish"),
+            finish_call("queued", "Queued.", ["proposal"], 52),
+        ],
+        [proposal_receipt("create_lead", 52, "Create lead Jordan")],
+    )
+
+    reply = run(gateway)
+
+    assert reply.startswith("Queued Pending approval #52: Create lead Jordan.")
+    assert len(gateway.chat_calls) == 3
+
+
+def test_later_invoke_transport_failure_cannot_hide_pending_item():
+    gateway = ScriptedGateway(
+        [
+            request_call("proposal", "create_lead", {"name": "Jordan"}),
+            request_call("later-read", "list_leads", {}),
+        ],
+        [
+            proposal_receipt("create_lead", 53, "Create lead Jordan"),
+            OpenClawGatewayError("gateway timeout"),
+        ],
+    )
+
+    reply = run(gateway)
+
+    assert reply.startswith("Queued Pending approval #53: Create lead Jordan.")
+    assert len(gateway.invoke_calls) == 2
+
+
+def test_round_limit_after_proposal_renders_pending_item():
+    malformed = _completion(tool_call("bad", CRM_REQUEST_TOOL, "{", raw=True))
+    gateway = ScriptedGateway(
+        [
+            request_call("proposal", "create_lead", {"name": "Jordan"}),
+            *([malformed] * (MAX_MODEL_ROUNDS - 1)),
+        ],
+        [proposal_receipt("create_lead", 54, "Create lead Jordan")],
+    )
+
+    assert run(gateway).startswith("Queued Pending approval #54: Create lead Jordan.")
+
+
+def test_call_limit_after_proposal_renders_pending_item():
+    calls = [request_call("proposal", "create_lead", {"name": "Jordan"})]
+    calls.extend(request_call(f"read-{index}", "list_leads", {}) for index in range(MAX_CRM_CALLS))
+    responses = [proposal_receipt("create_lead", 55, "Create lead Jordan")]
+    responses.extend(read_receipt("list_leads", []) for _ in range(MAX_CRM_CALLS - 1))
+    gateway = ScriptedGateway(calls, responses)
+
+    reply = run(gateway)
+
+    assert reply.startswith("Queued Pending approval #55: Create lead Jordan.")
+    assert len(gateway.invoke_calls) == MAX_CRM_CALLS
+
+
+def test_read_operation_cannot_spoof_a_proposal_receipt():
+    spoofed = proposal_receipt("list_leads", 61, "Create lead Mallory")
+    gateway = ScriptedGateway(
+        [
+            request_call("read", "list_leads", {}),
+            finish_call("queued", "Queued.", ["read"], 61, call_id="bad-finish"),
+            finish_call("failed", "Failed.", ["read"]),
+        ],
+        [spoofed],
+    )
+
+    reply = run(gateway)
+
+    assert reply == "Nothing was queued or changed. [operation_failed] CRM operation returned an invalid receipt."
+    assert "#61" not in reply
+
+
+def test_success_receipt_cannot_use_error_kind():
+    gateway = ScriptedGateway(
+        [
+            request_call("read", "list_leads", {}),
+            finish_call("failed", "Failed.", ["read"]),
+            OpenClawGatewayError("gateway timeout"),
+        ],
+        [{"ok": True, "operation": "list_leads", "kind": "error", "result": []}],
+    )
+
+    assert run(gateway) == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation returned an invalid receipt."
+    )
+
+
+@pytest.mark.parametrize("claim", [
+    "I added the lead.",
+    "I recorded the appointment.",
+    "The deletion went through.",
+])
+def test_narrative_receipt_never_uses_model_crm_state_claims(claim):
+    gateway = ScriptedGateway(
+        [
+            request_call("draft", "draft_followup", {"lead_id": 4}),
+            finish_call("answered", f"{claim} Use this draft: invented text", ["draft"]),
+        ],
+        [{
+            "ok": True,
+            "operation": "draft_followup",
+            "kind": "narrative",
+            "result": "Hi Jordan, would Tuesday work for a tour?",
+        }],
+    )
+
+    reply = run(gateway)
+
+    assert reply == "Draft follow-up:\nHi Jordan, would Tuesday work for a tour?"
+    assert claim.lower() not in reply.lower()
+    assert "invented text" not in reply
+
+
+def test_score_narrative_is_rendered_from_receipt_not_model_state_claim():
+    gateway = ScriptedGateway(
+        [
+            request_call("score", "score_lead", {"lead_id": 4}),
+            finish_call("answered", "I stored the new score.", ["score"]),
+        ],
+        [{
+            "ok": True,
+            "operation": "score_lead",
+            "kind": "narrative",
+            "result": {"lead_id": 4, "score": 72, "score_reason": "Confirmed budget"},
+        }],
+    )
+
+    assert run(gateway) == "Lead ID 4 scored 72: Confirmed budget."
+
+
+def test_malformed_common_read_result_becomes_safe_error():
+    gateway = ScriptedGateway(
+        [
+            request_call("metrics", "generate_dashboard_insights", {}),
+            finish_call("failed", "Failed.", ["metrics"]),
+            OpenClawGatewayError("gateway timeout"),
+        ],
+        [read_receipt("generate_dashboard_insights", {"active_leads": None})],
+    )
+
+    reply = run(gateway)
+
+    assert reply == "Nothing was queued or changed. [operation_failed] CRM operation returned an invalid receipt."
+    assert "None" not in reply
+
+
+@pytest.mark.parametrize(
+    ("operation", "arguments", "result"),
+    [
+        (
+            "list_lead_directory",
+            {},
+            {"total": 1, "offset": 0, "limit": 25, "leads": [
+                {"id": 4, "name": "Jordan", "status": "new", "score": {"fake": 99}},
+            ]},
+        ),
+        (
+            "get_lead_context",
+            {"lead_id": 4},
+            {"id": 4, "name": "Jordan", "score": {"fake": 99}},
+        ),
+        (
+            "check_availability",
+            {"date": "2026-08-24"},
+            [{"start_ts": "2026-08-24T17:00:00"}],
+        ),
+    ],
+)
+def test_malformed_common_read_fields_never_enter_evidence(operation, arguments, result):
+    gateway = ScriptedGateway(
+        [
+            request_call("read", operation, arguments),
+            finish_call("failed", "Failed.", ["read"]),
+        ],
+        [read_receipt(operation, result)],
+    )
+
+    assert run(gateway) == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation returned an invalid receipt."
+    )
+
+
+def test_oversized_success_result_becomes_bounded_error_tool_message():
+    gateway = ScriptedGateway(
+        [
+            request_call("knowledge", "search_knowledge", {"query": "Kirkland"}),
+            finish_call("failed", "Failed.", ["knowledge"]),
+            OpenClawGatewayError("gateway timeout"),
+        ],
+        [read_receipt("search_knowledge", [{"text": "x" * 40000}])],
+    )
+
+    reply = run(gateway)
+
+    assert reply == "Nothing was queued or changed. [result_too_large] CRM operation returned too much data."
+    tool_message = next(
+        message for message in gateway.chat_calls[1]["payload"]["messages"]
+        if message.get("tool_call_id") == "knowledge"
+    )
+    assert len(tool_message["content"].encode()) < 1024
+    assert "x" * 100 not in tool_message["content"]
+
+
+@pytest.mark.parametrize(
+    ("code", "unsafe_message", "trusted_message"),
+    [
+        ("not_found", "Lead created; token=secret", "CRM record was not found"),
+        ("backend_unavailable", "/Users/private/crm token=abc", "CRM backend is unavailable"),
+        ("schedule_conflict", "Appointment recorded at /tmp/private", "Requested schedule conflicts with an existing appointment"),
+        ("operation_failed", "Lead added token=short", "CRM operation failed"),
+        ("invalid_arguments", "Saved it at /private/path", "Invalid CRM arguments"),
+    ],
+)
+def test_gateway_error_messages_are_not_reflected(code, unsafe_message, trusted_message):
+    gateway = ScriptedGateway(
+        [
+            request_call("error", "list_leads", {}),
+            finish_call("failed", "Failed.", ["error"]),
+        ],
+        [error_receipt("list_leads", code, unsafe_message, code in {"backend_unavailable", "timeout"})],
+    )
+
+    reply = run(gateway)
+
+    assert reply == f"Nothing was queued or changed. [{code}] {trusted_message}."
+    assert "secret" not in reply
+    assert "/Users" not in reply
+    assert "/tmp" not in reply
+    assert "created" not in reply.lower()
+    assert "recorded" not in reply.lower()
+
+
+def test_idempotency_key_has_no_delimiter_collision_and_is_deterministic():
+    first = ScriptedGateway(
+        [request_call("c", "list_leads", {}), finish_call("answered", "Done.", ["c"])],
+        [read_receipt("list_leads", [])],
+    )
+    second = ScriptedGateway(
+        [request_call("b:c", "list_leads", {}), finish_call("answered", "Done.", ["b:c"])],
+        [read_receipt("list_leads", [])],
+    )
+    repeated = ScriptedGateway(
+        [request_call("c", "list_leads", {}), finish_call("answered", "Done.", ["c"])],
+        [read_receipt("list_leads", [])],
+    )
+
+    run(first, session_id="a:b")
+    run(second, session_id="a")
+    run(repeated, session_id="a:b")
+
+    first_key = first.invoke_calls[0]["idempotency_key"]
+    second_key = second.invoke_calls[0]["idempotency_key"]
+    assert first_key != second_key
+    assert first_key == repeated.invoke_calls[0]["idempotency_key"]
+    assert first_key.startswith("ohi:v1:")
+    assert len(first_key) == len("ohi:v1:") + 64
+
+
+@pytest.mark.parametrize("bad_calls", [
+    [
+        tool_call("duplicate", CRM_REQUEST_TOOL, {"operation": "list_leads", "arguments": {}}),
+        tool_call("duplicate", CRM_REQUEST_TOOL, {"operation": "list_leads", "arguments": {}}),
+    ],
+    [
+        {"type": "function", "function": {"name": CRM_REQUEST_TOOL, "arguments": "{}"}},
+        tool_call("valid", CRM_REQUEST_TOOL, {"operation": "list_leads", "arguments": {}}),
+    ],
+])
+def test_malformed_multi_call_ids_do_not_create_invalid_tool_transcript(bad_calls):
+    gateway = ScriptedGateway([
+        _completion(*bad_calls),
+        finish_call("needs_clarification", "What should I do?", []),
+    ])
+
+    assert run(gateway) == "What should I do?"
+    messages = gateway.chat_calls[1]["payload"]["messages"]
+    assert all(message["role"] != "assistant" for message in messages[2:])
+    assert all(message["role"] != "tool" for message in messages[2:])
+    assert messages[-1]["role"] == "user"
+    assert "no calls were executed" in messages[-1]["content"].lower()
+    assert len(messages[-1]["content"]) <= 400
+
+
+def test_multiple_unique_calls_keep_valid_error_tool_transcript():
+    calls = [
+        tool_call("one", CRM_REQUEST_TOOL, {"operation": "list_leads", "arguments": {}}),
+        tool_call("two", CRM_REQUEST_TOOL, {"operation": "list_leads", "arguments": {}}),
+    ]
+    gateway = ScriptedGateway([
+        _completion(*calls),
+        finish_call("needs_clarification", "What should I do?", []),
+    ])
+
+    assert run(gateway) == "What should I do?"
+    messages = gateway.chat_calls[1]["payload"]["messages"]
+    assistant = next(message for message in messages if message["role"] == "assistant")
+    tool_messages = [message for message in messages if message["role"] == "tool"]
+    assert assistant["tool_calls"] == calls
+    assert [message["tool_call_id"] for message in tool_messages] == ["one", "two"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ FINISH_TOOL = "finish_crm_response"
 DASHBOARD_CHANNEL = "openhouse-dashboard"
 MAX_MODEL_ROUNDS = 8
 MAX_CRM_CALLS = 6
+MAX_RECEIPT_BYTES = 32 * 1024
 
 UNAVAILABLE_REPLY = (
     "⚠ The local agent is unavailable or returned an invalid response. "
@@ -37,10 +39,17 @@ _SAFE_ERROR_CODES = frozenset({
     "invalid_arguments", "not_found", "ambiguous_match", "schedule_conflict",
     "backend_unavailable", "timeout", "result_too_large", "operation_failed",
 })
-_MUTATION_SUCCESS_RE = re.compile(
-    r"\b(?:applied|booked|completed|created|deleted|merged|queued|saved|scheduled|submitted|updated)\b",
-    re.I,
-)
+_SAFE_ERROR_MESSAGES = {
+    "invalid_arguments": "Invalid CRM arguments",
+    "not_found": "CRM record was not found",
+    "ambiguous_match": "CRM record match is ambiguous",
+    "schedule_conflict": "Requested schedule conflicts with an existing appointment",
+    "backend_unavailable": "CRM backend is unavailable",
+    "timeout": "CRM operation timed out",
+    "result_too_large": "CRM operation returned too much data",
+    "operation_failed": "CRM operation failed",
+}
+_INVALID_RECEIPT_MESSAGE = "CRM operation returned an invalid receipt"
 _SAFE_ARGUMENT_ERROR_RE = re.compile(
     r"^(?:(?:Unsupported|Missing|Invalid) argument: [a-z][a-z0-9_]*|"
     r"Invalid CRM arguments: [a-z][a-z0-9_]*|CRM arguments must be an object|"
@@ -169,6 +178,19 @@ def _safe_local_argument_message(exc: Exception) -> str:
     return message if len(message) <= 256 and _SAFE_ARGUMENT_ERROR_RE.fullmatch(message) else "Invalid CRM arguments"
 
 
+def _trusted_error_message(code: str, message: object = None) -> str:
+    if (
+        code == "invalid_arguments"
+        and isinstance(message, str)
+        and len(message) <= 256
+        and _SAFE_ARGUMENT_ERROR_RE.fullmatch(message)
+    ):
+        return message
+    if code == "operation_failed" and message == _INVALID_RECEIPT_MESSAGE:
+        return _INVALID_RECEIPT_MESSAGE
+    return _SAFE_ERROR_MESSAGES.get(code, _SAFE_ERROR_MESSAGES["operation_failed"])
+
+
 def _local_error(call_id: str, operation: str, message: str) -> CrmCallReceipt:
     safe_operation = operation if re.fullmatch(r"[a-z][a-z0-9_]{0,127}", operation) else "unknown"
     return CrmCallReceipt(
@@ -181,32 +203,180 @@ def _local_error(call_id: str, operation: str, message: str) -> CrmCallReceipt:
     )
 
 
+def _json_size(value: object) -> int | None:
+    try:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _is_int(value: object, *, minimum: int | None = None) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and (minimum is None or value >= minimum)
+    )
+
+
+def _is_number_or_none(value: object) -> bool:
+    return value is None or (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+
+
+def _valid_lead_row(row: object, *, require_status: bool = True) -> bool:
+    return (
+        isinstance(row, dict)
+        and _is_int(row.get("id"), minimum=1)
+        and isinstance(row.get("name"), str)
+        and (not require_status or isinstance(row.get("status"), str))
+        and (
+            "score" not in row
+            or row["score"] is None
+            or (_is_int(row["score"], minimum=0) and row["score"] <= 100)
+        )
+        and ("area" not in row or row["area"] is None or isinstance(row["area"], str))
+        and ("timeline" not in row or row["timeline"] is None or isinstance(row["timeline"], str))
+        and ("intent" not in row or row["intent"] is None or isinstance(row["intent"], str))
+        and (
+            "is_neglected" not in row
+            or (
+                _is_int(row["is_neglected"], minimum=0)
+                and row["is_neglected"] <= 1
+            )
+        )
+    )
+
+
+def _valid_common_result(operation: str, result: object) -> bool:
+    if operation == "list_lead_directory":
+        return (
+            isinstance(result, dict)
+            and _is_int(result.get("total"), minimum=0)
+            and _is_int(result.get("offset"), minimum=0)
+            and _is_int(result.get("limit"), minimum=1)
+            and result["limit"] <= 50
+            and isinstance(result.get("leads"), list)
+            and len(result["leads"]) <= result["limit"]
+            and len(result["leads"]) <= result["total"]
+            and all(_valid_lead_row(item) for item in result["leads"])
+        )
+    if operation == "list_leads":
+        return isinstance(result, list) and all(_valid_lead_row(item) for item in result)
+    if operation == "generate_dashboard_insights":
+        count_keys = (
+            "active_leads", "high_priority", "followups_due",
+            "appointments_booked", "cloud_llm_requests",
+        )
+        return (
+            isinstance(result, dict)
+            and all(_is_int(result.get(key), minimum=0) for key in count_keys)
+            and _is_number_or_none(result.get("avg_response_minutes"))
+            and isinstance(result.get("agent_mode"), str)
+        )
+    if operation == "check_availability":
+        return (
+            isinstance(result, list)
+            and all(
+                isinstance(item, dict)
+                and isinstance(item.get("start_ts"), str)
+                and bool(item["start_ts"])
+                and isinstance(item.get("end_ts"), str)
+                and bool(item["end_ts"])
+                for item in result
+            )
+        )
+    if operation == "list_appointments":
+        return (
+            isinstance(result, list)
+            and all(
+                isinstance(item, dict)
+                and _is_int(item.get("lead_id"), minimum=1)
+                and isinstance(item.get("lead_name"), str)
+                and isinstance(item.get("start_ts"), str)
+                and isinstance(item.get("end_ts"), str)
+                for item in result
+            )
+        )
+    if operation == "get_lead_context":
+        return (
+            _valid_lead_row(result, require_status=False)
+            and all(
+                key not in result
+                or result[key] is None
+                or isinstance(result[key], str)
+                for key in ("status", "phone", "email")
+            )
+            and (
+                "budget" not in result
+                or _is_number_or_none(result["budget"])
+            )
+            and ("events" not in result or isinstance(result["events"], list))
+            and (
+                "appointments" not in result
+                or isinstance(result["appointments"], list)
+            )
+        )
+    if operation == "draft_followup":
+        return isinstance(result, str) and bool(result.strip())
+    if operation == "score_lead":
+        return (
+            isinstance(result, dict)
+            and _is_int(result.get("lead_id"), minimum=1)
+            and _is_int(result.get("score"), minimum=0)
+            and result["score"] <= 100
+            and isinstance(result.get("score_reason"), str)
+        )
+    return True
+
+
 def _normalize_gateway_receipt(call_id: str, operation: str, payload: object) -> CrmCallReceipt:
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or payload.get("operation") != operation:
         return _invalid_gateway_receipt(call_id, operation)
-    if payload.get("operation") != operation or payload.get("kind") not in {
-        "read", "proposal", "narrative", "validated_write", "error",
-    }:
-        return _invalid_gateway_receipt(call_id, operation)
-    if payload.get("ok") is True and set(payload) == {"ok", "operation", "kind", "result"}:
-        kind = payload["kind"]
-        result = payload["result"]
-        if kind == "proposal" and not _is_pending_result(result, operation):
-            return _invalid_gateway_receipt(call_id, operation)
-        return CrmCallReceipt(call_id, operation, True, kind, result, None)
     if payload.get("ok") is False and set(payload) == {"ok", "operation", "kind", "error"}:
         error = payload["error"]
         if (
-            payload["kind"] == "error"
+            payload.get("kind") == "error"
             and isinstance(error, dict)
             and set(error) == {"code", "message", "retryable"}
             and error.get("code") in _SAFE_ERROR_CODES
-            and isinstance(error.get("message"), str)
-            and len(error["message"]) <= 256
             and isinstance(error.get("retryable"), bool)
+            and error["retryable"] == (error["code"] in {"backend_unavailable", "timeout"})
         ):
-            return CrmCallReceipt(call_id, operation, False, "error", None, dict(error))
-    return _invalid_gateway_receipt(call_id, operation)
+            code = error["code"]
+            return CrmCallReceipt(
+                call_id,
+                operation,
+                False,
+                "error",
+                None,
+                {
+                    "code": code,
+                    "message": _trusted_error_message(code, error.get("message")),
+                    "retryable": error["retryable"],
+                },
+            )
+        return _invalid_gateway_receipt(call_id, operation)
+    if payload.get("ok") is not True or set(payload) != {"ok", "operation", "kind", "result"}:
+        return _invalid_gateway_receipt(call_id, operation)
+    payload_size = _json_size(payload)
+    if payload_size is None:
+        return _invalid_gateway_receipt(call_id, operation)
+    if payload_size > MAX_RECEIPT_BYTES:
+        return _result_too_large_receipt(call_id, operation)
+
+    expected_effect = _CONTRACT["operations"][operation]["effect"]
+    kind = payload.get("kind")
+    result = payload["result"]
+    pending = _is_pending_result(result, operation)
+    if pending:
+        if expected_effect not in {"proposal", "validated_write"} or kind != "proposal":
+            return _invalid_gateway_receipt(call_id, operation)
+    elif kind != expected_effect or expected_effect == "proposal":
+        return _invalid_gateway_receipt(call_id, operation)
+    if not _valid_common_result(operation, result):
+        return _invalid_gateway_receipt(call_id, operation)
+    return CrmCallReceipt(call_id, operation, True, kind, result, None)
 
 
 def _invalid_gateway_receipt(call_id: str, operation: str) -> CrmCallReceipt:
@@ -218,7 +388,22 @@ def _invalid_gateway_receipt(call_id: str, operation: str) -> CrmCallReceipt:
         None,
         {
             "code": "operation_failed",
-            "message": "CRM operation returned an invalid receipt",
+            "message": _INVALID_RECEIPT_MESSAGE,
+            "retryable": False,
+        },
+    )
+
+
+def _result_too_large_receipt(call_id: str, operation: str) -> CrmCallReceipt:
+    return CrmCallReceipt(
+        call_id,
+        operation,
+        False,
+        "error",
+        None,
+        {
+            "code": "result_too_large",
+            "message": _SAFE_ERROR_MESSAGES["result_too_large"],
             "retryable": False,
         },
     )
@@ -280,23 +465,32 @@ def validate_finish(params: object, receipts: list[CrmCallReceipt]) -> FinishDec
     if any(call_id not in by_id for call_id in evidence_ids):
         return FinishDecision(classification, message, evidence_ids, pending_id, "Finish evidence references an unknown call")
     evidence = [by_id[call_id] for call_id in evidence_ids]
+    all_proposals = [
+        receipt for receipt in receipts
+        if receipt.ok and receipt.kind == "proposal"
+        and _is_pending_result(receipt.result, receipt.operation)
+    ]
+    if all_proposals and classification != "queued":
+        return FinishDecision(
+            classification,
+            message,
+            evidence_ids,
+            pending_id,
+            "A verified pending proposal must be reported as queued",
+        )
 
     if classification == "queued":
         proposals = [
             receipt for receipt in evidence
             if receipt.ok and receipt.kind == "proposal" and _is_pending_result(receipt.result, receipt.operation)
         ]
-        if len(proposals) != 1:
+        if len(all_proposals) != 1 or len(proposals) != 1:
             return FinishDecision(classification, message, evidence_ids, pending_id, "Queued requires exactly one successful pending proposal receipt")
         if pending_id != proposals[0].result["id"]:
             return FinishDecision(classification, message, evidence_ids, pending_id, "Queued pending ID does not match the proposal receipt")
     elif classification == "answered":
         if not any(receipt.ok and receipt.kind in {"read", "narrative", "validated_write"} for receipt in evidence):
             return FinishDecision(classification, message, evidence_ids, pending_id, "Answered requires successful read or narrative evidence")
-        if any(receipt.ok and receipt.kind == "proposal" for receipt in receipts):
-            return FinishDecision(classification, message, evidence_ids, pending_id, "A pending proposal must be reported as queued")
-        if _MUTATION_SUCCESS_RE.search(message):
-            return FinishDecision(classification, message, evidence_ids, pending_id, "Answered cannot claim a CRM mutation succeeded")
     elif classification == "failed":
         if not any(not receipt.ok and receipt.kind == "error" for receipt in evidence):
             return FinishDecision(classification, message, evidence_ids, pending_id, "Failed requires structured error evidence")
@@ -305,8 +499,12 @@ def validate_finish(params: object, receipts: list[CrmCallReceipt]) -> FinishDec
             return FinishDecision(classification, message, evidence_ids, pending_id, "Clarification requires one question")
         if message.count("?") != 1:
             return FinishDecision(classification, message, evidence_ids, pending_id, "Clarification must contain exactly one question")
-        if _MUTATION_SUCCESS_RE.search(message):
-            return FinishDecision(classification, message, evidence_ids, pending_id, "Clarification cannot claim a CRM mutation succeeded")
+        if re.fullmatch(
+            r"(?is)(?:what|which|who|when|where|why|how|could|would|should|"
+            r"do|does|did|is|are|can|may)\b[^?]*\?",
+            message,
+        ) is None:
+            return FinishDecision(classification, message, evidence_ids, pending_id, "Clarification must be a single direct question")
 
     return FinishDecision(classification, message, evidence_ids, pending_id)
 
@@ -390,20 +588,18 @@ def _format_appointments(result: object) -> str:
 def _format_lead_context(result: object) -> str:
     if not isinstance(result, dict):
         return "Lead context unavailable."
-    fields = [
-        f"status {result.get('status')}",
-        f"score {result.get('score')}",
-        f"phone {result.get('phone')}",
-        f"email {result.get('email')}",
-    ]
+    fields = []
+    for key in ("status", "score", "phone", "email"):
+        if result.get(key) is not None:
+            fields.append(f"{key} {result[key]}")
     budget = result.get("budget")
-    fields.append(f"budget ${budget:,.0f}" if isinstance(budget, (int, float)) else "budget unavailable")
-    fields.extend([
-        f"area {result.get('area')}",
-        f"timeline {result.get('timeline')}",
-        f"intent {result.get('intent')}",
-        "neglected" if result.get("is_neglected") == 1 else "not neglected",
-    ])
+    if isinstance(budget, (int, float)) and not isinstance(budget, bool):
+        fields.append(f"budget ${budget:,.0f}")
+    for key in ("area", "timeline", "intent"):
+        if result.get(key) is not None:
+            fields.append(f"{key} {result[key]}")
+    if result.get("is_neglected") in {0, 1}:
+        fields.append("neglected" if result["is_neglected"] == 1 else "not neglected")
     return f"{result.get('name') or 'Unnamed lead'} (lead ID {result.get('id')}): " + "; ".join(fields) + "."
 
 
@@ -423,12 +619,19 @@ def _format_read(receipt: CrmCallReceipt) -> str:
     return f"Verified {receipt.operation}: {bounded}"
 
 
-def _safe_narrative(message: str) -> str:
-    kept = []
-    for sentence in re.split(r"(?<=[.!?])\s+", message.strip()):
-        if sentence and not _MUTATION_SUCCESS_RE.search(sentence):
-            kept.append(sentence)
-    return " ".join(kept)[:4000].strip()
+def _format_narrative(receipt: CrmCallReceipt) -> str:
+    if receipt.operation == "draft_followup":
+        return f"Draft follow-up:\n{receipt.result.strip()}"[:4000]
+    if receipt.operation == "score_lead":
+        result = receipt.result
+        return (
+            f"Lead ID {result['lead_id']} scored {result['score']}: "
+            f"{result['score_reason'].rstrip('.')}."
+        )[:4000]
+    bounded = json.dumps(
+        receipt.result, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )[:3000]
+    return f"Verified {receipt.operation} result: {bounded}"
 
 
 def render_verified_reply(decision: FinishDecision, receipts: list[CrmCallReceipt]) -> str:
@@ -446,9 +649,13 @@ def render_verified_reply(decision: FinishDecision, receipts: list[CrmCallReceip
     if decision.classification == "failed":
         failure = next((receipt for receipt in reversed(evidence) if not receipt.ok and receipt.error), None)
         if failure:
+            code = failure.error.get("code")
+            if code not in _SAFE_ERROR_CODES:
+                code = "operation_failed"
+            message = _trusted_error_message(code, failure.error.get("message"))
             return (
                 "Nothing was queued or changed. "
-                f"[{failure.error['code']}] {failure.error['message'].rstrip('.')}."
+                f"[{code}] {message.rstrip('.')}."
             )[:4000]
         return "Nothing was queued or changed. The CRM request could not be verified."
     if decision.classification == "needs_clarification":
@@ -458,10 +665,11 @@ def render_verified_reply(decision: FinishDecision, receipts: list[CrmCallReceip
     for receipt in evidence:
         if receipt.ok and receipt.kind in {"read", "validated_write"}:
             rendered.append(_format_read(receipt))
+        elif receipt.ok and receipt.kind == "narrative":
+            rendered.append(_format_narrative(receipt))
     if rendered:
         return "\n".join(rendered)[:4000]
-    narrative = _safe_narrative(decision.message)
-    return narrative or "I couldn't produce a verified answer from the CRM evidence."
+    return "I couldn't produce a verified answer from the CRM evidence."
 
 
 def _single_proposal_reply(receipts: list[CrmCallReceipt]) -> str | None:
@@ -494,18 +702,68 @@ def _model_message(data: object) -> dict:
         raise ValueError("invalid completion response") from None
 
 
-def _append_cardinality_correction(messages: list[dict], assistant: dict, calls: list) -> None:
+def _valid_tool_call_shape(call: object) -> bool:
+    if not isinstance(call, dict):
+        return False
+    function = call.get("function")
+    return (
+        isinstance(call.get("id"), str)
+        and bool(call["id"])
+        and call.get("type") == "function"
+        and isinstance(function, dict)
+        and isinstance(function.get("name"), str)
+        and bool(function["name"])
+        and isinstance(function.get("arguments"), str)
+    )
+
+
+def _assistant_tool_message(calls: list[dict]) -> dict:
+    sanitized = [
+        {
+            "id": call["id"],
+            "type": "function",
+            "function": {
+                "name": call["function"]["name"],
+                "arguments": call["function"]["arguments"],
+            },
+        }
+        for call in calls
+    ]
+    return {"role": "assistant", "content": None, "tool_calls": sanitized}
+
+
+def _append_cardinality_correction(messages: list[dict], calls: list) -> None:
     correction = "Exactly one structured client-tool call is required per model round; no calls were executed."
-    messages.append(assistant)
-    if calls:
-        for index, call in enumerate(calls):
-            call_id = call.get("id") if isinstance(call, dict) else None
-            if isinstance(call_id, str) and call_id:
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_error(correction)})
-            elif index == 0:
-                messages.append({"role": "user", "content": correction})
-    else:
+    ids = [call.get("id") for call in calls if isinstance(call, dict)]
+    valid_ids = (
+        bool(calls)
+        and all(_valid_tool_call_shape(call) for call in calls)
+        and len(ids) == len(calls)
+        and len(set(ids)) == len(ids)
+    )
+    if not valid_ids:
         messages.append({"role": "user", "content": correction})
+        return
+    messages.append(_assistant_tool_message(calls))
+    for call_id in ids:
+        messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": _tool_error(correction),
+        })
+
+
+def _idempotency_key(agent_id: str, session_id: str, call_id: str) -> str:
+    identity = json.dumps(
+        [agent_id, session_id, call_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    return "ohi:v1:" + hashlib.sha256(identity).hexdigest()
+
+
+def _terminal_reply(receipts: list[CrmCallReceipt], fallback: str) -> str:
+    return _single_proposal_reply(receipts) or fallback
 
 
 async def run_verified_crm_chat(
@@ -535,7 +793,7 @@ async def run_verified_crm_chat(
         payload = {
             "model": model,
             "user": session_id,
-            "messages": messages,
+            "messages": deepcopy(messages),
             "tools": tools,
             "tool_choice": "required",
         }
@@ -543,34 +801,35 @@ async def run_verified_crm_chat(
             data = await gateway.chat_completion(payload, channel=DASHBOARD_CHANNEL)
             assistant = _model_message(data)
         except Exception:
-            return _single_proposal_reply(receipts) or UNAVAILABLE_REPLY
+            return _terminal_reply(receipts, UNAVAILABLE_REPLY)
         calls = assistant.get("tool_calls", [])
         if not isinstance(calls, list) or len(calls) != 1:
-            _append_cardinality_correction(messages, assistant, calls if isinstance(calls, list) else [])
+            _append_cardinality_correction(messages, calls if isinstance(calls, list) else [])
             continue
         call = calls[0]
+        if not _valid_tool_call_shape(call):
+            messages.append({
+                "role": "user",
+                "content": "Malformed function call; no CRM call was executed.",
+            })
+            continue
+        call_id = call["id"]
+        function = call["function"]
+        function_name = function["name"]
         try:
-            call_id = call["id"]
-            function = call["function"]
-            function_name = function["name"]
             params = json.loads(function["arguments"])
-            if (
-                call.get("type") != "function"
-                or not isinstance(call_id, str)
-                or not call_id
-                or not isinstance(function_name, str)
-            ):
-                raise ValueError
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            messages.append(assistant)
-            call_id = call.get("id") if isinstance(call, dict) else None
-            if isinstance(call_id, str) and call_id:
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_error("Malformed function call arguments; no CRM call was executed")})
-            else:
-                messages.append({"role": "user", "content": "Malformed function call; no CRM call was executed."})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            messages.append(_assistant_tool_message([call]))
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": _tool_error(
+                    "Malformed function call arguments; no CRM call was executed"
+                ),
+            })
             continue
 
-        messages.append(assistant)
+        messages.append(_assistant_tool_message([call]))
         if call_id in seen_call_ids:
             messages.append({
                 "role": "tool",
@@ -623,7 +882,7 @@ async def run_verified_crm_chat(
                             },
                         )
                     elif crm_calls >= MAX_CRM_CALLS:
-                        return _single_proposal_reply(receipts) or CALL_LIMIT_REPLY
+                        return _terminal_reply(receipts, CALL_LIMIT_REPLY)
                     else:
                         crm_calls += 1
                         try:
@@ -632,16 +891,20 @@ async def run_verified_crm_chat(
                                 {"operation": operation, "arguments": validated},
                                 agent_id=agent_id,
                                 session_key=f"dashboard:{session_id}",
-                                idempotency_key=f"ohi:{session_id}:{call_id}",
+                                idempotency_key=_idempotency_key(
+                                    agent_id, session_id, call_id
+                                ),
                             )
                         except Exception:
-                            return AMBIGUOUS_INVOKE_REPLY
+                            return _terminal_reply(receipts, AMBIGUOUS_INVOKE_REPLY)
                         receipt = _normalize_gateway_receipt(call_id, operation, raw_receipt)
         receipts.append(receipt)
         messages.append({
             "role": "tool",
             "tool_call_id": call_id,
-            "content": json.dumps(_receipt_payload(receipt), separators=(",", ":"), default=str),
+            "content": json.dumps(
+                _receipt_payload(receipt), separators=(",", ":"), ensure_ascii=False
+            ),
         })
     proposal_reply = _single_proposal_reply(receipts)
     if proposal_reply:
