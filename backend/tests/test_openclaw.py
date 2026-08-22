@@ -249,6 +249,8 @@ def test_crm_capability_request_is_read_only_and_targets_registered_tool(monkeyp
     assert "openhouse_crm" in prompt
     assert json.dumps(expected_call) in prompt
     assert "crm-db-operations is a skill name, not a tool ID" in prompt
+    assert "tool_search" in prompt
+    assert "tool_call" in prompt
     assert "Never use exec for CRM operations" in prompt
     assert "Do not modify CRM data" in prompt
     assert "--args" not in prompt

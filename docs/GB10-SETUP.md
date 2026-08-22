@@ -47,8 +47,10 @@ dedicated `openhouse-crm` agent with the `crm-db-operations` guidance and uses
 `AGENT_ID=openhouse-crm` in the CRM configuration. It links the bundled
 `openhouse_crm` tool plugin and allows only that tool plus `exec`; only the
 daily-brief runner remains executable, while general web, browser, and file
-tools are denied. It checks required CLI and policy capabilities, then reads
-back both the tool policy and live plugin registration before reporting success.
+tools are denied. It overrides only this agent's base tool profile, leaving the
+global profile unchanged. It checks required CLI and policy capabilities, then
+reads back both the tool policy and live plugin registration before reporting
+success.
 
 The expected live result is **CRM capability: crm_verified**. If the result is
 only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the

@@ -36,6 +36,7 @@ DESIRED_TOOL_DENY = (
     "cron",
 )
 DESIRED_TOOLS = {
+    "profile": "full",
     "allow": ["openhouse_crm", "exec"],
     "deny": list(DESIRED_TOOL_DENY),
     "exec": {"mode": "allowlist", "host": "gateway"},
@@ -1234,6 +1235,10 @@ def _validate_authoritative_tools(payload: Any) -> None:
     allow = payload.get("allow")
     deny = payload.get("deny")
     exec_policy = payload.get("exec")
+    if payload.get("profile") != DESIRED_TOOLS["profile"]:
+        raise SetupConflict(
+            "dedicated CRM agent authoritative tool profile is not the scoped full base"
+        )
     if (
         not isinstance(allow, list)
         or not isinstance(deny, list)

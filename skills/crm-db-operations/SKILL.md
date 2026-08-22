@@ -13,10 +13,15 @@ touches SQL directly and every action is auditable.
 
 `crm-db-operations` is this skill's name. It is not a callable tool ID. The
 callable tool is `openhouse_crm`, with input shaped like
-`{"operation":"list_leads","arguments":{"sort":"priority"}}`. Never call
-`crm-db-operations` through Tool Search and never use `exec` for a CRM
-operation. The dedicated agent retains `exec` only for the deterministic daily
-brief runner. It has no general web, network, browser, or filesystem tools.
+`{"operation":"list_leads","arguments":{"sort":"priority"}}`. OpenClaw may
+show that tool directly or place it behind the compact `tool_search` and
+`tool_call` controls. When it is direct, call `openhouse_crm`. When only the
+compact controls are visible, use `tool_search` to resolve the exact
+`openhouse_crm` entry, then pass the returned ID and the same input to
+`tool_call`. Never search for or call the `crm-db-operations` skill name, and
+never use `exec` for a CRM operation. The dedicated agent retains `exec` only
+for the deterministic daily brief runner. It has no general web, network,
+browser, or filesystem tools.
 
 ## Rules
 

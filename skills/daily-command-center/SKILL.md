@@ -14,8 +14,10 @@ suggestions and a recommendation for a real appointment.
 ## Non-negotiable trust rules
 
 1. Use only the registered `openhouse_crm` tool. `crm-db-operations` is a skill
-   name, not a tool ID. Never use `exec` for CRM work, read or write SQL, or use
-   general web, network, browser, or filesystem tools.
+   name, not a tool ID. If OpenClaw shows only compact controls, use
+   `tool_search` to resolve the exact `openhouse_crm` entry and invoke its
+   returned ID through `tool_call`. Never use `exec` for CRM work, read or write
+   SQL, or use general web, network, browser, or filesystem tools.
 2. Never invent a lead, appointment, time, location, score, preference,
    relationship fact, travel time, market fact, or outstanding response.
 3. Never add a plausible appointment or schedule block when the calendar is

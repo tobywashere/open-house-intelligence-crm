@@ -907,10 +907,11 @@ def test_cli_config_agent_mismatch_fails_before_mutation_for_each_roster_schema(
             ],
         ),
         (
-                "tools",
-                {"allow": ["web_fetch"]},
-                {
-                    "allow": ["openhouse_crm", "exec"],
+            "tools",
+            {"allow": ["web_fetch"]},
+            {
+                "profile": "full",
+                "allow": ["openhouse_crm", "exec"],
                 "deny": [
                     "web_fetch",
                     "web_search",
@@ -1415,6 +1416,7 @@ def test_dedicated_agent_allows_only_native_crm_tool_and_daily_brief_exec(tmp_pa
     )
     policy = json.loads(tools_action.argv[-2])
 
+    assert policy["profile"] == "full"
     assert policy["allow"] == ["openhouse_crm", "exec"]
     assert {
         "web_fetch",
@@ -1498,6 +1500,7 @@ def test_setup_rejects_any_authoritative_deny_set_mismatch(tmp_path, deny):
         "--json",
     )
     tools = {
+        "profile": "full",
         "allow": ["openhouse_crm", "exec"],
         "deny": deny,
         "exec": {"mode": "allowlist", "host": "gateway"},
@@ -1521,6 +1524,7 @@ def test_setup_accepts_exact_authoritative_tool_sets_in_any_order(tmp_path):
         "--json",
     )
     tools = {
+        "profile": "full",
         "allow": ["exec", "openhouse_crm"],
         "deny": list(reversed(_EXPECTED_TOOL_DENY)),
         "exec": {"mode": "allowlist", "host": "gateway"},

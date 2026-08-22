@@ -126,8 +126,12 @@ class OpenClawDriver(AgentDriver):
             }
         )
         await self._send(
-            "Call the registered openhouse_crm tool exactly once with this JSON input: "
+            "Invoke openhouse_crm exactly once with this JSON input: "
             f"{tool_input}. crm-db-operations is a skill name, not a tool ID. "
+            "If openhouse_crm is directly visible, call it directly. If the compact "
+            "tool_search and tool_call controls are visible instead, use tool_search "
+            "to resolve the exact openhouse_crm entry and pass its returned ID to "
+            "tool_call with the JSON input. "
             "Never use exec for CRM operations. "
             "Do not modify CRM data. After the call, reply with only CHECKED.",
             session_id,

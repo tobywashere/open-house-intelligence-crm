@@ -74,7 +74,9 @@ bundled `openhouse_crm` tool plugin, and sets restricted access. The
 configuration in `.env` is
 `AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
 required capabilities before changing anything, and allows only
-`openhouse_crm` plus `exec`. CRM work uses the typed plugin without a shell;
+`openhouse_crm` plus `exec`. It overrides only this agent's base tool profile,
+so a global `coding` profile cannot hide the CRM tool and is not changed. CRM
+work uses the typed plugin without a shell;
 only the daily-brief runner remains on the executable allowlist. General web,
 browser, and file tools are denied. It reads that policy and the plugin's live
 tool registration back from OpenClaw before reporting success.

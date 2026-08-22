@@ -77,6 +77,10 @@ openclaw gateway status
 Use a stable OpenClaw release unless a maintainer specifically asks you to test
 a beta.
 
+The CRM setup command later overrides only the dedicated `openhouse-crm`
+agent's base tool profile. It does not change a machine-wide `coding` profile.
+The agent is then restricted back to the CRM tool and the daily-brief runner.
+
 ## 3. Verify the local model
 
 Ollama is one option, not a CRM requirement. If you use it, install the Linux

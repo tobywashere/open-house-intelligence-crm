@@ -91,6 +91,13 @@ set `AGENT_ID` to the same nonblank value in `.env`; setup rejects blank or
 conflicting values so the helper and CRM runtime cannot select different agents.
 CRM reads and proposals use the typed `openhouse_crm` tool without a shell.
 Command execution remains available only for the deterministic daily-brief runner.
+OpenClaw's local-model lean mode may present that tool through the compact
+`tool_search` and `tool_call` controls instead of as a direct tool. The shipped
+skills support both presentations.
+Setup gives only the dedicated CRM agent an unrestricted base profile before
+narrowing its final allowlist to those two tools. This prevents a machine-wide
+`coding` profile from hiding the CRM plugin without changing that global profile
+or exposing CRM access to unrelated agents.
 
 If an earlier run stopped halfway through, rerun the same command. Setup repairs
 the CRM agent's skills, sandbox, and execution policy before checking the final
@@ -106,7 +113,8 @@ helper requires the documented CLI commands, options, and prerequisite JSON
 and policy-inspection surfaces. After configuration, it reads the dedicated
 agent's authoritative tool policy back and requires the allowed-tool list to be
 exactly `openhouse_crm` and `exec`, with general web, browser, and file tools
-denied. It also loads the plugin through OpenClaw's runtime inspection and
+denied. The dedicated agent's profile must be `full` before that exact allowlist
+is applied. It also loads the plugin through OpenClaw's runtime inspection and
 requires exactly one registered tool named `openhouse_crm`. It then
 requires OpenClaw's effective execution prompt mode to be exactly `off`; a
 missing, interactive, or contradictory value is not treated as ready. A

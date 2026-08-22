@@ -50,6 +50,7 @@ test("manifest declares exact tool ownership and no configuration", async () => 
   );
   assert.equal(manifest.id, "openhouse-crm");
   assert.deepEqual(manifest.contracts, { tools: ["openhouse_crm"] });
+  assert.equal(manifest.toolMetadata, undefined);
   assert.deepEqual(manifest.activation, { onStartup: true });
   assert.deepEqual(manifest.configSchema, {
     type: "object",

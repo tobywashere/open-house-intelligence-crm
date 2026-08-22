@@ -80,6 +80,8 @@ Before creating the lead, search existing leads to see if this person is already
 
 Call the registered `openhouse_crm` tool with that input. Do not call the
 `crm-db-operations` skill name as a tool and do not use `exec` for this CRM read.
+If the tool is behind OpenClaw's compact surface, use `tool_search` to resolve
+the exact `openhouse_crm` entry and invoke its returned ID through `tool_call`.
 
 Look for an exact phone or email match in the returned result. Also consider a
 close name match, but do not treat a name alone as proof that two people are
