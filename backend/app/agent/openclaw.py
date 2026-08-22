@@ -13,6 +13,7 @@ import re
 import uuid
 
 from .base import AgentDriver
+from .crm_chat import UNAVAILABLE_REPLY, run_verified_crm_chat
 from .openclaw_gateway import (
     OpenClawGateway,
     OpenClawGatewayError,
@@ -89,11 +90,18 @@ class OpenClawDriver(AgentDriver):
         # A gateway timeout/error must degrade to a readable reply, not a 500 —
         # chat.py has already persisted the user turn by the time this runs.
         try:
-            return await self._send(message, session_id)
+            reply = await run_verified_crm_chat(
+                self._gateway, message, session_id, AGENT_ID
+            )
+            if reply == UNAVAILABLE_REPLY:
+                record_chat(False, "invalid completion response")
+            else:
+                record_chat(True)
+            return reply
         except Exception as exc:
+            record_chat(False, _safe_error(exc))
             logging.warning("openclaw chat failed (%s)", exc)
-            return ("⚠ The local agent is unavailable or returned an invalid response. "
-                    "Your message is saved — check agent readiness and try again.")
+            return UNAVAILABLE_REPLY
 
     async def request_crm_capability(
         self,

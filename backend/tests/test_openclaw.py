@@ -272,12 +272,30 @@ def test_valid_completion_marks_chat_verified(monkeypatch):
     import app.agent.status as status
 
     monkeypatch.setattr(status, "_CRM_OK", None)
-    driver = OpenClawDriver(client_factory=client_factory())
+    completion = {
+        "choices": [{"message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "finish",
+                "type": "function",
+                "function": {
+                    "name": "finish_crm_response",
+                    "arguments": json.dumps({
+                        "classification": "needs_clarification",
+                        "message": "What would you like me to check?",
+                        "evidence_call_ids": [],
+                    }),
+                },
+            }],
+        }}],
+    }
+    driver = OpenClawDriver(client_factory=client_factory(post_json=completion))
 
     reply = asyncio.run(driver.chat("hello", "dashboard"))
     probe = asyncio.run(driver.probe())
 
-    assert reply == "READY"
+    assert reply == "What would you like me to check?"
     assert probe.status == "chat_verified"
     assert probe.last_chat_ok is True
     assert probe.crm_verified is False
@@ -705,9 +723,28 @@ def test_send_targets_configured_crm_agent(monkeypatch):
     monkeypatch.setattr(module, "AGENT_ID", "openhouse-crm")
     driver = OpenClawDriver(client_factory=lambda **_: fake)
 
-    assert asyncio.run(driver.chat("List leads", "dash-fresh")) == "READY"
+    fake.post_json = {
+        "choices": [{"message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "finish",
+                "type": "function",
+                "function": {
+                    "name": "finish_crm_response",
+                    "arguments": json.dumps({
+                        "classification": "needs_clarification",
+                        "message": "Which leads should I list?",
+                        "evidence_call_ids": [],
+                    }),
+                },
+            }],
+        }}],
+    }
+    assert asyncio.run(driver.chat("List leads", "dash-fresh")) == "Which leads should I list?"
     assert fake.last_post_json["model"] == "openclaw/openhouse-crm"
     assert fake.last_post_json["user"] == "dash-fresh"
+    assert fake.last_post_json["tool_choice"] == "required"
 
 
 def test_blank_agent_id_keeps_openclaw_default_compatibility(monkeypatch):
