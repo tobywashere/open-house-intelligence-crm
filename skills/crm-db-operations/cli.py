@@ -3,30 +3,13 @@
 
 import argparse
 import json
-from pathlib import Path
-import re
 import sys
 
+from contract import operation_names, validate_arguments
 import tools
 
 
-def _load_operation_names() -> tuple[str, ...]:
-    catalog_path = Path(__file__).with_name("operations.json")
-    names = json.loads(catalog_path.read_text(encoding="utf-8"))
-    if (
-        not isinstance(names, list)
-        or not names
-        or len(names) != len(set(names))
-        or not all(
-            isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]*", name)
-            for name in names
-        )
-    ):
-        raise RuntimeError("invalid CRM operation catalog")
-    return tuple(names)
-
-
-OPERATIONS = {name: getattr(tools, name) for name in _load_operation_names()}
+OPERATIONS = {name: getattr(tools, name) for name in operation_names()}
 
 
 def dispatch(operation: str, arguments: dict):
@@ -35,7 +18,7 @@ def dispatch(operation: str, arguments: dict):
         raise ValueError(f"unknown CRM operation: {operation}")
     if not isinstance(arguments, dict):
         raise ValueError("--args must decode to a JSON object")
-    return function(**arguments)
+    return function(**validate_arguments(operation, arguments))
 
 
 def main() -> int:

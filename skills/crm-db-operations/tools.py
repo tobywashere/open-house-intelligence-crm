@@ -178,6 +178,18 @@ def list_leads(sort: str = "priority", status: str | None = None,
                                               "neglected": neglected})
 
 
+def list_lead_directory(sort: str = "priority", status: str | None = None,
+                        neglected: int | None = None, offset: int = 0,
+                        limit: int = 25) -> dict:
+    """Return one compact, paginated lead directory page for model use."""
+    rows = list_leads(sort=sort, status=status, neglected=neglected)
+    keys = ("id", "name", "status", "score", "area", "timeline", "intent",
+            "is_neglected", "last_activity_at")
+    page = [{key: row[key] for key in keys if key in row}
+            for row in rows[offset:offset + limit]]
+    return {"total": len(rows), "offset": offset, "limit": limit, "leads": page}
+
+
 # --------------------------------------------------------------------------
 # Scoring & follow-up
 # --------------------------------------------------------------------------

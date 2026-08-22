@@ -1,19 +1,29 @@
 import importlib.util
 import json
 from pathlib import Path
-import re
 import sys
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO_ROOT / "skills" / "crm-db-operations"
-CATALOG = SKILL_DIR / "operations.json"
-PLUGIN_CATALOG = REPO_ROOT / "openclaw-plugins" / "openhouse-crm" / "operations.json"
+CONTRACT = SKILL_DIR / "contract.json"
+EXPECTED_OPERATIONS = {
+    "create_lead", "update_lead", "add_note", "close_lead",
+    "find_duplicate_leads", "merge_leads", "get_lead_context", "list_leads",
+    "list_lead_directory", "score_lead", "draft_followup", "check_availability",
+    "list_appointments", "book_appointment", "schedule_followup",
+    "find_neglected_leads", "generate_dashboard_insights", "post_briefing",
+    "get_research_settings", "get_insights", "get_summary", "delete_lead",
+    "search_knowledge",
+}
 
 
 def _load_cli():
     original_path = list(sys.path)
     previous_tools = sys.modules.pop("tools", None)
+    previous_contract = sys.modules.pop("contract", None)
     try:
         sys.path.insert(0, str(SKILL_DIR))
         spec = importlib.util.spec_from_file_location("crm_operations_cli", SKILL_DIR / "cli.py")
@@ -24,25 +34,81 @@ def _load_cli():
     finally:
         sys.path[:] = original_path
         sys.modules.pop("tools", None)
+        sys.modules.pop("contract", None)
         if previous_tools is not None:
             sys.modules["tools"] = previous_tools
+        if previous_contract is not None:
+            sys.modules["contract"] = previous_contract
 
 
-def test_catalog_is_valid_and_drives_cli_dispatch():
-    names = json.loads(CATALOG.read_text(encoding="utf-8"))
+def _load_contract():
+    original_path = list(sys.path)
+    previous_contract = sys.modules.pop("contract", None)
+    try:
+        sys.path.insert(0, str(SKILL_DIR))
+        spec = importlib.util.spec_from_file_location("crm_operation_contract", SKILL_DIR / "contract.py")
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = original_path
+        sys.modules.pop("contract", None)
+        if previous_contract is not None:
+            sys.modules["contract"] = previous_contract
 
-    assert isinstance(names, list)
-    assert names
-    assert len(names) == len(set(names))
-    assert all(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in names)
 
+def test_contract_is_strict_and_drives_dispatch():
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+
+    assert contract["version"] == 1
+    assert set(contract["operations"]) == EXPECTED_OPERATIONS
     cli = _load_cli()
-    assert cli._load_operation_names() == tuple(names)
-    assert set(cli.OPERATIONS) == set(names)
-    assert all(callable(function) for function in cli.OPERATIONS.values())
+    for name, entry in contract["operations"].items():
+        assert entry["effect"] in {"read", "proposal", "narrative", "validated_write"}
+        assert entry["arguments"]["type"] == "object"
+        assert entry["arguments"]["additionalProperties"] is False
+        assert callable(cli.OPERATIONS[name])
 
 
-def test_plugin_operation_catalog_matches_python_catalog_exactly():
-    assert json.loads(PLUGIN_CATALOG.read_text(encoding="utf-8")) == json.loads(
-        CATALOG.read_text(encoding="utf-8")
-    )
+def test_create_lead_rejects_model_invented_arguments():
+    with pytest.raises(ValueError, match="Unsupported argument: source_note"):
+        _load_contract().validate_arguments(
+            "create_lead", {"name": "Jordan", "source_note": "open house"}
+        )
+
+    with pytest.raises(ValueError, match="Unsupported argument: status"):
+        _load_contract().validate_arguments(
+            "create_lead", {"name": "Jordan", "status": "new"}
+        )
+
+
+def test_update_lead_requires_a_writable_field():
+    with pytest.raises(ValueError, match="Invalid CRM arguments: update_lead"):
+        _load_contract().validate_arguments("update_lead", {"lead_id": 7})
+
+
+def test_update_lead_rejects_closed_status():
+    with pytest.raises(ValueError, match="Invalid argument: status"):
+        _load_contract().validate_arguments(
+            "update_lead", {"lead_id": 7, "status": "closed"}
+        )
+
+
+def test_booking_arguments_survive_validation_unchanged():
+    arguments = {
+        "lead_id": 7,
+        "start_ts": "2026-08-22T13:00:00",
+        "end_ts": "2026-08-22T13:30:00",
+        "location": "Kirkland office",
+    }
+
+    validated = _load_contract().validate_arguments("book_appointment", arguments)
+
+    assert validated == arguments
+    assert validated is not arguments
+
+
+def test_merge_leads_requires_distinct_ids():
+    with pytest.raises(ValueError, match="Invalid CRM arguments: merge_leads"):
+        _load_contract().validate_arguments("merge_leads", {"primary_id": 7, "duplicate_id": 7})

@@ -37,6 +37,7 @@ SAMPLE_ARGS = {
     "add_note": ((1, "Requested a Saturday tour"), {}),
     "update_lead": ((1,), {"status": "contacted"}),
     "find_duplicate_leads": ((1,), {}), "get_lead_context": ((1,), {}), "list_leads": ((), {}),
+    "list_lead_directory": ((), {}),
     "score_lead": ((1,), {}), "draft_followup": ((1,), {}), "check_availability": (("2026-08-03",), {}),
     "list_appointments": ((), {}),
     "book_appointment": ((1, "2026-08-03T18:00:00", "2026-08-03T18:45:00", "loc"), {}),
@@ -209,6 +210,55 @@ def test_dashboard_insights_remains_no_argument_compatible():
         crm.generate_dashboard_insights()
 
     assert captured["url"].endswith("/metrics")
+
+
+def test_lead_directory_returns_exact_total_and_compact_page(monkeypatch):
+    rows = [
+        {
+            "id": i,
+            "name": f"Lead {i}",
+            "status": "new",
+            "score": i,
+            "area": "Kirkland",
+            "timeline": "this month",
+            "intent": "buy",
+            "is_neglected": 0,
+            "last_activity_at": "2026-08-22T09:00:00",
+            "relationship_summary": "x" * 5000,
+            "preferences": {"beds": 3},
+            "missing_fields": ["phone"],
+        }
+        for i in range(30)
+    ]
+    captured = {}
+
+    def fake_request(method, path, *, params=None, body=None):
+        captured.update(method=method, path=path, params=params, body=body)
+        return rows
+
+    monkeypatch.setattr(crm, "_request", fake_request)
+
+    result = crm.list_lead_directory(
+        sort="recent", status="new", neglected=0, offset=5, limit=10
+    )
+
+    assert result["total"] == 30
+    assert result["offset"] == 5
+    assert result["limit"] == 10
+    assert [row["id"] for row in result["leads"]] == list(range(5, 15))
+    assert set(result["leads"][0]) == {
+        "id", "name", "status", "score", "area", "timeline", "intent",
+        "is_neglected", "last_activity_at",
+    }
+    assert "relationship_summary" not in result["leads"][0]
+    assert "preferences" not in result["leads"][0]
+    assert "missing_fields" not in result["leads"][0]
+    assert captured == {
+        "method": "GET",
+        "path": "/leads",
+        "params": {"sort": "recent", "status": "new", "neglected": 0},
+        "body": None,
+    }
 
 
 def test_add_note_uses_reviewed_event_endpoint():
