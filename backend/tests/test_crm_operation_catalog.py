@@ -165,3 +165,21 @@ def test_contract_rejects_inapplicable_or_invalid_schema_constraints_at_import(
 
     with pytest.raises(RuntimeError, match="invalid CRM operation contract"):
         _load_contract_payload(tmp_path, payload)
+
+
+def test_contract_rejects_anyof_on_non_object_schema_at_import(tmp_path):
+    payload = _contract_payload()
+    payload["operations"]["create_lead"]["arguments"]["properties"]["name"]["anyOf"] = [
+        {"required": ["name"]}
+    ]
+
+    with pytest.raises(RuntimeError, match="invalid CRM operation contract"):
+        _load_contract_payload(tmp_path, payload)
+
+
+def test_contract_rejects_anyof_branch_constraints_ignored_at_runtime(tmp_path):
+    payload = _contract_payload()
+    payload["operations"]["create_lead"]["arguments"]["anyOf"][0]["const"] = {}
+
+    with pytest.raises(RuntimeError, match="invalid CRM operation contract"):
+        _load_contract_payload(tmp_path, payload)

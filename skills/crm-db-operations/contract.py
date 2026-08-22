@@ -38,7 +38,7 @@ def _invalid_contract() -> RuntimeError:
     return RuntimeError("invalid CRM operation contract")
 
 
-def _validate_schema_shape(schema: object, *, implicit_object: bool = False) -> None:
+def _validate_schema_shape(schema: object) -> None:
     if not isinstance(schema, dict):
         raise _invalid_contract()
     if set(schema) - _SCHEMA_KEYWORDS:
@@ -50,9 +50,7 @@ def _validate_schema_shape(schema: object, *, implicit_object: bool = False) -> 
         if not isinstance(schema["additionalProperties"], bool) or schema_type != "object":
             raise _invalid_contract()
     if "required" in schema:
-        if not isinstance(schema["required"], list) or (
-            schema_type != "object" and not (implicit_object and schema_type is None)
-        ):
+        if not isinstance(schema["required"], list) or schema_type != "object":
             raise _invalid_contract()
     if "required" in schema and not all(isinstance(item, str) for item in schema["required"]):
         raise _invalid_contract()
@@ -70,10 +68,23 @@ def _validate_schema_shape(schema: object, *, implicit_object: bool = False) -> 
     if "enum" in schema and (not isinstance(schema["enum"], list) or not schema["enum"]):
         raise _invalid_contract()
     if "anyOf" in schema:
-        if not isinstance(schema["anyOf"], list) or not schema["anyOf"]:
+        if (
+            schema_type != "object"
+            or not isinstance(schema["anyOf"], list)
+            or not schema["anyOf"]
+        ):
             raise _invalid_contract()
+        properties = schema.get("properties", {})
         for child in schema["anyOf"]:
-            _validate_schema_shape(child, implicit_object=True)
+            if not isinstance(child, dict) or set(child) != {"required"}:
+                raise _invalid_contract()
+            required = child["required"]
+            if (
+                not isinstance(required, list)
+                or not required
+                or not all(isinstance(name, str) and name in properties for name in required)
+            ):
+                raise _invalid_contract()
     for key in ("minimum", "maximum"):
         if key in schema and (
             schema_type not in {"integer", "number"}
