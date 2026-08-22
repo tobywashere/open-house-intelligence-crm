@@ -147,7 +147,10 @@ for (const workspaceDir of [undefined, "", "."]) {
 
 
 test("returns a safe timeout receipt", async () => {
-  const timeout = Object.assign(new Error("secret /home/person/token"), { killed: true });
+  const timeout = Object.assign(new Error("secret /home/person/token"), {
+    killed: true,
+    signal: "SIGTERM",
+  });
   assert.deepEqual(
     await runCrmTool({ operation: "list_leads" }, context, childFailure(timeout)),
     {
@@ -212,6 +215,34 @@ test("returns a safe failure receipt for an unknown child failure", async () => 
   const failure = Object.assign(new Error("token=secret /home/person/cli.py"), {
     code: 2, stderr: "unparseable private stderr",
   });
+  assert.deepEqual(
+    await runCrmTool({ operation: "list_leads" }, context, childFailure(failure)),
+    {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "operation_failed", message: "CRM operation failed", retryable: false },
+    },
+  );
+});
+
+
+test("does not classify a signal-only child failure as a timeout", async () => {
+  const failure = Object.assign(new Error("child crashed"), { signal: "SIGABRT" });
+  assert.deepEqual(
+    await runCrmTool({ operation: "list_leads" }, context, childFailure(failure)),
+    {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "operation_failed", message: "CRM operation failed", retryable: false },
+    },
+  );
+});
+
+
+test("does not classify a message-only maxBuffer child failure as oversized output", async () => {
+  const failure = new Error("maxBuffer label appeared in a child failure");
   assert.deepEqual(
     await runCrmTool({ operation: "list_leads" }, context, childFailure(failure)),
     {

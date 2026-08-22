@@ -143,13 +143,13 @@ function parseCliError(operation, stderr) {
 
 
 function mapChildError(operation, error) {
-  if (
-    error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
-    || String(error?.message || "").includes("maxBuffer")
-  ) {
+  if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
     return errorReceipt(operation, "result_too_large");
   }
-  if (error?.killed || error?.code === "ETIMEDOUT" || error?.signal) {
+  if (
+    error?.code === "ETIMEDOUT"
+    || (error?.killed === true && error?.signal === "SIGTERM")
+  ) {
     return errorReceipt(operation, "timeout");
   }
   return parseCliError(operation, error?.stderr) ?? errorReceipt(operation, "operation_failed");
