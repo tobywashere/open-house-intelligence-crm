@@ -10,7 +10,13 @@ const root = new URL("../", import.meta.url);
 
 test("plugin registers exactly one required CRM tool factory", async () => {
   const registrations = [];
-  const plugin = createPluginDefinition(async (input, context) => ({ input, context }));
+  const receipt = {
+    ok: true,
+    operation: "list_leads",
+    kind: "read",
+    result: [{ id: 4, name: "Chris" }],
+  };
+  const plugin = createPluginDefinition(async () => receipt);
   plugin.register({ registerTool: (...args) => registrations.push(args) });
 
   assert.equal(plugin.id, "openhouse-crm");
@@ -21,25 +27,27 @@ test("plugin registers exactly one required CRM tool factory", async () => {
 
   const tool = factory({ workspaceDir: "/trusted/workspace" });
   assert.equal(tool.name, "openhouse_crm");
-  assert.equal(tool.parameters.type, "object");
-  assert.equal(tool.parameters.additionalProperties, false);
-  assert.equal(tool.parameters.required.includes("operation"), true);
-  assert.equal(tool.parameters.properties.arguments.type, "object");
-  assert.equal(tool.parameters.properties.arguments.additionalProperties, true);
-
-  const operations = JSON.parse(await readFile(new URL("../operations.json", import.meta.url)));
-  assert.deepEqual(tool.parameters.properties.operation.enum, operations);
+  const contract = JSON.parse(
+    await readFile(new URL("../../../skills/crm-db-operations/contract.json", import.meta.url)),
+  );
+  assert.equal(tool.parameters.oneOf.length, Object.keys(contract.operations).length);
+  const createBranch = tool.parameters.oneOf.find(
+    (branch) => branch.properties.operation.const === "create_lead",
+  );
+  assert.equal(createBranch.type, "object");
+  assert.equal(createBranch.additionalProperties, false);
+  assert.deepEqual(createBranch.required, ["operation", "arguments"]);
+  assert.equal(createBranch.properties.arguments.additionalProperties, false);
+  assert.equal(createBranch.properties.arguments.properties.source_note, undefined);
+  assert.equal(createBranch.properties.arguments.properties.status, undefined);
 
   const result = await tool.execute("call-id", {
     operation: "list_leads",
     arguments: { sort: "priority" },
   });
-  assert.deepEqual(result.details, {
-    input: { operation: "list_leads", arguments: { sort: "priority" } },
-    context: { workspaceDir: "/trusted/workspace" },
-  });
+  assert.deepEqual(result.details, receipt);
   assert.deepEqual(result.content, [
-    { type: "text", text: JSON.stringify(result.details) },
+    { type: "text", text: JSON.stringify(receipt) },
   ]);
 });
 
@@ -68,6 +76,7 @@ test("package ships built ESM with no install-time or runtime dependencies", asy
   assert.equal(packageJson.dependencies, undefined);
   assert.equal(packageJson.optionalDependencies, undefined);
   assert.equal(packageJson.scripts?.install, undefined);
+  assert.equal(packageJson.files.includes("operations.json"), false);
   assert.match(packageJson.peerDependencies.openclaw, /^>=2026\./);
 });
 

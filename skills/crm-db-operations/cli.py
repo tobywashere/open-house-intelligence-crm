@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import re
 import sys
 
 from contract import operation_names, validate_arguments
@@ -10,6 +11,50 @@ import tools
 
 
 OPERATIONS = {name: getattr(tools, name) for name in operation_names()}
+
+
+def _bounded_crm_message(code: str, _message: str) -> str:
+    return {
+        "backend_unavailable": "CRM backend is unavailable",
+        "not_found": "CRM record was not found",
+        "schedule_conflict": "Requested schedule conflicts with an existing appointment",
+        "invalid_arguments": "Invalid CRM arguments",
+        "operation_failed": "CRM operation failed",
+    }.get(code, "CRM operation failed")
+
+
+def _bounded_argument_message(exc: Exception) -> str:
+    message = str(exc)
+    if message == "--args must decode to a JSON object":
+        return message
+    if re.fullmatch(r"(?:Unsupported|Missing|Invalid) argument: [a-z][a-z0-9_]*", message):
+        return message
+    if re.fullmatch(r"Invalid CRM arguments: [a-z][a-z0-9_]*", message):
+        return message
+    return "Invalid CRM arguments"
+
+
+def _safe_error(exc: Exception) -> dict:
+    if isinstance(exc, tools.CRMError):
+        code = {
+            0: "backend_unavailable",
+            404: "not_found",
+            409: "schedule_conflict",
+            400: "invalid_arguments",
+            422: "invalid_arguments",
+        }.get(exc.status, "operation_failed")
+        return {
+            "code": code,
+            "message": _bounded_crm_message(code, exc.message),
+            "retryable": code in {"backend_unavailable", "timeout"},
+        }
+    if isinstance(exc, (TypeError, ValueError)):
+        return {
+            "code": "invalid_arguments",
+            "message": _bounded_argument_message(exc),
+            "retryable": False,
+        }
+    return {"code": "operation_failed", "message": "CRM operation failed", "retryable": False}
 
 
 def dispatch(operation: str, arguments: dict):
@@ -31,7 +76,7 @@ def main() -> int:
     try:
         result = dispatch(args.operation, json.loads(args.args))
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+        print(json.dumps({"ok": False, "error": _safe_error(exc)}), file=sys.stderr)
         return 2
     print(json.dumps({"ok": True, "result": result}, default=str))
     return 0

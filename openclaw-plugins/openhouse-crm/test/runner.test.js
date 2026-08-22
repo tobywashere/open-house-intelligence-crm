@@ -23,6 +23,11 @@ function successfulChild(result) {
 }
 
 
+function childFailure(error) {
+  return async () => { throw error; };
+}
+
+
 test("returns a structured read and invokes only the fixed wrapper without a shell", async () => {
   let invocation;
   const child = async (file, args, options) => {
@@ -30,22 +35,14 @@ test("returns a structured read and invokes only the fixed wrapper without a she
     return { stdout: JSON.stringify({ ok: true, result: [{ id: 4, name: "Chris" }] }), stderr: "" };
   };
 
-  const result = await runCrmTool(
-    { operation: "list_leads", arguments: { sort: "priority" } },
-    context,
-    child,
+  assert.deepEqual(
+    await runCrmTool(
+      { operation: "list_leads", arguments: { sort: "priority" } }, context, child,
+    ),
+    { ok: true, operation: "list_leads", kind: "read", result: [{ id: 4, name: "Chris" }] },
   );
-
-  assert.deepEqual(result, [{ id: 4, name: "Chris" }]);
-  assert.equal(
-    invocation.file,
-    "/trusted/openhouse-workspace/skills/crm-db-operations/cli.py",
-  );
-  assert.deepEqual(invocation.args, [
-    "list_leads",
-    "--args",
-    JSON.stringify({ sort: "priority" }),
-  ]);
+  assert.equal(invocation.file, "/trusted/openhouse-workspace/skills/crm-db-operations/cli.py");
+  assert.deepEqual(invocation.args, ["list_leads", "--args", JSON.stringify({ sort: "priority" })]);
   assert.equal(invocation.options.shell, false);
   assert.equal(invocation.options.timeout, TOOL_TIMEOUT_MS);
   assert.equal(invocation.options.maxBuffer, MAX_OUTPUT_BYTES);
@@ -55,34 +52,44 @@ test("returns a structured read and invokes only the fixed wrapper without a she
 });
 
 
-test("returns the backend pending proposal without applying or rewriting it", async () => {
+test("labels pending writes as proposals", async () => {
   const pending = {
-    pending: true,
-    id: 12,
-    operation: "create_lead",
-    summary: "Create lead Chris",
-    status: "pending",
+    pending: true, id: 12, operation: "create_lead", summary: "Create lead Chris", status: "pending",
   };
   assert.deepEqual(
     await runCrmTool(
-      { operation: "create_lead", arguments: { raw_text: "Chris" } },
-      context,
-      successfulChild(pending),
+      { operation: "create_lead", arguments: { raw_text: "Chris" } }, context, successfulChild(pending),
     ),
-    pending,
+    { ok: true, operation: "create_lead", kind: "proposal", result: pending },
   );
 });
 
 
-test("rejects unknown operations before starting a child", async () => {
+test("returns an invalid-argument receipt for unknown operations before starting a child", async () => {
   let called = false;
-  await assert.rejects(
-    runCrmTool({ operation: "run_anything", arguments: {} }, context, async () => {
-      called = true;
-    }),
-    /not supported/,
+  assert.deepEqual(
+    await runCrmTool({ operation: "run_anything", arguments: {} }, context, async () => { called = true; }),
+    {
+      ok: false,
+      operation: "run_anything",
+      kind: "error",
+      error: { code: "invalid_arguments", message: "CRM operation is not supported", retryable: false },
+    },
   );
   assert.equal(called, false);
+});
+
+
+test("does not echo an unsafe operation name into an error receipt", async () => {
+  assert.deepEqual(
+    await runCrmTool({ operation: "/private/token", arguments: {} }, context, successfulChild([])),
+    {
+      ok: false,
+      operation: "unknown",
+      kind: "error",
+      error: { code: "invalid_arguments", message: "CRM operation is not supported", retryable: false },
+    },
+  );
 });
 
 
@@ -93,8 +100,13 @@ for (const [input, message] of [
   [{ operation: "list_leads", arguments: null }, "arguments"],
   [{ operation: "list_leads", arguments: { nested: undefined } }, "JSON-compatible"],
 ]) {
-  test(`rejects malformed input containing ${message}`, async () => {
-    await assert.rejects(runCrmTool(input, context, successfulChild([])), new RegExp(message));
+  test(`returns a safe invalid-argument receipt for malformed input containing ${message}`, async () => {
+    const receipt = await runCrmTool(input, context, successfulChild([]));
+    assert.equal(receipt.ok, false);
+    assert.equal(receipt.kind, "error");
+    assert.equal(receipt.error.code, "invalid_arguments");
+    assert.equal(receipt.error.retryable, false);
+    assert.match(receipt.error.message, new RegExp(message));
   });
 }
 
@@ -109,83 +121,120 @@ test("defaults omitted arguments to an empty object", async () => {
 });
 
 
-test("rejects oversized arguments before starting a child", async () => {
+test("returns invalid arguments for oversized arguments before starting a child", async () => {
   let called = false;
-  await assert.rejects(
-    runCrmTool(
-      { operation: "search_knowledge", arguments: { query: "x".repeat(MAX_ARGUMENT_BYTES) } },
-      context,
-      async () => {
-        called = true;
-      },
-    ),
-    /too large/,
+  const receipt = await runCrmTool(
+    { operation: "search_knowledge", arguments: { query: "x".repeat(MAX_ARGUMENT_BYTES) } },
+    context,
+    async () => { called = true; },
   );
+  assert.equal(receipt.error.code, "invalid_arguments");
   assert.equal(called, false);
 });
 
 
 for (const workspaceDir of [undefined, "", "."]) {
-  test(`rejects an unusable trusted workspace ${String(workspaceDir)}`, async () => {
-    await assert.rejects(
-      runCrmTool({ operation: "list_leads" }, { workspaceDir }, successfulChild([])),
-      /workspace is unavailable/,
+  test(`returns a safe error for an unusable trusted workspace ${String(workspaceDir)}`, async () => {
+    const receipt = await runCrmTool({ operation: "list_leads" }, { workspaceDir }, successfulChild([]));
+    assert.deepEqual(receipt, {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "operation_failed", message: "CRM operation failed", retryable: false },
+    });
+  });
+}
+
+
+test("returns a safe timeout receipt", async () => {
+  const timeout = Object.assign(new Error("secret /home/person/token"), { killed: true });
+  assert.deepEqual(
+    await runCrmTool({ operation: "list_leads" }, context, childFailure(timeout)),
+    {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "timeout", message: "CRM operation timed out", retryable: true },
+    },
+  );
+});
+
+
+for (const [name, operation, error, expected] of [
+  [
+    "404", "get_lead_context",
+    { code: 2, stderr: '{"ok":false,"error":{"code":"not_found","message":"CRM record was not found","retryable":false}}' },
+    { code: "not_found", message: "CRM record was not found", retryable: false },
+  ],
+  [
+    "409", "book_appointment",
+    { code: 2, stderr: '{"ok":false,"error":{"code":"schedule_conflict","message":"Requested schedule conflicts with an existing appointment","retryable":false}}' },
+    { code: "schedule_conflict", message: "Requested schedule conflicts with an existing appointment", retryable: false },
+  ],
+  [
+    "backend unavailability", "list_leads",
+    { code: 2, stderr: '{"ok":false,"error":{"code":"backend_unavailable","message":"CRM backend is unavailable","retryable":true}}' },
+    { code: "backend_unavailable", message: "CRM backend is unavailable", retryable: true },
+  ],
+  [
+    "invalid arguments", "create_lead",
+    { code: 2, stderr: '{"ok":false,"error":{"code":"invalid_arguments","message":"Unsupported argument: source_note","retryable":false}}' },
+    { code: "invalid_arguments", message: "Unsupported argument: source_note", retryable: false },
+  ],
+]) {
+  test(`returns the structured CLI ${name} receipt without exposing child errors`, async () => {
+    const failure = Object.assign(new Error("token=secret /home/person/cli.py"), error);
+    assert.deepEqual(
+      await runCrmTool({ operation }, context, childFailure(failure)),
+      { ok: false, operation, kind: "error", error: expected },
     );
   });
 }
 
 
-test("sanitizes timeouts", async () => {
-  const timeout = Object.assign(new Error("secret /home/person/token"), { killed: true });
-  await assert.rejects(
-    runCrmTool({ operation: "list_leads" }, context, async () => { throw timeout; }),
-    /^Error: CRM operation timed out$/,
-  );
-});
-
-
-test("sanitizes child failures", async () => {
-  const failure = Object.assign(new Error("token=secret /home/person/cli.py"), {
-    code: 2,
-    stderr: '{"ok":false,"error":"private backend detail"}',
-  });
-  await assert.rejects(
-    runCrmTool({ operation: "list_leads" }, context, async () => { throw failure; }),
-    /^Error: CRM operation failed$/,
-  );
-});
-
-
-test("rejects invalid wrapper JSON without returning raw output", async () => {
-  await assert.rejects(
-    runCrmTool(
-      { operation: "list_leads" },
-      context,
+test("returns a safe failure receipt for invalid wrapper JSON", async () => {
+  assert.deepEqual(
+    await runCrmTool(
+      { operation: "list_leads" }, context,
       async () => ({ stdout: "secret non-json output", stderr: "" }),
     ),
-    /^Error: CRM operation returned an invalid response$/,
+    {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "operation_failed", message: "CRM operation failed", retryable: false },
+    },
   );
 });
 
 
-test("rejects wrapper-declared errors without returning their private detail", async () => {
-  await assert.rejects(
-    runCrmTool(
-      { operation: "list_leads" },
-      context,
-      async () => ({ stdout: '{"ok":false,"error":"token and private path"}', stderr: "" }),
-    ),
-    /^Error: CRM operation failed$/,
+test("returns a safe failure receipt for an unknown child failure", async () => {
+  const failure = Object.assign(new Error("token=secret /home/person/cli.py"), {
+    code: 2, stderr: "unparseable private stderr",
+  });
+  assert.deepEqual(
+    await runCrmTool({ operation: "list_leads" }, context, childFailure(failure)),
+    {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "operation_failed", message: "CRM operation failed", retryable: false },
+    },
   );
 });
 
 
-test("rejects oversized returned output", async () => {
+test("returns a safe result-too-large receipt", async () => {
   const error = Object.assign(new Error("stdout maxBuffer length exceeded"), {
     code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
   });
-  await assert.rejects(
-    runCrmTool({ operation: "list_leads" }, context, async () => { throw error; }),
-    /^Error: CRM operation returned too much data$/,
+  assert.deepEqual(
+    await runCrmTool({ operation: "list_leads" }, context, childFailure(error)),
+    {
+      ok: false,
+      operation: "list_leads",
+      kind: "error",
+      error: { code: "result_too_large", message: "CRM operation returned too much data", retryable: false },
+    },
   );
 });

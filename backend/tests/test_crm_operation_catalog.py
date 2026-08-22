@@ -132,6 +132,59 @@ def test_merge_leads_requires_distinct_ids():
         _load_contract().validate_arguments("merge_leads", {"primary_id": 7, "duplicate_id": 7})
 
 
+@pytest.mark.parametrize(
+    ("exception", "expected"),
+    [
+        (
+            lambda tools: tools.CRMError(0, "http://private.example/token=secret"),
+            {"code": "backend_unavailable", "message": "CRM backend is unavailable", "retryable": True},
+        ),
+        (
+            lambda tools: tools.CRMError(404, "lead 7 at /private/path"),
+            {"code": "not_found", "message": "CRM record was not found", "retryable": False},
+        ),
+        (
+            lambda tools: tools.CRMError(409, "private scheduling detail"),
+            {
+                "code": "schedule_conflict",
+                "message": "Requested schedule conflicts with an existing appointment",
+                "retryable": False,
+            },
+        ),
+        (
+            lambda _tools: ValueError("Unsupported argument: source_note"),
+            {"code": "invalid_arguments", "message": "Unsupported argument: source_note", "retryable": False},
+        ),
+        (
+            lambda _tools: RuntimeError("secret /private/path token=abc"),
+            {"code": "operation_failed", "message": "CRM operation failed", "retryable": False},
+        ),
+    ],
+)
+def test_cli_safe_errors_are_structured_and_do_not_expose_private_details(exception, expected):
+    cli = _load_cli()
+
+    assert cli._safe_error(exception(cli.tools)) == expected
+
+
+def test_cli_main_writes_only_the_structured_safe_error(monkeypatch, capsys):
+    cli = _load_cli()
+
+    def fail(_operation, _arguments):
+        raise cli.tools.CRMError(404, "private /path token=abc")
+
+    monkeypatch.setattr(cli, "dispatch", fail)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "list_leads"])
+
+    assert cli.main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "ok": False,
+        "error": {"code": "not_found", "message": "CRM record was not found", "retryable": False},
+    }
+
+
 def test_contract_rejects_unsupported_schema_keyword_at_import(tmp_path):
     payload = _contract_payload()
     payload["operations"]["list_leads"]["arguments"]["format"] = "uri"

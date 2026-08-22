@@ -10,7 +10,6 @@
   },
   "files": [
     "dist",
-    "operations.json",
     "openclaw.plugin.json"
   ],
   "peerDependencies": {
