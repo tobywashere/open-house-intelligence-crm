@@ -7,7 +7,7 @@ is not required for the CRM. For an Apple-silicon Mac mini, use
 
 ## Before you start
 
-Install Git, Python 3.11 or newer, Node.js 20 or newer, and OpenClaw. Configure
+Install Git, Python 3.11 or newer, Node.js 22.22.3 or newer, and OpenClaw. Configure
 a tool-capable model in OpenClaw. The model choice controls memory use, speed,
 and quality. Record what you used in the acceptance checklist below instead of
 assuming a particular model or hardware combination is verified.
@@ -43,13 +43,14 @@ python3 scripts/doctor.py --live-agent --live-crm
 ```
 
 Open [http://localhost:8080](http://localhost:8080). The helper creates the
-dedicated `openhouse-crm` agent with the `crm-db-operations` skill and uses
-`AGENT_ID=openhouse-crm` in the CRM configuration. It gives that dedicated
-agent only `exec`; the executable allowlist contains the CRM wrapper and daily
-brief runner, while general web, browser, and file tools are denied. It records
-the installed OpenClaw version and checks required CLI and policy capabilities
-before changing configuration, then reads the tool policy back and refuses to
-report success unless `exec` is the only allowed tool.
+dedicated `openhouse-crm` agent with the `crm-db-operations` guidance and uses
+`AGENT_ID=openhouse-crm` in the CRM configuration. It links the bundled
+`openhouse_crm` tool plugin and allows only that tool plus `exec`; only the
+daily-brief runner remains executable, while general web, browser, and file
+tools are denied. It overrides only this agent's base tool profile, leaving the
+global profile unchanged. It checks required CLI and policy capabilities, then
+reads back both the tool policy and live plugin registration before reporting
+success.
 
 The expected live result is **CRM capability: crm_verified**. If the result is
 only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the

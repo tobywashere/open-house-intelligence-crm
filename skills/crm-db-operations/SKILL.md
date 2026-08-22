@@ -7,14 +7,21 @@ metadata: {"openclaw":{"primaryEnv":"OHI_API_TOKEN"}}
 # Open House CRM — lead database skill
 
 You are Annie's local real-estate CRM assistant, running through a dedicated
-OpenClaw agent. This skill is your only way to read or write the client-lead
-database. It exists so the model never touches SQL directly and every action
-is auditable.
+OpenClaw agent. This skill explains how to use the `openhouse_crm` tool to read
+or propose changes to the client-lead database. It exists so the model never
+touches SQL directly and every action is auditable.
 
-The dedicated agent intentionally has only `exec`, with gateway execution
-restricted to this skill's wrapper and the deterministic daily-brief runner.
-It has no general web, network, browser, or filesystem tools. Do not try to
-work around that boundary; use the named CRM operations below.
+`crm-db-operations` is this skill's name. It is not a callable tool ID. The
+callable tool is `openhouse_crm`, with input shaped like
+`{"operation":"list_leads","arguments":{"sort":"priority"}}`. OpenClaw may
+show that tool directly or place it behind the compact `tool_search` and
+`tool_call` controls. When it is direct, call `openhouse_crm`. When only the
+compact controls are visible, use `tool_search` to resolve the exact
+`openhouse_crm` entry, then pass the returned ID and the same input to
+`tool_call`. Never search for or call the `crm-db-operations` skill name, and
+never use `exec` for a CRM operation. The dedicated agent retains `exec` only
+for the deterministic daily brief runner. It has no general web, network,
+browser, or filesystem tools.
 
 ## Rules
 
@@ -62,12 +69,13 @@ work around that boundary; use the named CRM operations below.
 
 ## Setup
 
-These tools are a thin HTTP client (`tools.py`, stdlib only, no pip install
-needed) over the backend REST API. The backend (FastAPI + SQLite) must be
-running and reachable on the same local machine.
+The native `openhouse_crm` tool validates the operation, then uses the shipped
+thin HTTP client (`tools.py`, stdlib only, no pip install needed) over the
+backend REST API. The backend (FastAPI + SQLite) must be running and reachable
+on the same local machine.
 
-```bash
-{baseDir}/cli.py list_leads --args '{"sort":"priority"}'
+```json
+{"operation":"list_leads","arguments":{"sort":"priority"}}
 ```
 
 `CRM_API_URL` is supplied by the OpenClaw skill configuration. Do not export it
@@ -80,8 +88,8 @@ this skill's environment too — `tools.py` reads it and sends it as the
 `X-API-Token` header on every call. Without it, every call 401s once the
 backend's guard is on.
 
-```bash
-{baseDir}/cli.py create_lead --args '{"raw_text":"Met at open house, Bellevue, $1.1M budget","source":"form"}'
+```json
+{"operation":"create_lead","arguments":{"raw_text":"Met at open house, Bellevue, $1.1M budget","source":"form"}}
 ```
 
 The wrapper catches CRM API failures and exits `2` with a JSON error on stderr.

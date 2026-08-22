@@ -119,10 +119,20 @@ class OpenClawDriver(AgentDriver):
         session_id: str,
         probe_nonce: str,
     ) -> None:
-        arguments = json.dumps({"probe_nonce": probe_nonce})
+        tool_input = json.dumps(
+            {
+                "operation": "generate_dashboard_insights",
+                "arguments": {"probe_nonce": probe_nonce},
+            }
+        )
         await self._send(
-            "Use the crm-db-operations skill to run its fixed CLI operation "
-            f"generate_dashboard_insights --args '{arguments}'. "
+            "Invoke openhouse_crm exactly once with this JSON input: "
+            f"{tool_input}. crm-db-operations is a skill name, not a tool ID. "
+            "If openhouse_crm is directly visible, call it directly. If the compact "
+            "tool_search and tool_call controls are visible instead, use tool_search "
+            "to resolve the exact openhouse_crm entry and pass its returned ID to "
+            "tool_call with the JSON input. "
+            "Never use exec for CRM operations. "
             "Do not modify CRM data. After the call, reply with only CHECKED.",
             session_id,
         )

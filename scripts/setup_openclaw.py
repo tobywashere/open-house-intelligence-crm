@@ -36,10 +36,13 @@ DESIRED_TOOL_DENY = (
     "cron",
 )
 DESIRED_TOOLS = {
-    "allow": ["exec"],
+    "profile": "full",
+    "allow": ["openhouse_crm", "exec"],
     "deny": list(DESIRED_TOOL_DENY),
-    "exec": {"mode": "allowlist", "host": "gateway", "ask": "off"},
+    "exec": {"mode": "allowlist", "host": "gateway"},
 }
+PLUGIN_ID = "openhouse-crm"
+PLUGIN_TOOL = "openhouse_crm"
 DESIRED_SANDBOX = {"mode": "off"}
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
 TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
@@ -54,6 +57,9 @@ TOKEN_SECRETREF_REDACTED = {
     **TOKEN_SECRETREF,
     "id": "__OPENCLAW_REDACTED__",
 }
+VALID_AGENT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
+RESERVED_AGENT_IDS = frozenset({"main", "openclaw", "crestodian"})
+LEGACY_AGENT_PREFIX_RE = re.compile(r"agents\.list\[\d+\]")
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,19 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class AgentRoster:
+    schema: str | None
+    records: list[dict[str, Any]]
+    prefixes: dict[str, str]
+
+
+@dataclass
+class AgentRollback:
+    snapshot: dict[str, Any]
+    changed_fields: list[str]
 
 
 @dataclass(frozen=True)
@@ -106,6 +125,10 @@ class OpenClawCLI:
 
 
 class SetupConflict(RuntimeError):
+    pass
+
+
+class _DuplicateJSONKey(ValueError):
     pass
 
 
@@ -398,12 +421,12 @@ def build_setup_actions(options: SetupOptions, agents: list[dict]) -> list[Actio
     actions.extend(
         [
             Action(
-                "Allow only the CRM command wrapper",
+                "Remove the legacy CRM command wrapper approval",
                 [
                     "openclaw",
                     "approvals",
                     "allowlist",
-                    "add",
+                    "remove",
                     "--agent",
                     options.agent_id,
                     "--gateway",
@@ -560,22 +583,221 @@ def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
         raise SetupConflict(f"skill synchronization failed: {exc}") from exc
 
 
-def _json(result: CommandResult, label: str) -> Any:
+def _decode_json(raw: str, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        decoded: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise _DuplicateJSONKey(key)
+            decoded[key] = value
+        return decoded
+
     try:
-        return json.loads(result.stdout or "null")
-    except json.JSONDecodeError as exc:
+        return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except (json.JSONDecodeError, _DuplicateJSONKey) as exc:
         raise SetupConflict(f"{label} returned invalid JSON") from exc
 
 
-def _agents(payload: Any) -> list[dict]:
+def _json(result: CommandResult, label: str) -> Any:
+    return _decode_json(result.stdout or "null", label)
+
+
+def _canonical_agent_id(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not VALID_AGENT_ID_RE.fullmatch(value):
+        raise SetupConflict(f"OpenClaw returned an invalid agent ID at {label}")
+    return value.lower()
+
+
+def _require_canonical_agent_id(value: Any, label: str) -> str:
+    canonical = _canonical_agent_id(value, label)
+    if value != canonical:
+        raise SetupConflict(
+            f"{label} must already use canonical lowercase OpenClaw agent-ID syntax"
+        )
+    return canonical
+
+
+def _validate_requested_agent_id(value: Any) -> str:
+    try:
+        canonical = _require_canonical_agent_id(value, "requested agent ID")
+    except SetupConflict as exc:
+        raise SetupConflict(
+            "AGENT_ID must be nonblank, use 1-64 letters, numbers, underscore, "
+            "or hyphen, start with a letter or number, and already be canonical "
+            "lowercase"
+        ) from exc
+    if canonical in RESERVED_AGENT_IDS:
+        raise SetupConflict(f'AGENT_ID "{canonical}" is reserved by OpenClaw')
+    return canonical
+
+
+def _agent_id(value: Any, label: str) -> str:
+    return _canonical_agent_id(value, label)
+
+
+def _agent_list_records(value: Any, label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise SetupConflict(f"OpenClaw returned an unsupported agents JSON shape at {label}")
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise SetupConflict(
+                f"OpenClaw returned an unsupported agent record at {label}[{index}]"
+            )
+        record = dict(entry)
+        agent_id = _agent_id(record.get("id"), f"{label}[{index}].id")
+        if agent_id in seen:
+            raise SetupConflict(f"OpenClaw returned duplicate agent ID: {agent_id}")
+        seen.add(agent_id)
+        record["id"] = agent_id
+        records.append(record)
+    return records
+
+
+def _agent_entry_records(
+    value: Any, label: str
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    if not isinstance(value, dict):
+        raise SetupConflict(f"OpenClaw returned an unsupported agents JSON shape at {label}")
+    records: list[dict[str, Any]] = []
+    prefixes: dict[str, str] = {}
+    seen: set[str] = set()
+    for raw_agent_id, entry in value.items():
+        agent_id = _agent_id(raw_agent_id, f"{label} key")
+        rendered_raw_id = json.dumps(raw_agent_id)
+        if not isinstance(entry, dict):
+            raise SetupConflict(
+                f"OpenClaw returned an unsupported agent record at {label}[{rendered_raw_id}]"
+            )
+        record = dict(entry)
+        if "id" in record and _agent_id(
+            record["id"], f"{label}[{rendered_raw_id}].id"
+        ) != agent_id:
+            raise SetupConflict(
+                f"OpenClaw returned mismatched agent IDs at {label}[{rendered_raw_id}]"
+            )
+        if agent_id in seen:
+            raise SetupConflict(f"OpenClaw returned duplicate agent ID: {agent_id}")
+        seen.add(agent_id)
+        record["id"] = agent_id
+        records.append(record)
+        prefixes[agent_id] = f"{label}[{rendered_raw_id}]"
+    return records, prefixes
+
+
+def _configured_agent_roster(payload: Any) -> AgentRoster:
+    if not isinstance(payload, dict):
+        raise SetupConflict("OpenClaw returned an unsupported agents config JSON shape")
+    if "defaults" in payload and not isinstance(payload["defaults"], dict):
+        raise SetupConflict("OpenClaw returned an unsupported agents defaults JSON shape")
+    has_list = "list" in payload
+    has_entries = "entries" in payload
+    if has_list and has_entries:
+        raise SetupConflict("OpenClaw returned ambiguous legacy and modern agents config")
+    if has_list:
+        records = _agent_list_records(payload["list"], "agents.list")
+        return AgentRoster(
+            "list",
+            records,
+            {agent["id"]: f"agents.list[{index}]" for index, agent in enumerate(records)},
+        )
+    if has_entries:
+        records, prefixes = _agent_entry_records(payload["entries"], "agents.entries")
+        return AgentRoster("entries", records, prefixes)
+    if set(payload) == {"defaults"}:
+        return AgentRoster(None, [], {})
+    raise SetupConflict("OpenClaw returned an unsupported agents config JSON shape")
+
+
+def _cli_agents(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if isinstance(payload, dict):
-        for key in ("agents", "list", "entries"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    raise SetupConflict("OpenClaw returned an unsupported agents JSON shape")
+        return _agent_list_records(payload, "agents")
+    if not isinstance(payload, dict):
+        raise SetupConflict("OpenClaw returned an unsupported agents JSON shape")
+    shapes = [key for key in ("agents", "list", "entries") if key in payload]
+    if len(shapes) != 1:
+        raise SetupConflict("OpenClaw returned an ambiguous agents JSON shape")
+    shape = shapes[0]
+    if shape == "entries":
+        records, _ = _agent_entry_records(payload[shape], "entries")
+        return records
+    return _agent_list_records(payload[shape], shape)
+
+
+def _agents(payload: Any) -> list[dict[str, Any]]:
+    return _cli_agents(payload)
+
+
+def _is_missing_config_path(result: CommandResult, path: str) -> bool:
+    if result.returncode != 1:
+        return False
+    expected_text = f"Config path not found: {path}"
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    if stdout and stderr:
+        return False
+    if stdout:
+        if stdout == expected_text:
+            return True
+        try:
+            return _decode_json(stdout, "config missing-path diagnostic") == {
+                "error": expected_text
+            }
+        except SetupConflict:
+            return False
+    return stderr == expected_text
+
+
+def _read_agent_roster(
+    cli: OpenClawCLI, *, allow_missing: bool, label: str
+) -> AgentRoster:
+    argv = ["openclaw", "config", "get", "agents", "--json"]
+    result = cli.run(argv)
+    if result.returncode != 0:
+        if allow_missing and _is_missing_config_path(result, "agents"):
+            return AgentRoster(None, [], {})
+        detail = (result.stderr or result.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise SetupConflict(f"unsupported OpenClaw installation: {label} failed{suffix}")
+    return _configured_agent_roster(_json(result, label))
+
+
+def _revalidate_agent_target(
+    cli: OpenClawCLI,
+    *,
+    agent_id: str,
+    prefix: str,
+    workspace: Path,
+    label: str,
+) -> None:
+    roster = _read_agent_roster(cli, allow_missing=False, label=label)
+    current_prefix = roster.prefixes.get(agent_id)
+    if LEGACY_AGENT_PREFIX_RE.fullmatch(prefix) and (
+        roster.schema != "list" or current_prefix != prefix
+    ):
+        raise SetupConflict(
+            "legacy agent roster changed during setup; stop concurrent OpenClaw "
+            "configuration writes and rerun setup"
+        )
+    if current_prefix != prefix:
+        raise SetupConflict(
+            "dedicated agent configuration changed during setup; stop concurrent "
+            "OpenClaw configuration writes and rerun setup"
+        )
+    agent = next(
+        (record for record in roster.records if record.get("id") == agent_id), None
+    )
+    configured_workspace = (
+        agent.get("workspace") or agent.get("workspacePath")
+        if agent is not None
+        else None
+    )
+    if not _same_workspace(configured_workspace, workspace):
+        raise SetupConflict(
+            f"agent {agent_id} workspace changed during setup; setup stopped before "
+            "writing to an agent it no longer owns"
+        )
 
 
 def _eligible_skills(payload: Any) -> set[str]:
@@ -694,13 +916,13 @@ def _effective_agent_scope(payload: dict, agent_id: str) -> dict | None:
 def _validate_effective_gateway_policy(
     payload: dict, agent_id: str, *, required: bool
 ) -> None:
+    if not required:
+        return
     scope = _effective_agent_scope(payload, agent_id)
     if scope is None:
-        if required:
-            raise SetupConflict(
-                "gateway effective approval policy is unavailable for the dedicated agent"
-            )
-        return
+        raise SetupConflict(
+            "gateway effective approval policy is unavailable for the dedicated agent"
+        )
     host = _require_mapping(scope.get("host"), "effective host")
     mode = _require_mapping(scope.get("mode"), "effective mode")
     security = _require_mapping(scope.get("security"), "effective security")
@@ -771,14 +993,19 @@ def _validate_gateway_approval_payload(
     return patterns
 
 
-def _contains_pair(payload: Any, key: str, value: str) -> bool:
-    if isinstance(payload, dict):
-        if payload.get(key) == value:
-            return True
-        return any(_contains_pair(item, key, value) for item in payload.values())
-    if isinstance(payload, list):
-        return any(_contains_pair(item, key, value) for item in payload)
-    return False
+def _validate_sandbox_explain(payload: Any, agent_id: str) -> None:
+    """Validate direct sandbox state without inferring exec policy from it."""
+    root = _require_mapping(payload, "sandbox explain")
+    if root.get("agentId") != agent_id:
+        raise SetupConflict("sandbox explain returned the wrong dedicated agent")
+    sandbox = _require_mapping(root.get("sandbox"), "sandbox explain sandbox")
+    if sandbox.get("mode") != "off":
+        raise SetupConflict("dedicated CRM agent sandbox mode is not off")
+    if (
+        "sessionIsSandboxed" in sandbox
+        and sandbox.get("sessionIsSandboxed") is not False
+    ):
+        raise SetupConflict("dedicated CRM agent session is unexpectedly sandboxed")
 
 
 def _run_required(cli: OpenClawCLI, argv: list[str], label: str) -> CommandResult:
@@ -799,6 +1026,33 @@ def _run_sensitive_required(
     return result
 
 
+def _command_entries(output: str) -> set[str]:
+    lines = output.splitlines()
+    commands_indent: int | None = None
+    candidates: list[tuple[int, str]] = []
+    in_commands = False
+    for raw in lines:
+        stripped = raw.strip()
+        indent = len(raw) - len(raw.lstrip(" \t"))
+        if not in_commands:
+            if re.fullmatch(r"(?:available\s+)?commands?\s*:", stripped, re.I):
+                in_commands = True
+                commands_indent = indent
+            continue
+        if stripped and commands_indent is not None and indent <= commands_indent:
+            break
+        if not stripped:
+            continue
+        token = stripped.split(maxsplit=1)[0]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", token):
+            continue
+        candidates.append((indent, token))
+    if not candidates:
+        return set()
+    direct_indent = min(indent for indent, _ in candidates)
+    return {token for indent, token in candidates if indent == direct_indent}
+
+
 def _require_help(
     cli: OpenClawCLI, argv: list[str], label: str, required: tuple[str, ...]
 ) -> None:
@@ -810,20 +1064,7 @@ def _require_help(
             output,
         )
     )
-    command_entries: set[str] = set()
-    in_commands = False
-    for line in output.splitlines():
-        stripped = line.strip()
-        if re.fullmatch(r"(?:available\s+)?commands?\s*:", stripped, re.I):
-            in_commands = True
-            continue
-        if in_commands and re.fullmatch(r"[A-Za-z][A-Za-z ]*\s*:", stripped):
-            in_commands = False
-            continue
-        if in_commands and stripped:
-            entry = stripped.split(maxsplit=1)[0]
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", entry):
-                command_entries.add(entry)
+    command_entries = _command_entries(output)
     missing = [
         token
         for token in required
@@ -848,9 +1089,9 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
     token_enabled = bool(os.environ.get("OHI_API_TOKEN", ""))
     if token_enabled:
         config_set_options += secretref_options
-    config_commands = ("get", "set", "validate")
+    config_commands = ("get", "set", "unset", "validate")
     if token_enabled:
-        config_commands += ("file", "unset")
+        config_commands += ("file",)
     checks = [
         (["openclaw", "agents", "--help"], "agents", agents_commands),
         (
@@ -882,6 +1123,11 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
             ("--json",),
         ),
         (
+            ["openclaw", "config", "unset", "--help"],
+            "config unset",
+            (),
+        ),
+        (
             ["openclaw", "approvals", "--help"],
             "approvals",
             ("get", "allowlist"),
@@ -889,11 +1135,16 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
         (
             ["openclaw", "approvals", "allowlist", "--help"],
             "approvals allowlist",
-            ("add",),
+            ("add", "remove"),
         ),
         (
             ["openclaw", "approvals", "allowlist", "add", "--help"],
             "approvals allowlist add",
+            ("--agent", "--gateway"),
+        ),
+        (
+            ["openclaw", "approvals", "allowlist", "remove", "--help"],
+            "approvals allowlist remove",
             ("--agent", "--gateway"),
         ),
         (
@@ -913,6 +1164,31 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
             "sandbox explain",
             ("--agent", "--json"),
         ),
+        (
+            ["openclaw", "plugins", "--help"],
+            "plugins",
+            ("list", "install", "inspect", "enable", "disable", "uninstall"),
+        ),
+        (
+            ["openclaw", "plugins", "list", "--help"],
+            "plugins list",
+            ("--json",),
+        ),
+        (
+            ["openclaw", "plugins", "install", "--help"],
+            "plugins install",
+            ("--link", "--force"),
+        ),
+        (
+            ["openclaw", "plugins", "inspect", "--help"],
+            "plugins inspect",
+            ("--runtime", "--json"),
+        ),
+        (
+            ["openclaw", "plugins", "uninstall", "--help"],
+            "plugins uninstall",
+            ("--keep-files", "--force"),
+        ),
         (["openclaw", "gateway", "--help"], "gateway", ("restart",)),
     ]
     if options.bind_discord:
@@ -921,14 +1197,6 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
                 ["openclaw", "agents", "bind", "--help"],
                 "agents bind",
                 ("--agent", "--bind", "--json"),
-            )
-        )
-    if token_enabled:
-        checks.append(
-            (
-                ["openclaw", "config", "unset", "--help"],
-                "config unset",
-                (),
             )
         )
     for argv, label, required in checks:
@@ -958,7 +1226,7 @@ def _detect_version(cli: OpenClawCLI) -> str:
 
 
 def _validate_authoritative_tools(payload: Any) -> None:
-    """Require the post-write agent tool policy to be observably exec-only."""
+    """Require the post-write agent tool policy to expose only CRM and brief tools."""
     if not isinstance(payload, dict):
         raise SetupConflict(
             "unsupported OpenClaw installation: authoritative agent tools "
@@ -967,6 +1235,10 @@ def _validate_authoritative_tools(payload: Any) -> None:
     allow = payload.get("allow")
     deny = payload.get("deny")
     exec_policy = payload.get("exec")
+    if payload.get("profile") != DESIRED_TOOLS["profile"]:
+        raise SetupConflict(
+            "dedicated CRM agent authoritative tool profile is not the scoped full base"
+        )
     if (
         not isinstance(allow, list)
         or not isinstance(deny, list)
@@ -976,9 +1248,10 @@ def _validate_authoritative_tools(payload: Any) -> None:
             "unsupported OpenClaw installation: authoritative agent tools "
             "did not expose allow and deny lists"
         )
-    if sorted(allow) != ["exec"]:
+    if sorted(allow) != sorted([PLUGIN_TOOL, "exec"]):
         raise SetupConflict(
-            "dedicated CRM agent authoritative tool policy is not exactly exec-only"
+            "dedicated CRM agent authoritative tool policy does not expose exactly "
+            "openhouse_crm and exec"
         )
     if "exec" in deny:
         raise SetupConflict(
@@ -996,9 +1269,8 @@ def _validate_authoritative_tools(payload: Any) -> None:
         )
 
 
-def _config_actions(options: SetupOptions, index: int) -> list[Action]:
+def _config_actions(options: SetupOptions, prefix: str) -> list[Action]:
     token = os.environ.get("OHI_API_TOKEN", "")
-    prefix = f"agents.list[{index}]"
     actions = [
         Action(
             "Restrict the CRM agent to shipped skills",
@@ -1055,6 +1327,23 @@ def _config_actions(options: SetupOptions, index: int) -> list[Action]:
     return actions
 
 
+def _deferred_agent_config_messages(options: SetupOptions) -> list[str]:
+    messages = [
+        "Would configure the dedicated CRM agent's shipped skills after agent creation, "
+        "once OpenClaw selects the exact roster path.",
+        "Would configure the dedicated CRM agent's native CRM tool and daily-brief exec policy after agent creation, "
+        "once OpenClaw selects the exact roster path.",
+        "Would configure the dedicated CRM agent's sandbox mode after agent creation, "
+        "once OpenClaw selects the exact roster path.",
+        "Would configure the CRM API URL.",
+    ]
+    if os.environ.get("OHI_API_TOKEN", ""):
+        messages.append(
+            "Would configure the CRM API token from environment SecretRef OHI_API_TOKEN."
+        )
+    return messages
+
+
 def _render_action(action: Action) -> str:
     return _redact_api_token(f"{action.description}: {' '.join(action.argv)}")
 
@@ -1063,9 +1352,283 @@ def _run_action(cli: OpenClawCLI, action: Action) -> CommandResult:
     return cli.run(action.argv, mutate=action.mutates)
 
 
+def _same_workspace(configured: Any, requested: Path) -> bool:
+    if not isinstance(configured, str) or not configured.strip():
+        return False
+    try:
+        return Path(configured).expanduser().resolve() == requested.expanduser().resolve()
+    except OSError:
+        return False
+
+
+def _managed_agent_snapshot(agent: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: agent[field]
+        for field in ("skills", "tools", "sandbox")
+        if field in agent
+    }
+
+
+def _restore_managed_agent_fields(
+    cli: OpenClawCLI,
+    *,
+    agent_id: str,
+    workspace: Path,
+    snapshot: dict[str, Any],
+    changed_fields: list[str],
+) -> list[str]:
+    if not changed_fields:
+        return []
+    errors: list[str] = []
+    pending = list(reversed(changed_fields))
+    for index, field in enumerate(pending):
+        try:
+            roster = _read_agent_roster(
+                cli, allow_missing=False, label="agent rollback roster"
+            )
+        except (SetupConflict, OSError):
+            errors.extend(pending[index:])
+            break
+        prefix = roster.prefixes.get(agent_id)
+        agent = next(
+            (record for record in roster.records if record.get("id") == agent_id),
+            None,
+        )
+        configured_workspace = (
+            agent.get("workspace") or agent.get("workspacePath")
+            if agent is not None
+            else None
+        )
+        if prefix is None or not _same_workspace(configured_workspace, workspace):
+            errors.extend(pending[index:])
+            break
+        path = f"{prefix}.{field}"
+        if field in snapshot:
+            argv = [
+                "openclaw",
+                "config",
+                "set",
+                path,
+                json.dumps(snapshot[field]),
+                "--strict-json",
+            ]
+        else:
+            argv = ["openclaw", "config", "unset", path]
+        try:
+            result = cli.run(argv, mutate=True)
+        except OSError:
+            errors.append(field)
+            continue
+        if result.returncode != 0:
+            errors.append(field)
+    return errors
+
+
+def _plugin_source(repo: Path) -> Path:
+    source = repo / "openclaw-plugins" / PLUGIN_ID
+    for required in (
+        source / "openclaw.plugin.json",
+        source / "package.json",
+        source / "dist" / "index.js",
+    ):
+        if not required.is_file() or required.is_symlink():
+            raise SetupConflict(f"bundled OpenClaw CRM plugin is incomplete: {required}")
+    return source.resolve()
+
+
+def _plugin_records(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("plugins"), list):
+        raise SetupConflict("OpenClaw plugins list returned unsupported JSON")
+    records = payload["plugins"]
+    if not all(isinstance(record, dict) for record in records):
+        raise SetupConflict("OpenClaw plugins list returned unsupported plugin entries")
+    return records
+
+
+def _plugin_record_path(record: dict[str, Any]) -> Path | None:
+    for key in ("rootDir", "path", "sourcePath", "installPath"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return Path(value).expanduser().resolve(strict=False)
+    source = record.get("source")
+    if isinstance(source, str) and (source.startswith("/") or source.startswith("~")):
+        return Path(source).expanduser().resolve(strict=False)
+    return None
+
+
+def _path_belongs_to_plugin(path: Path, source: Path) -> bool:
+    return path == source or source in path.parents
+
+
+def _inspect_plugin_inventory(
+    payload: Any,
+    source: Path,
+    *,
+    require_present: bool,
+) -> tuple[bool, bool]:
+    matches = [record for record in _plugin_records(payload) if record.get("id") == PLUGIN_ID]
+    if len(matches) > 1:
+        raise SetupConflict("OpenClaw reports duplicate openhouse-crm plugin records")
+    if not matches:
+        if require_present:
+            raise SetupConflict("OpenClaw did not retain the openhouse-crm plugin installation")
+        return False, False
+    record = matches[0]
+    record_path = _plugin_record_path(record)
+    if record_path is None:
+        raise SetupConflict(
+            "OpenClaw did not expose the installed openhouse-crm plugin source path"
+        )
+    if not _path_belongs_to_plugin(record_path, source):
+        raise SetupConflict(
+            "OpenClaw already has an openhouse-crm plugin from a different source; "
+            "remove or rename it explicitly before running setup"
+        )
+    if record.get("format") not in (None, "openclaw"):
+        raise SetupConflict("openhouse-crm is not installed as a native OpenClaw plugin")
+    enabled = record.get("enabled")
+    if not isinstance(enabled, bool):
+        raise SetupConflict("OpenClaw did not expose openhouse-crm plugin enablement")
+    dependency_status = record.get("dependencyStatus")
+    if isinstance(dependency_status, dict) and dependency_status.get("ok") is False:
+        raise SetupConflict("openhouse-crm plugin dependencies are not available")
+    return True, enabled
+
+
+def _read_plugin_allowlist(cli: OpenClawCLI) -> list[str] | None:
+    path = "plugins.allow"
+    result = cli.run(["openclaw", "config", "get", path, "--json"])
+    if result.returncode != 0:
+        if _is_missing_config_path(result, path):
+            return None
+        detail = (result.stderr or result.stdout).strip()
+        raise SetupConflict(f"plugins.allow inspection failed: {detail}")
+    value = _json(result, "plugins.allow")
+    if (
+        not isinstance(value, list)
+        or not all(isinstance(item, str) and item for item in value)
+        or len(value) != len(set(value))
+    ):
+        raise SetupConflict("plugins.allow has an unsupported JSON shape")
+    return value
+
+
+def _validate_runtime_plugin(payload: Any, source: Path) -> None:
+    if not isinstance(payload, dict):
+        raise SetupConflict("OpenClaw plugin runtime inspection returned unsupported JSON")
+    plugin = payload.get("plugin")
+    runtime = payload.get("runtime")
+    if not isinstance(plugin, dict) or plugin.get("id") != PLUGIN_ID:
+        raise SetupConflict("OpenClaw runtime inspection returned the wrong plugin")
+    if plugin.get("enabled") is not True:
+        raise SetupConflict("openhouse-crm plugin is not enabled")
+    record_path = _plugin_record_path(plugin)
+    if record_path is not None and not _path_belongs_to_plugin(record_path, source):
+        raise SetupConflict("OpenClaw runtime loaded openhouse-crm from a different source")
+    if runtime is None:
+        runtime = payload
+    if not isinstance(runtime, dict) or not isinstance(runtime.get("tools"), list):
+        raise SetupConflict("OpenClaw did not expose runtime plugin tools")
+    names: list[str] = []
+    for entry in runtime["tools"]:
+        if isinstance(entry, str):
+            names.append(entry)
+            continue
+        if not isinstance(entry, dict):
+            raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+        if "name" in entry:
+            name = entry["name"]
+            if not isinstance(name, str) or not name:
+                raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+            names.append(name)
+            continue
+        factory_names = entry.get("names")
+        if (
+            not isinstance(factory_names, list)
+            or not all(isinstance(name, str) and name for name in factory_names)
+        ):
+            raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+        names.extend(factory_names)
+    reported_names = runtime.get("toolNames")
+    if reported_names is not None:
+        if (
+            not isinstance(reported_names, list)
+            or not all(isinstance(name, str) and name for name in reported_names)
+            or len(reported_names) != len(set(reported_names))
+        ):
+            raise SetupConflict("OpenClaw returned unsupported runtime tool names")
+        if sorted(reported_names) != sorted(names):
+            raise SetupConflict(
+                "OpenClaw runtime tool inventory is internally inconsistent"
+            )
+    if len(names) != len(set(names)):
+        raise SetupConflict("OpenClaw returned duplicate runtime tool names")
+    if names != [PLUGIN_TOOL]:
+        raise SetupConflict(
+            "openhouse-crm runtime must register exactly the openhouse_crm tool"
+        )
+    diagnostics = runtime.get("diagnostics", [])
+    if not isinstance(diagnostics, list) or diagnostics:
+        raise SetupConflict("openhouse-crm runtime inspection reported diagnostics")
+
+
+def _restore_approval_changes(
+    cli: OpenClawCLI,
+    *,
+    agent_id: str,
+    added: set[str],
+    removed: set[str],
+) -> list[str]:
+    failures: list[str] = []
+    for pattern in sorted(added):
+        result = cli.run(
+            [
+                "openclaw",
+                "approvals",
+                "allowlist",
+                "remove",
+                "--agent",
+                agent_id,
+                "--gateway",
+                pattern,
+            ],
+            mutate=True,
+        )
+        if result.returncode != 0:
+            failures.append(pattern)
+    for pattern in sorted(removed):
+        result = cli.run(
+            [
+                "openclaw",
+                "approvals",
+                "allowlist",
+                "add",
+                "--agent",
+                agent_id,
+                "--gateway",
+                pattern,
+            ],
+            mutate=True,
+        )
+        if result.returncode != 0:
+            failures.append(pattern)
+    return failures
+
+
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
+    rollback: AgentRollback | None = None
+    plugin_source: Path | None = None
+    plugin_preexisting = False
+    plugin_previously_enabled = False
+    plugin_installed_this_run = False
+    plugin_enabled_this_run = False
+    plugin_allow_original: list[str] | None = None
+    plugin_allow_changed = False
+    approval_added: set[str] = set()
+    approval_removed: set[str] = set()
     try:
+        _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
         gateway_env_path: Path | None = None
         if token:
@@ -1073,6 +1636,19 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         version = _detect_version(cli)
         messages.append(f"OpenClaw version: {version}")
         _preflight(cli, options)
+        repo = Path(__file__).resolve().parents[1]
+        plugin_source = _plugin_source(repo)
+        plugin_list = _run_required(
+            cli,
+            ["openclaw", "plugins", "list", "--json"],
+            "plugins list --json",
+        )
+        plugin_preexisting, plugin_previously_enabled = _inspect_plugin_inventory(
+            _json(plugin_list, "plugins list"),
+            plugin_source,
+            require_present=False,
+        )
+        plugin_allow_original = _read_plugin_allowlist(cli)
         if token:
             _run_required(
                 cli,
@@ -1084,13 +1660,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         listed = _run_required(
             cli, ["openclaw", "agents", "list", "--json"], "agents list --json"
         )
-        agents = _agents(_json(listed, "agents list"))
-        configured = _run_required(
-            cli,
-            ["openclaw", "config", "get", "agents.list", "--json"],
-            "config get agents.list --json",
+        agents = _cli_agents(_json(listed, "agents list"))
+        configured_roster = _read_agent_roster(
+            cli, allow_missing=True, label="initial agents config"
         )
-        configured_agents = _agents(_json(configured, "agents.list"))
+        configured_agents = configured_roster.records
         listed_agent = next(
             (agent for agent in agents if agent.get("id") == options.agent_id), None
         )
@@ -1107,12 +1681,18 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 f"OpenClaw has inconsistent records for agent {options.agent_id}; "
                 "repair the agent explicitly before running setup"
             )
-        if listed_agent and not (
-            listed_agent.get("workspace") or listed_agent.get("workspacePath")
+        for source, agent in (
+            ("agent list", listed_agent),
+            ("agent configuration", configured_agent),
         ):
-            raise SetupConflict(
-                f"agent {options.agent_id} has no readable workspace; repair it explicitly"
-            )
+            if agent is None:
+                continue
+            workspace = agent.get("workspace") or agent.get("workspacePath")
+            if not _same_workspace(workspace, options.workspace):
+                raise SetupConflict(
+                    f"agent {options.agent_id} has a different workspace in {source}; "
+                    "setup will not overwrite an agent it does not own"
+                )
         initial_actions = build_setup_actions(options, agents)
         approvals = _run_required(
             cli,
@@ -1123,52 +1703,70 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         existing_patterns = _validate_gateway_approval_payload(
             approvals_payload,
             options.agent_id,
-            require_effective=bool(configured_agent),
+            require_effective=False,
         )
         wrapper, daily = _entrypoints(options)
-        expected_patterns = {str(wrapper), str(daily)}
-        unexpected = existing_patterns - expected_patterns
+        expected_patterns = {str(daily)}
+        repairable_patterns = {str(wrapper), str(daily)}
+        unexpected = existing_patterns - repairable_patterns
         if unexpected:
             raise SetupConflict(
                 "dedicated CRM agent has unexpected executable allowlist entries: "
                 + ", ".join(sorted(unexpected))
             )
 
-        existing = next(
-            (agent for agent in configured_agents if agent.get("id") == options.agent_id),
-            None,
-        )
-        if existing:
-            for field, desired in (
-                ("skills", list(SKILL_NAMES)),
-                ("tools", DESIRED_TOOLS),
-                ("sandbox", DESIRED_SANDBOX),
-            ):
-                current = existing.get(field)
-                if current not in (None, desired):
-                    raise SetupConflict(
-                        f"agent {options.agent_id} has incompatible {field} configuration; "
-                        "repair it explicitly"
-                    )
-
         if options.dry_run:
             planned = [
+                Action(
+                    "Link or refresh the bundled OpenClaw CRM plugin",
+                    [
+                        "openclaw",
+                        "plugins",
+                        "install",
+                        "--link",
+                        str(plugin_source),
+                        "--force",
+                    ],
+                ),
+                Action(
+                    "Enable the bundled OpenClaw CRM plugin",
+                    ["openclaw", "plugins", "enable", PLUGIN_ID],
+                ),
+            ]
+            if (
+                plugin_allow_original is not None
+                and PLUGIN_ID not in plugin_allow_original
+            ):
+                planned.append(
+                    Action(
+                        "Include the bundled CRM plugin in plugins.allow",
+                        [
+                            "openclaw",
+                            "config",
+                            "set",
+                            "plugins.allow",
+                            json.dumps([*plugin_allow_original, PLUGIN_ID]),
+                            "--strict-json",
+                        ],
+                    )
+                )
+            planned.extend(
                 action
                 for action in initial_actions
                 if not (
                     action.argv[1:4] == ["approvals", "allowlist", "add"]
                     and action.argv[-1] in existing_patterns
                 )
-            ]
-            index = next(
-                (
-                    i
-                    for i, agent in enumerate(configured_agents)
-                    if agent.get("id") == options.agent_id
-                ),
-                len(configured_agents),
+                and not (
+                    action.argv[1:4] == ["approvals", "allowlist", "remove"]
+                    and action.argv[-1] not in existing_patterns
+                )
             )
-            planned.extend(_config_actions(options, index))
+            prefix = configured_roster.prefixes.get(options.agent_id)
+            if prefix is None:
+                messages.extend(_deferred_agent_config_messages(options))
+            else:
+                planned.extend(_config_actions(options, prefix))
             messages.append("Dry run only. No files or OpenClaw configuration were changed.")
             if gateway_env_path is not None:
                 messages.append(
@@ -1186,9 +1784,59 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         if token and gateway_env_path is not None:
             _upsert_gateway_env(gateway_env_path, token)
 
-        repo = Path(__file__).resolve().parents[1]
         sync_skills(repo, options.workspace, dry_run=False)
         messages.append(f"Installed CRM skills in {options.workspace / 'skills'}")
+
+        install_plugin = cli.run(
+            [
+                "openclaw",
+                "plugins",
+                "install",
+                "--link",
+                str(plugin_source),
+                "--force",
+            ],
+            mutate=True,
+        )
+        if install_plugin.returncode != 0:
+            raise SetupConflict(
+                "Bundled OpenClaw CRM plugin installation failed: "
+                + (install_plugin.stderr or install_plugin.stdout).strip()
+            )
+        plugin_installed_this_run = not plugin_preexisting
+        messages.append("Linked the bundled OpenClaw CRM plugin")
+
+        enable_plugin = cli.run(
+            ["openclaw", "plugins", "enable", PLUGIN_ID],
+            mutate=True,
+        )
+        if enable_plugin.returncode != 0:
+            raise SetupConflict(
+                "Bundled OpenClaw CRM plugin enablement failed: "
+                + (enable_plugin.stderr or enable_plugin.stdout).strip()
+            )
+        plugin_enabled_this_run = not plugin_previously_enabled
+        messages.append("Enabled the bundled OpenClaw CRM plugin")
+
+        if plugin_allow_original is not None and PLUGIN_ID not in plugin_allow_original:
+            plugin_allow = cli.run(
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "plugins.allow",
+                    json.dumps([*plugin_allow_original, PLUGIN_ID]),
+                    "--strict-json",
+                ],
+                mutate=True,
+            )
+            if plugin_allow.returncode != 0:
+                raise SetupConflict(
+                    "Could not include openhouse-crm in plugins.allow: "
+                    + (plugin_allow.stderr or plugin_allow.stdout).strip()
+                )
+            plugin_allow_changed = True
+            messages.append("Included the bundled CRM plugin in plugins.allow")
 
         create_actions = [
             action for action in initial_actions if action.argv[1:3] == ["agents", "add"]
@@ -1199,28 +1847,45 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 raise SetupConflict(
                     f"{action.description} failed: {(result.stderr or result.stdout).strip()}"
                 )
+            created_payload = _json(result, "agents add --json")
+            if not isinstance(created_payload, dict):
+                raise SetupConflict(
+                    "agents add --json returned an unsupported JSON shape"
+                )
+            created_agent_id = _require_canonical_agent_id(
+                created_payload.get("agentId"), "agents add --json agentId"
+            )
+            if created_agent_id != options.agent_id:
+                raise SetupConflict(
+                    "agents add --json returned a different agentId than requested"
+                )
             messages.append(action.description)
 
-        refreshed = _run_required(
-            cli,
-            ["openclaw", "config", "get", "agents.list", "--json"],
-            "config get agents.list after agent creation",
+        refreshed_roster = _read_agent_roster(
+            cli, allow_missing=False, label="agents config after agent creation"
         )
-        refreshed_agents = _agents(_json(refreshed, "agents.list"))
-        index = next(
+        prefix = refreshed_roster.prefixes.get(options.agent_id)
+        if prefix is None:
+            raise SetupConflict(
+                f"OpenClaw did not expose the {options.agent_id} agent after creation"
+            )
+        refreshed_agent = next(
             (
-                i
-                for i, agent in enumerate(refreshed_agents)
+                agent
+                for agent in refreshed_roster.records
                 if agent.get("id") == options.agent_id
             ),
             None,
         )
-        if index is None:
+        if refreshed_agent is None:
             raise SetupConflict(
                 f"OpenClaw did not expose the {options.agent_id} agent after creation"
             )
+        rollback = AgentRollback(
+            snapshot=_managed_agent_snapshot(refreshed_agent), changed_fields=[]
+        )
 
-        actions = _config_actions(options, index)
+        actions = _config_actions(options, prefix)
         actions.extend(
             action
             for action in initial_actions
@@ -1229,12 +1894,48 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 action.argv[1:4] == ["approvals", "allowlist", "add"]
                 and action.argv[-1] in existing_patterns
             )
+            and not (
+                action.argv[1:4] == ["approvals", "allowlist", "remove"]
+                and action.argv[-1] not in existing_patterns
+            )
         )
         for action in actions:
+            targets_agent_config = (
+                action.argv[1:3] == ["config", "set"]
+                and action.argv[3].startswith(f"{prefix}.")
+            )
+            try:
+                agent_flag = action.argv.index("--agent")
+            except ValueError:
+                targets_agent_flag = False
+            else:
+                targets_agent_flag = (
+                    agent_flag + 1 < len(action.argv)
+                    and action.argv[agent_flag + 1] == options.agent_id
+                )
+            if targets_agent_config or targets_agent_flag:
+                _revalidate_agent_target(
+                    cli,
+                    agent_id=options.agent_id,
+                    prefix=prefix,
+                    workspace=options.workspace,
+                    label=f"dedicated agent revalidation before {action.description}",
+                )
             result = _run_action(cli, action)
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()
                 raise SetupConflict(f"{action.description} failed: {detail}")
+            if (
+                action.argv[1:3] == ["config", "set"]
+                and action.argv[3].startswith(f"{prefix}.")
+            ):
+                field = action.argv[3][len(prefix) + 1 :]
+                if field in {"skills", "tools", "sandbox"}:
+                    rollback.changed_fields.append(field)
+            if action.argv[1:4] == ["approvals", "allowlist", "add"]:
+                approval_added.add(action.argv[-1])
+            elif action.argv[1:4] == ["approvals", "allowlist", "remove"]:
+                approval_removed.add(action.argv[-1])
             messages.append(action.description)
 
         if token:
@@ -1299,19 +2000,53 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         "OpenClaw did not remove the legacy plaintext CRM API token setting"
                     )
 
+        _revalidate_agent_target(
+            cli,
+            agent_id=options.agent_id,
+            prefix=prefix,
+            workspace=options.workspace,
+            label="legacy roster revalidation before authoritative tools readback",
+        )
         authoritative_tools = _run_required(
             cli,
             [
                 "openclaw",
                 "config",
                 "get",
-                f"agents.list[{index}].tools",
+                f"{prefix}.tools",
                 "--json",
             ],
             "authoritative dedicated-agent tools",
         )
         _validate_authoritative_tools(
             _json(authoritative_tools, "authoritative dedicated-agent tools")
+        )
+
+        installed_plugins = _run_required(
+            cli,
+            ["openclaw", "plugins", "list", "--json"],
+            "installed plugin inventory",
+        )
+        _inspect_plugin_inventory(
+            _json(installed_plugins, "installed plugin inventory"),
+            plugin_source,
+            require_present=True,
+        )
+        runtime_plugin = _run_required(
+            cli,
+            [
+                "openclaw",
+                "plugins",
+                "inspect",
+                PLUGIN_ID,
+                "--runtime",
+                "--json",
+            ],
+            "openhouse-crm runtime inspection",
+        )
+        _validate_runtime_plugin(
+            _json(runtime_plugin, "openhouse-crm runtime inspection"),
+            plugin_source,
         )
 
         validate = _run_required(
@@ -1337,15 +2072,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             "sandbox explain",
         )
         sandbox_payload = _json(sandbox, "sandbox explain")
-        if not _contains_pair(sandbox_payload, "mode", "off"):
-            raise SetupConflict("dedicated CRM agent sandbox mode is not off")
-        if not _contains_pair(sandbox_payload, "host", "gateway"):
-            raise SetupConflict("dedicated CRM agent exec host is not gateway")
-        if not (
-            _contains_pair(sandbox_payload, "mode", "allowlist")
-            or _contains_pair(sandbox_payload, "security", "allowlist")
-        ):
-            raise SetupConflict("dedicated CRM agent exec mode is not allowlist-only")
+        _validate_sandbox_explain(sandbox_payload, options.agent_id)
         policy = _run_required(
             cli,
             ["openclaw", "exec-policy", "show", "--json"],
@@ -1365,17 +2092,18 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         )
         if final_patterns != expected_patterns:
             raise SetupConflict(
-                "dedicated CRM agent executable allowlist is not exactly the two "
-                "shipped entrypoints"
+                "dedicated CRM agent executable allowlist is not exactly the "
+                "deterministic daily-brief runner"
             )
 
+        rollback = None
         restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
         if restart.returncode != 0:
             raise SetupConflict(
                 f"Gateway restart failed: {(restart.stderr or restart.stdout).strip()}"
             )
         messages.append(
-            "Validated the restricted agent configuration and restarted the "
+            "Validated the native CRM tool and restricted agent configuration, then restarted the "
             "OpenClaw Gateway. Runtime CRM verification is still required: "
             "python scripts/doctor.py --live-agent --live-crm"
         )
@@ -1386,6 +2114,72 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         return SetupResult(True, messages)
     except (SetupConflict, OSError) as exc:
+        if rollback is not None and rollback.changed_fields:
+            rollback_errors = _restore_managed_agent_fields(
+                cli,
+                agent_id=options.agent_id,
+                workspace=options.workspace,
+                snapshot=rollback.snapshot,
+                changed_fields=rollback.changed_fields,
+            )
+            if rollback_errors:
+                messages.append(
+                    "Could not fully restore the previous dedicated-agent "
+                    "configuration. Failed fields: " + ", ".join(rollback_errors)
+                )
+            else:
+                messages.append(
+                    "Restored the previous dedicated-agent configuration after "
+                    "setup failed."
+                )
+        if approval_added or approval_removed:
+            approval_failures = _restore_approval_changes(
+                cli,
+                agent_id=options.agent_id,
+                added=approval_added,
+                removed=approval_removed,
+            )
+            if approval_failures:
+                messages.append(
+                    "Could not fully restore gateway executable approvals after setup failed."
+                )
+            else:
+                messages.append("Restored gateway executable approvals after setup failed.")
+        if plugin_allow_changed and plugin_allow_original is not None:
+            restored_allow = cli.run(
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "plugins.allow",
+                    json.dumps(plugin_allow_original),
+                    "--strict-json",
+                ],
+                mutate=True,
+            )
+            if restored_allow.returncode != 0:
+                messages.append("Could not restore the previous plugins.allow value.")
+        if plugin_installed_this_run:
+            removed_plugin = cli.run(
+                [
+                    "openclaw",
+                    "plugins",
+                    "uninstall",
+                    PLUGIN_ID,
+                    "--keep-files",
+                    "--force",
+                ],
+                mutate=True,
+            )
+            if removed_plugin.returncode != 0:
+                messages.append("Could not remove the newly linked CRM plugin after setup failed.")
+        elif plugin_enabled_this_run:
+            disabled_plugin = cli.run(
+                ["openclaw", "plugins", "disable", PLUGIN_ID],
+                mutate=True,
+            )
+            if disabled_plugin.returncode != 0:
+                messages.append("Could not restore the previous CRM plugin enablement.")
         messages.append(str(exc))
         return SetupResult(False, messages)
 
@@ -1396,9 +2190,7 @@ def _parse_args(
     _load_repo_env(repo or Path(__file__).resolve().parents[1])
     configured_agent_id = os.environ.get("AGENT_ID")
     default_agent_id = (
-        configured_agent_id.strip()
-        if configured_agent_id is not None
-        else "openhouse-crm"
+        configured_agent_id if configured_agent_id is not None else "openhouse-crm"
     )
     parser = argparse.ArgumentParser(
         description="Safely configure a dedicated OpenClaw CRM agent"
@@ -1418,7 +2210,16 @@ def _parse_args(
             "AGENT_ID must not be blank; set AGENT_ID=openhouse-crm in .env "
             "so setup and runtime target the dedicated CRM agent"
         )
-    if args.agent_id is not None and args.agent_id.strip() != default_agent_id:
+    try:
+        _validate_requested_agent_id(default_agent_id)
+    except SetupConflict as exc:
+        parser.error(str(exc))
+    if args.agent_id is not None:
+        try:
+            _validate_requested_agent_id(args.agent_id)
+        except SetupConflict as exc:
+            parser.error(str(exc))
+    if args.agent_id is not None and args.agent_id != default_agent_id:
         parser.error(
             f"--agent-id {args.agent_id!r} conflicts with runtime "
             f"AGENT_ID={default_agent_id!r}; set AGENT_ID={args.agent_id} in .env "
@@ -1426,7 +2227,7 @@ def _parse_args(
         )
     return SetupOptions(
         agent_id=(
-            args.agent_id.strip() if args.agent_id is not None else default_agent_id
+            args.agent_id if args.agent_id is not None else default_agent_id
         ),
         workspace=args.workspace.expanduser(),
         crm_api_url=args.crm_api_url or _default_crm_api_url(),

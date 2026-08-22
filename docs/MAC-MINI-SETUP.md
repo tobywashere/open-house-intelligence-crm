@@ -6,12 +6,13 @@ You should see a clear result after each step.
 ## What you need
 
 - An Apple-silicon Mac mini with **16 GB** unified memory or more
-- macOS, 25 GB free disk space, Git, Python 3.11+, and Node.js 20+
+- macOS, 25 GB free disk space, Git, Python 3.11+, and Node.js 22.22.3+
 - OpenClaw with a tool-capable model that can answer a basic prompt
 
-Sixteen gigabytes is the minimum for the CRM plus a modest quantized model.
-Choose a smaller model if responses are slow. The CRM does not require a
-specific model, provider, or GB10.
+Sixteen gigabytes is the minimum for the CRM plus a modest quantized model. It
+does not mean every local model will fit. Choose a smaller quantized model if
+responses are slow or memory pressure is high. The CRM does not require a
+specific model, provider, GPU, or GB10.
 
 ## 1. Check the basics
 
@@ -68,17 +69,32 @@ Open [http://localhost:8080](http://localhost:8080). Keep the Terminal running
 `bash scripts/serve.sh` open while you use the CRM.
 
 The setup helper creates `openhouse-crm`, copies the shipped skills to its own
-workspace, enables the `crm-db-operations` skill for that agent, and sets its
-restricted command access. The configuration in `.env` is
+workspace, enables the `crm-db-operations` guidance for that agent, links the
+bundled `openhouse_crm` tool plugin, and sets restricted access. The
+configuration in `.env` is
 `AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
-required capabilities before changing anything, and allows only `exec` with
-the CRM wrapper and daily-brief runner on its executable allowlist. General
-web, browser, and file tools are denied. It then reads that tool policy back
-from OpenClaw and will not report success if broader tools remain available.
+required capabilities before changing anything, and allows only
+`openhouse_crm` plus `exec`. It overrides only this agent's base tool profile,
+so a global `coding` profile cannot hide the CRM tool and is not changed. CRM
+work uses the typed plugin without a shell;
+only the daily-brief runner remains on the executable allowlist. General web,
+browser, and file tools are denied. It reads that policy and the plugin's live
+tool registration back from OpenClaw before reporting success.
 
 The doctor command should finish with **CRM capability: crm_verified**. A chat
 answer alone is not enough because it could come from a generic agent without
 the CRM tool.
+
+If someone else is helping you test, create one sanitized report after the live
+check succeeds:
+
+```bash
+python3 scripts/doctor.py --live-agent --live-crm --json \
+  | tee openhouse-compatibility.json
+```
+
+Inspect the file before sharing it. The report is designed to omit tokens, CRM
+records, chat content, model responses, and your home-directory path.
 
 ## 4. Check the visible behavior
 
@@ -128,7 +144,9 @@ still proposed for review in the dashboard before they apply.
 - **Unauthorized:** add the matching `AGENT_GATEWAY_TOKEN` to `.env`, then
   restart `bash scripts/serve.sh`.
 - **Chat verified, CRM capability failed:** rerun
-  `python3 scripts/setup_openclaw.py`; it validates the agent and skill setup.
+  `python3 scripts/setup_openclaw.py`; it repairs a partial dedicated-agent
+  setup, relinks the bundled CRM plugin, and verifies the real
+  `openhouse_crm` tool. Do not change global `tools.exec` settings.
 - **OpenClaw unreachable:** make sure its gateway is listening on port 18789
   and `AGENT_GATEWAY_URL` is correct in `.env`.
 - **Slow responses:** choose a smaller model. The 16 GB minimum does not mean
@@ -143,10 +161,12 @@ Do not check these boxes until someone has completed the run on this machine.
 - [ ] macOS version:
 - [ ] Memory:
 - [ ] Date and operator:
+- [ ] Product revision from the compatibility report:
 - [ ] `--live-agent --live-crm` reports CRM capability verified
 - [ ] Dashboard chat proposes a reviewed CRM write
 - [ ] Voice note reaches the review screen
 - [ ] Optional Discord binding, if used, reaches the same agent
+- [ ] Sanitized compatibility report inspected and attached
 
 For private-network access, advanced configuration, or further troubleshooting,
 see [LOCAL-AI.md](LOCAL-AI.md).

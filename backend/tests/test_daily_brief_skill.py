@@ -146,8 +146,15 @@ def test_installed_skill_commands_are_location_independent():
     assert "python3 skills/daily-brief" not in daily
     assert "~/.openclaw/skills/crm-db-operations" not in card
     assert "python3 -c" not in crm
-    assert "{baseDir}/cli.py" in crm
-    assert "{baseDir}/../crm-db-operations/cli.py list_appointments" in command_center
+    assert "openhouse_crm" in crm
+    assert "openhouse_crm" in card
+    assert "openhouse_crm" in command_center
+    for model_facing_skill in (crm, card, command_center):
+        assert "tool_search" in model_facing_skill
+        assert "tool_call" in model_facing_skill
+    assert "crm-db-operations/cli.py" not in card
+    assert "crm-db-operations/cli.py" not in command_center
+    assert "never use `exec` for a crm operation" in " ".join(crm.lower().split())
     assert "sample-crm.json" not in command_center
     assert "do not publish" in command_center.lower()
 

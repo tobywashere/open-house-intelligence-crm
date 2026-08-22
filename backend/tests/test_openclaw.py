@@ -230,7 +230,7 @@ def test_failed_deterministic_score_explanation_does_not_record_a_fallback(monke
     ) == "crm_verified"
 
 
-def test_crm_capability_request_is_read_only_and_targets_skill(monkeypatch):
+def test_crm_capability_request_is_read_only_and_targets_registered_tool(monkeypatch):
     import app.agent.openclaw as module
 
     fake = FakeClient()
@@ -241,11 +241,19 @@ def test_crm_capability_request_is_read_only_and_targets_skill(monkeypatch):
 
     payload = fake.last_post_json
     assert payload["user"] == "crm-check-123"
-    assert "crm-db-operations" in payload["messages"][0]["content"]
-    assert "generate_dashboard_insights" in payload["messages"][0]["content"]
-    assert "--args" in payload["messages"][0]["content"]
-    assert json.dumps({"probe_nonce": "a" * 32}) in payload["messages"][0]["content"]
-    assert "Do not modify CRM data" in payload["messages"][0]["content"]
+    prompt = payload["messages"][0]["content"]
+    expected_call = {
+        "operation": "generate_dashboard_insights",
+        "arguments": {"probe_nonce": "a" * 32},
+    }
+    assert "openhouse_crm" in prompt
+    assert json.dumps(expected_call) in prompt
+    assert "crm-db-operations is a skill name, not a tool ID" in prompt
+    assert "tool_search" in prompt
+    assert "tool_call" in prompt
+    assert "Never use exec for CRM operations" in prompt
+    assert "Do not modify CRM data" in prompt
+    assert "--args" not in prompt
 
 
 def _capability_probe() -> agent_status.AgentProbe:
