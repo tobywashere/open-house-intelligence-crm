@@ -11,11 +11,13 @@ import logging
 import os
 import re
 import uuid
-from collections.abc import Mapping
-
-import httpx
 
 from .base import AgentDriver
+from .openclaw_gateway import (
+    OpenClawGateway,
+    OpenClawGatewayError,
+    resolve_gateway_url,
+)
 from .status import (
     AgentProbe,
     fallback_counts,
@@ -27,16 +29,6 @@ from .status import (
 )
 
 
-def resolve_gateway_url(environ: Mapping[str, str] | None = None) -> str:
-    """Resolve the Gateway URL while keeping environment overrides intact."""
-    values = os.environ if environ is None else environ
-    return values.get("AGENT_GATEWAY_URL", "http://localhost:18789")
-
-
-GATEWAY_URL = resolve_gateway_url()
-CHAT_PATH = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
-TOKEN = os.environ.get("AGENT_GATEWAY_TOKEN", "")
-TIMEOUT = float(os.environ.get("AGENT_TIMEOUT_SECONDS", "120"))
 AGENT_ID = os.environ.get("AGENT_ID", "openhouse-crm").strip()
 
 
@@ -74,27 +66,16 @@ def _parse_json_reply(reply: str) -> dict:
 class OpenClawDriver(AgentDriver):
     name = "openclaw"
 
-    def __init__(self, client_factory=None):
-        self._client_factory = client_factory or httpx.AsyncClient
+    def __init__(self, client_factory=None, gateway: OpenClawGateway | None = None):
+        self._gateway = gateway or OpenClawGateway(client_factory=client_factory)
 
     async def _send(self, message: str, session_id: str = "backend") -> str:
-        # Gateways running gateway.auth.mode="none" take no credential, and httpx
-        # rejects a bare "Bearer " as an illegal header value — so send it only
-        # when a token is actually configured.
-        headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
         try:
-            async with self._client_factory(timeout=TIMEOUT) as client:
-                resp = await client.post(
-                    GATEWAY_URL.rstrip("/") + CHAT_PATH,
-                    headers=headers,
-                    json={
-                        "model": openclaw_model(),
-                        "user": session_id,
-                        "messages": [{"role": "user", "content": message}],
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            data = await self._gateway.chat_completion({
+                "model": openclaw_model(),
+                "user": session_id,
+                "messages": [{"role": "user", "content": message}],
+            })
             content = data["choices"][0]["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("OpenClaw completion content was empty")
@@ -118,24 +99,20 @@ class OpenClawDriver(AgentDriver):
         self,
         session_id: str,
         probe_nonce: str,
-    ) -> None:
-        tool_input = json.dumps(
+    ) -> dict:
+        receipt = await self._gateway.invoke_tool(
+            "openhouse_crm",
             {
                 "operation": "generate_dashboard_insights",
                 "arguments": {"probe_nonce": probe_nonce},
-            }
+            },
+            agent_id=AGENT_ID,
+            session_key=session_id,
+            idempotency_key=session_id,
         )
-        await self._send(
-            "Invoke openhouse_crm exactly once with this JSON input: "
-            f"{tool_input}. crm-db-operations is a skill name, not a tool ID. "
-            "If openhouse_crm is directly visible, call it directly. If the compact "
-            "tool_search and tool_call controls are visible instead, use tool_search "
-            "to resolve the exact openhouse_crm entry and pass its returned ID to "
-            "tool_call with the JSON input. "
-            "Never use exec for CRM operations. "
-            "Do not modify CRM data. After the call, reply with only CHECKED.",
-            session_id,
-        )
+        if not _is_metrics_receipt(receipt):
+            raise ValueError("invalid CRM capability receipt")
+        return receipt
 
     async def extract(self, raw_text: str) -> dict:
         try:
@@ -194,7 +171,6 @@ class OpenClawDriver(AgentDriver):
         return probe.gateway_reachable and probe.endpoint_enabled
 
     async def probe(self) -> AgentProbe:
-        headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
         crm_ok, crm_detail = last_crm_capability()
         probe_fields = {
             "crm_verified": crm_ok is True,
@@ -202,11 +178,7 @@ class OpenClawDriver(AgentDriver):
             "fallbacks": fallback_counts(),
         }
         try:
-            async with self._client_factory(timeout=3) as client:
-                resp = await client.options(
-                    GATEWAY_URL.rstrip("/") + CHAT_PATH,
-                    headers=headers,
-                )
+            status_code = await self._gateway.chat_endpoint_status()
         except Exception as exc:
             return AgentProbe(
                 status="unreachable",
@@ -218,16 +190,16 @@ class OpenClawDriver(AgentDriver):
             )
 
         last_ok, last_detail = last_chat()
-        if resp.status_code in (401, 403):
+        if status_code in (401, 403):
             return AgentProbe(
                 status="unauthorized",
                 gateway_reachable=True,
                 endpoint_enabled=False,
                 last_chat_ok=last_ok,
-                detail=f"HTTP {resp.status_code}",
+                detail=f"HTTP {status_code}",
                 **probe_fields,
             )
-        if resp.status_code == 404:
+        if status_code == 404:
             return AgentProbe(
                 status="endpoint_disabled",
                 gateway_reachable=True,
@@ -236,7 +208,7 @@ class OpenClawDriver(AgentDriver):
                 detail="Chat Completions endpoint returned HTTP 404",
                 **probe_fields,
             )
-        if 200 <= resp.status_code < 400 or resp.status_code == 405:
+        if 200 <= status_code < 400 or status_code == 405:
             return AgentProbe(
                 status=resolved_status(
                     gateway_reachable=True,
@@ -257,7 +229,7 @@ class OpenClawDriver(AgentDriver):
             gateway_reachable=True,
             endpoint_enabled=False,
             last_chat_ok=last_ok,
-            detail=f"Unexpected probe response HTTP {resp.status_code}",
+            detail=f"Unexpected probe response HTTP {status_code}",
             **probe_fields,
         )
 
@@ -273,10 +245,18 @@ class OpenClawDriver(AgentDriver):
 
 
 def _safe_error(exc: Exception) -> str:
-    if isinstance(exc, httpx.TimeoutException):
-        return "timeout"
-    if isinstance(exc, httpx.HTTPStatusError):
-        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, OpenClawGatewayError):
+        return str(exc)
     if isinstance(exc, (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError)):
         return "invalid completion response"
     return exc.__class__.__name__
+
+
+def _is_metrics_receipt(receipt: object) -> bool:
+    return (
+        isinstance(receipt, dict)
+        and set(receipt) == {"ok", "operation", "kind", "result"}
+        and receipt["ok"] is True
+        and receipt["operation"] == "generate_dashboard_insights"
+        and receipt["kind"] == "read"
+    )

@@ -56,6 +56,142 @@ class FakeClient:
         )
 
 
+class GatewayClient:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.posts = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url, **kwargs):
+        self.posts.append({"url": url, **kwargs})
+        if self.error:
+            raise self.error
+        return self.response
+
+
+def gateway_response(status=200, payload=None):
+    return httpx.Response(
+        status,
+        request=httpx.Request("POST", "http://gateway.test/request"),
+        json=payload if payload is not None else {"ok": True, "result": {}},
+    )
+
+
+def test_gateway_uses_configured_chat_path_and_optional_message_channel():
+    from app.agent.openclaw_gateway import OpenClawGateway
+
+    fake = GatewayClient(gateway_response(payload={"choices": []}))
+    gateway = OpenClawGateway(
+        client_factory=lambda **_: fake,
+        gateway_url="http://gateway.test/base/",
+        chat_path="/custom/chat",
+        token="secret-gateway-token",
+    )
+
+    result = asyncio.run(gateway.chat_completion({"messages": []}, channel="web"))
+
+    assert result == {"choices": []}
+    assert fake.posts == [{
+        "url": "http://gateway.test/base/custom/chat",
+        "headers": {
+            "Authorization": "Bearer secret-gateway-token",
+            "x-openclaw-message-channel": "web",
+        },
+        "json": {"messages": []},
+    }]
+
+
+def test_gateway_omits_message_channel_when_not_explicitly_given():
+    from app.agent.openclaw_gateway import OpenClawGateway
+
+    fake = GatewayClient(gateway_response())
+    gateway = OpenClawGateway(
+        client_factory=lambda **_: fake,
+        gateway_url="http://gateway.test",
+    )
+
+    asyncio.run(gateway.chat_completion({"messages": []}))
+
+    assert fake.posts[0]["headers"] == {}
+
+
+def test_gateway_invokes_direct_tool_with_exact_request_envelope():
+    from app.agent.openclaw_gateway import OpenClawGateway
+
+    nonce = "a" * 32
+    fake = GatewayClient(gateway_response(payload={"ok": True, "result": {}}))
+    gateway = OpenClawGateway(
+        client_factory=lambda **_: fake,
+        gateway_url="http://gateway.test/",
+    )
+
+    result = asyncio.run(gateway.invoke_tool(
+        "openhouse_crm",
+        {
+            "operation": "generate_dashboard_insights",
+            "arguments": {"probe_nonce": nonce},
+        },
+        agent_id="openhouse-crm",
+        session_key=f"crm-check-{nonce}",
+        idempotency_key=f"crm-check-{nonce}",
+    ))
+
+    assert result == {"ok": True, "result": {}}
+    assert fake.posts[0]["url"] == "http://gateway.test/tools/invoke"
+    assert fake.posts[0]["json"] == {
+        "tool": "openhouse_crm",
+        "args": {
+            "operation": "generate_dashboard_insights",
+            "arguments": {"probe_nonce": nonce},
+        },
+        "agentId": "openhouse-crm",
+        "sessionKey": f"crm-check-{nonce}",
+        "idempotencyKey": f"crm-check-{nonce}",
+    }
+
+
+@pytest.mark.parametrize(
+    ("response", "error", "expected"),
+    [
+        (gateway_response(payload=[]), None, "invalid gateway response"),
+        (gateway_response(400, {"private": "body"}), None, "gateway rejected tool input"),
+        (gateway_response(401), None, "gateway authentication failed"),
+        (gateway_response(403), None, "gateway authentication failed"),
+        (gateway_response(404), None, "gateway tool is unavailable"),
+        (gateway_response(429), None, "gateway authentication is throttled"),
+        (None, httpx.ReadTimeout("http://gateway.test/secret"), "gateway timeout"),
+        (gateway_response(500, {"token": "secret-gateway-token", "body": "private"}), None,
+         "gateway request failed"),
+    ],
+)
+def test_gateway_errors_are_fixed_and_sanitized(response, error, expected):
+    from app.agent.openclaw_gateway import OpenClawGateway, OpenClawGatewayError
+
+    gateway = OpenClawGateway(
+        client_factory=lambda **_: GatewayClient(response, error),
+        gateway_url="http://gateway.test/private-path",
+        token="secret-gateway-token",
+    )
+
+    with pytest.raises(OpenClawGatewayError) as caught:
+        asyncio.run(gateway.invoke_tool(
+            "openhouse_crm", {}, agent_id="openhouse-crm", session_key="session",
+            idempotency_key="request",
+        ))
+
+    detail = str(caught.value)
+    assert detail == expected
+    assert "secret-gateway-token" not in detail
+    assert "private" not in detail
+    assert "gateway.test" not in detail
+
+
 def client_factory(*, option_status=405, post_status=200, post_json=None):
     def make_client(**kwargs):
         return FakeClient(option_status, post_status, post_json)
@@ -230,30 +366,72 @@ def test_failed_deterministic_score_explanation_does_not_record_a_fallback(monke
     ) == "crm_verified"
 
 
-def test_crm_capability_request_is_read_only_and_targets_registered_tool(monkeypatch):
+VALID_METRICS_RECEIPT = {
+    "ok": True,
+    "operation": "generate_dashboard_insights",
+    "kind": "read",
+    "result": {"active_leads": 0},
+}
+
+
+class FakeGateway:
+    def __init__(self, receipt=VALID_METRICS_RECEIPT):
+        self.receipt = receipt
+        self.chat_calls = []
+        self.invoke_calls = []
+
+    async def chat_completion(self, payload, *, channel=None):
+        self.chat_calls.append({"payload": payload, "channel": channel})
+        return {"choices": [{"message": {"content": "READY"}}]}
+
+    async def invoke_tool(self, name, args, *, agent_id, session_key, idempotency_key):
+        self.invoke_calls.append({
+            "name": name,
+            "args": args,
+            "agent_id": agent_id,
+            "session_key": session_key,
+            "idempotency_key": idempotency_key,
+        })
+        return self.receipt
+
+
+def test_capability_uses_direct_tool_invoke(monkeypatch):
     import app.agent.openclaw as module
 
-    fake = FakeClient()
+    gateway = FakeGateway()
     monkeypatch.setattr(module, "AGENT_ID", "openhouse-crm")
-    driver = OpenClawDriver(client_factory=lambda **_: fake)
+    driver = OpenClawDriver(gateway=gateway)
 
-    asyncio.run(driver.request_crm_capability("crm-check-123", "a" * 32))
+    receipt = asyncio.run(driver.request_crm_capability("crm-check-abc", "abc"))
 
-    payload = fake.last_post_json
-    assert payload["user"] == "crm-check-123"
-    prompt = payload["messages"][0]["content"]
-    expected_call = {
-        "operation": "generate_dashboard_insights",
-        "arguments": {"probe_nonce": "a" * 32},
-    }
-    assert "openhouse_crm" in prompt
-    assert json.dumps(expected_call) in prompt
-    assert "crm-db-operations is a skill name, not a tool ID" in prompt
-    assert "tool_search" in prompt
-    assert "tool_call" in prompt
-    assert "Never use exec for CRM operations" in prompt
-    assert "Do not modify CRM data" in prompt
-    assert "--args" not in prompt
+    assert receipt == VALID_METRICS_RECEIPT
+    assert gateway.chat_calls == []
+    assert gateway.invoke_calls == [{
+        "name": "openhouse_crm",
+        "args": {
+            "operation": "generate_dashboard_insights",
+            "arguments": {"probe_nonce": "abc"},
+        },
+        "agent_id": "openhouse-crm",
+        "session_key": "crm-check-abc",
+        "idempotency_key": "crm-check-abc",
+    }]
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {},
+        {"ok": False, "operation": "generate_dashboard_insights", "kind": "error"},
+        {"ok": True, "operation": "generate_dashboard_insights", "kind": "read"},
+        {"ok": True, "operation": "wrong_operation", "kind": "read", "result": {}},
+    ],
+)
+def test_capability_rejects_invalid_success_receipts(receipt):
+    driver = OpenClawDriver(gateway=FakeGateway(receipt=receipt))
+
+    with pytest.raises(ValueError, match="invalid CRM capability receipt"):
+        asyncio.run(driver.request_crm_capability("crm-check-abc", "abc"))
 
 
 def _capability_probe() -> agent_status.AgentProbe:
@@ -284,6 +462,7 @@ def test_crm_check_requires_new_matching_audit(client, monkeypatch):
                     {"probe_nonce": probe_nonce},
                     {"active_leads": 0},
                 )
+            return VALID_METRICS_RECEIPT
 
         async def probe(self):
             return _capability_probe()
@@ -323,6 +502,7 @@ def test_crm_check_moves_database_reads_off_event_loop(client, monkeypatch):
 
         async def request_crm_capability(self, session_id, probe_nonce):
             loop_threads.append(threading.get_ident())
+            return VALID_METRICS_RECEIPT
 
         async def probe(self):
             return _capability_probe()
@@ -348,6 +528,7 @@ def test_crm_check_keeps_newer_chat_failure_degraded(client, monkeypatch):
                     {"probe_nonce": probe_nonce},
                     {"active_leads": 0},
                 )
+            return VALID_METRICS_RECEIPT
 
         async def probe(self):
             agent_status.record_chat(False, "timeout")
@@ -377,7 +558,7 @@ def test_crm_check_does_not_trust_generic_reply_or_old_audit(client, monkeypatch
         name = "openclaw"
 
         async def request_crm_capability(self, session_id, probe_nonce):
-            return None
+            return VALID_METRICS_RECEIPT
 
         async def probe(self):
             return _capability_probe()
@@ -394,6 +575,34 @@ def test_crm_check_does_not_trust_generic_reply_or_old_audit(client, monkeypatch
     assert body["detail"] == "no audited CRM call"
 
 
+def test_crm_check_rejects_an_audited_invalid_direct_receipt(client, monkeypatch):
+    class InvalidReceiptDriver:
+        name = "openclaw"
+
+        async def request_crm_capability(self, session_id, probe_nonce):
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "agent",
+                    "generate_dashboard_insights",
+                    {"probe_nonce": probe_nonce},
+                    {"active_leads": 0},
+                )
+            return {"ok": False, "kind": "error"}
+
+        async def probe(self):
+            return _capability_probe()
+
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: InvalidReceiptDriver())
+
+    body = client.post("/api/health/crm-check").json()
+
+    assert body["status"] == "chat_verified"
+    assert body["crm_verified"] is False
+    assert body["detail"] == "capability request failed"
+
+
 def test_crm_check_rejects_unrelated_agent_activity(client, monkeypatch):
     class UnrelatedDriver:
         name = "openclaw"
@@ -407,6 +616,7 @@ def test_crm_check_rejects_unrelated_agent_activity(client, monkeypatch):
                     {"probe_nonce": "unrelated-activity"},
                     {"active_leads": 4},
                 )
+            return VALID_METRICS_RECEIPT
 
         async def probe(self):
             return _capability_probe()
@@ -446,6 +656,7 @@ def test_overlapping_crm_checks_do_not_share_audit_evidence(client, monkeypatch)
                 evidence_written.set()
             else:
                 await asyncio.to_thread(evidence_written.wait, 2)
+            return VALID_METRICS_RECEIPT
 
         async def probe(self):
             return _capability_probe()
