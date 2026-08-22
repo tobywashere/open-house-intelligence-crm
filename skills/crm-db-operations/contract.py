@@ -8,6 +8,10 @@ import re
 
 _EFFECTS = frozenset({"read", "proposal", "narrative", "validated_write"})
 _TYPES = frozenset({"object", "array", "string", "integer", "number", "boolean", "null"})
+_SCHEMA_KEYWORDS = frozenset({
+    "type", "additionalProperties", "required", "properties", "items", "enum",
+    "const", "minimum", "maximum", "minLength", "maxLength", "pattern", "anyOf",
+})
 
 
 class _ValidationError(Exception):
@@ -34,34 +38,63 @@ def _invalid_contract() -> RuntimeError:
     return RuntimeError("invalid CRM operation contract")
 
 
-def _validate_schema_shape(schema: object) -> None:
+def _validate_schema_shape(schema: object, *, implicit_object: bool = False) -> None:
     if not isinstance(schema, dict):
         raise _invalid_contract()
-    schema_type = schema.get("type")
-    if schema_type is not None and schema_type not in _TYPES:
+    if set(schema) - _SCHEMA_KEYWORDS:
         raise _invalid_contract()
-    for key in ("required", "enum", "anyOf"):
-        if key in schema and not isinstance(schema[key], list):
+    schema_type = schema.get("type")
+    if "type" in schema and (not isinstance(schema_type, str) or schema_type not in _TYPES):
+        raise _invalid_contract()
+    if "additionalProperties" in schema:
+        if not isinstance(schema["additionalProperties"], bool) or schema_type != "object":
+            raise _invalid_contract()
+    if "required" in schema:
+        if not isinstance(schema["required"], list) or (
+            schema_type != "object" and not (implicit_object and schema_type is None)
+        ):
             raise _invalid_contract()
     if "required" in schema and not all(isinstance(item, str) for item in schema["required"]):
         raise _invalid_contract()
     if "properties" in schema:
-        if not isinstance(schema["properties"], dict):
+        if not isinstance(schema["properties"], dict) or schema_type != "object":
             raise _invalid_contract()
         for name, child in schema["properties"].items():
             if not isinstance(name, str):
                 raise _invalid_contract()
             _validate_schema_shape(child)
     if "items" in schema:
-        _validate_schema_shape(schema["items"])
-    if "anyOf" in schema:
-        for child in schema["anyOf"]:
-            _validate_schema_shape(child)
-    for key in ("minimum", "maximum", "minLength", "maxLength"):
-        if key in schema and (not isinstance(schema[key], int) or isinstance(schema[key], bool)):
+        if schema_type != "array":
             raise _invalid_contract()
+        _validate_schema_shape(schema["items"])
+    if "enum" in schema and (not isinstance(schema["enum"], list) or not schema["enum"]):
+        raise _invalid_contract()
+    if "anyOf" in schema:
+        if not isinstance(schema["anyOf"], list) or not schema["anyOf"]:
+            raise _invalid_contract()
+        for child in schema["anyOf"]:
+            _validate_schema_shape(child, implicit_object=True)
+    for key in ("minimum", "maximum"):
+        if key in schema and (
+            schema_type not in {"integer", "number"}
+            or not isinstance(schema[key], (int, float))
+            or isinstance(schema[key], bool)
+        ):
+            raise _invalid_contract()
+    if "minimum" in schema and "maximum" in schema and schema["minimum"] > schema["maximum"]:
+        raise _invalid_contract()
+    for key in ("minLength", "maxLength"):
+        if key in schema and (
+            schema_type != "string"
+            or not isinstance(schema[key], int)
+            or isinstance(schema[key], bool)
+            or schema[key] < 0
+        ):
+            raise _invalid_contract()
+    if "minLength" in schema and "maxLength" in schema and schema["minLength"] > schema["maxLength"]:
+        raise _invalid_contract()
     if "pattern" in schema:
-        if not isinstance(schema["pattern"], str):
+        if schema_type != "string" or not isinstance(schema["pattern"], str):
             raise _invalid_contract()
         try:
             re.compile(schema["pattern"])

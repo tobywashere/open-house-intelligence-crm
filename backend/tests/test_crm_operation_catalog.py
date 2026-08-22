@@ -9,6 +9,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO_ROOT / "skills" / "crm-db-operations"
 CONTRACT = SKILL_DIR / "contract.json"
+CONTRACT_MODULE = SKILL_DIR / "contract.py"
 EXPECTED_OPERATIONS = {
     "create_lead", "update_lead", "add_note", "close_lead",
     "find_duplicate_leads", "merge_leads", "get_lead_context", "list_leads",
@@ -56,6 +57,23 @@ def _load_contract():
         sys.modules.pop("contract", None)
         if previous_contract is not None:
             sys.modules["contract"] = previous_contract
+
+
+def _load_contract_payload(tmp_path, payload):
+    module_path = tmp_path / "contract.py"
+    module_path.write_text(CONTRACT_MODULE.read_text(encoding="utf-8"), encoding="utf-8")
+    module_path.with_name("contract.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    spec = importlib.util.spec_from_file_location("malformed_crm_operation_contract", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _contract_payload():
+    return json.loads(CONTRACT.read_text(encoding="utf-8"))
 
 
 def test_contract_is_strict_and_drives_dispatch():
@@ -112,3 +130,38 @@ def test_booking_arguments_survive_validation_unchanged():
 def test_merge_leads_requires_distinct_ids():
     with pytest.raises(ValueError, match="Invalid CRM arguments: merge_leads"):
         _load_contract().validate_arguments("merge_leads", {"primary_id": 7, "duplicate_id": 7})
+
+
+def test_contract_rejects_unsupported_schema_keyword_at_import(tmp_path):
+    payload = _contract_payload()
+    payload["operations"]["list_leads"]["arguments"]["format"] = "uri"
+
+    with pytest.raises(RuntimeError, match="invalid CRM operation contract"):
+        _load_contract_payload(tmp_path, payload)
+
+
+def test_contract_rejects_non_boolean_nested_additional_properties_at_import(tmp_path):
+    payload = _contract_payload()
+    payload["operations"]["post_briefing"]["arguments"]["properties"]["payload"][
+        "additionalProperties"
+    ] = "false"
+
+    with pytest.raises(RuntimeError, match="invalid CRM operation contract"):
+        _load_contract_payload(tmp_path, payload)
+
+
+@pytest.mark.parametrize(
+    ("operation", "schema_update"),
+    [
+        ("list_leads", {"minimum": 0}),
+        ("list_leads", {"minLength": 1}),
+    ],
+)
+def test_contract_rejects_inapplicable_or_invalid_schema_constraints_at_import(
+    tmp_path, operation, schema_update
+):
+    payload = _contract_payload()
+    payload["operations"][operation]["arguments"].update(schema_update)
+
+    with pytest.raises(RuntimeError, match="invalid CRM operation contract"):
+        _load_contract_payload(tmp_path, payload)
