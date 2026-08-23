@@ -333,7 +333,15 @@ test("package ships built ESM with no install-time or runtime dependencies", asy
   assert.equal(packageJson.optionalDependencies, undefined);
   assert.equal(packageJson.scripts?.install, undefined);
   assert.equal(packageJson.files.includes("operations.json"), false);
-  assert.match(packageJson.peerDependencies.openclaw, /^>=2026\./);
+  assert.equal(packageJson.peerDependencies.openclaw, ">=2026.8.1-beta.2");
+  assert.deepEqual(packageJson.openclaw.compat, {
+    pluginApi: ">=2026.8.1-beta.2",
+    minGatewayVersion: "2026.8.1-beta.2",
+  });
+  assert.deepEqual(packageJson.openclaw.build, {
+    openclawVersion: "2026.8.1-beta.2",
+    pluginSdkVersion: "2026.8.1-beta.2",
+  });
 });
 
 

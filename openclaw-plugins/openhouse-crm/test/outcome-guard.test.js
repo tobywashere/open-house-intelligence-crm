@@ -48,6 +48,81 @@ test("rewrites a pending proposal deterministically and consumes it once", () =>
 });
 
 
+test("records a proposal summary at the 240-character storage boundary", () => {
+  const guard = createOutcomeGuard();
+  const summary = "a".repeat(240);
+  guard.record({
+    runId: "run-boundary",
+    agentId: "openhouse-crm",
+    receipt: { ...pendingReceipt, result: { ...pendingReceipt.result, summary } },
+  });
+
+  assert.equal(
+    guard.rewrite({ runId: "run-boundary", agentId: "openhouse-crm", text: "Done" }),
+    `Proposal #4 is waiting for your review: ${"a".repeat(240)}.`,
+  );
+});
+
+
+test("truncates an over-limit proposal summary instead of discarding the receipt", () => {
+  const guard = createOutcomeGuard();
+  const summary = `${"b".repeat(240)}extra private lead text`;
+  guard.record({
+    runId: "run-over-limit",
+    agentId: "openhouse-crm",
+    receipt: { ...pendingReceipt, result: { ...pendingReceipt.result, summary } },
+  });
+
+  assert.equal(
+    guard.rewrite({ runId: "run-over-limit", agentId: "openhouse-crm", text: "Done" }),
+    `Proposal #4 is waiting for your review: ${"b".repeat(240)}.`,
+  );
+});
+
+
+test("applies Unicode normalization before enforcing the summary storage limit", () => {
+  const guard = createOutcomeGuard();
+  const summary = `${"c".repeat(239)}\ufb03`;
+  guard.record({
+    runId: "run-normalized-limit",
+    agentId: "openhouse-crm",
+    receipt: { ...pendingReceipt, result: { ...pendingReceipt.result, summary } },
+  });
+
+  assert.equal(
+    guard.rewrite({ runId: "run-normalized-limit", agentId: "openhouse-crm", text: "Done" }),
+    `Proposal #4 is waiting for your review: ${"c".repeat(239)}f.`,
+  );
+});
+
+
+test("neutralizes Unicode controls, Discord mentions, and markup before rendering", () => {
+  const guard = createOutcomeGuard();
+  const summary = "\u202e@everyone\n@here <@123> <@!456> <@&789> <#321> "
+    + "`code` ||secret|| >quote **bold** _italics_ ~~strike~~ [link](target) # heading";
+  guard.record({
+    runId: "run-adversarial",
+    agentId: "openhouse-crm",
+    receipt: { ...pendingReceipt, result: { ...pendingReceipt.result, summary } },
+  });
+
+  const output = guard.rewrite({
+    runId: "run-adversarial",
+    agentId: "openhouse-crm",
+    text: "Unsafe model reply",
+  });
+  const renderedSummary = output.slice(output.indexOf(": ") + 2, -1);
+  assert.equal(
+    renderedSummary,
+    "＠everyone ＠here ‹＠123› ‹＠!456› ‹＠&789› ‹＃321› "
+      + "＇code＇ ｜｜secret｜｜ ›quote ∗∗bold∗∗ ＿italics＿ ～～strike～～ "
+      + "［link］（target） ＃ heading",
+  );
+  assert.doesNotMatch(renderedSummary, /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+  assert.doesNotMatch(renderedSummary, /@(?:everyone|here)|<@|<#|[`*_~|<>\[\]()#]/u);
+});
+
+
 test("rewrites a failed proposal with a fixed safe reason and no raw error text", () => {
   const guard = createOutcomeGuard();
   guard.record({ runId: "run-failed", agentId: "openhouse-crm", receipt: failedReceipt() });

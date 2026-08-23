@@ -13,19 +13,19 @@
     "openclaw.plugin.json"
   ],
   "peerDependencies": {
-    "openclaw": ">=2026.7.1"
+    "openclaw": ">=2026.8.1-beta.2"
   },
   "openclaw": {
     "extensions": [
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.7.1",
-      "minGatewayVersion": "2026.7.1"
+      "pluginApi": ">=2026.8.1-beta.2",
+      "minGatewayVersion": "2026.8.1-beta.2"
     },
     "build": {
-      "openclawVersion": "2026.7.1",
-      "pluginSdkVersion": "2026.7.1"
+      "openclawVersion": "2026.8.1-beta.2",
+      "pluginSdkVersion": "2026.8.1-beta.2"
     }
   }
 }

@@ -3,6 +3,24 @@ import { crmContract } from "./contract.js";
 
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_TTL_MS = 300_000;
+const MAX_SUMMARY_CHARACTERS = 240;
+const DISCORD_SAFE_CHARACTERS = new Map([
+  ["@", "＠"],
+  ["#", "＃"],
+  ["<", "‹"],
+  [">", "›"],
+  ["`", "＇"],
+  ["*", "∗"],
+  ["_", "＿"],
+  ["~", "～"],
+  ["|", "｜"],
+  ["[", "［"],
+  ["]", "］"],
+  ["(", "（"],
+  [")", "）"],
+  ["\\", "＼"],
+]);
+const DISCORD_CONTROL_SYNTAX = /[@#<>`*_~|[\]()\\]/gu;
 const SAFE_ERROR_REASONS = Object.freeze({
   invalid_arguments: "Invalid CRM arguments",
   not_found: "CRM record was not found",
@@ -39,8 +57,17 @@ function scopeKey(runId, agentId) {
 
 function cleanSummary(value) {
   if (typeof value !== "string") return undefined;
-  const summary = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  return summary && summary.length <= 240 ? summary : undefined;
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(DISCORD_CONTROL_SYNTAX, (character) => DISCORD_SAFE_CHARACTERS.get(character))
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!normalized) return undefined;
+  return Array.from(normalized)
+    .slice(0, MAX_SUMMARY_CHARACTERS)
+    .join("")
+    .trimEnd();
 }
 
 
