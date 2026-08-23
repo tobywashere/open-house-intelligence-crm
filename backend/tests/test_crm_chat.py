@@ -198,7 +198,7 @@ def test_false_queued_finish_is_returned_as_tool_error_and_never_becomes_reply()
 
     reply = run(gateway, "Add a lead")
 
-    assert reply == "What name should I use?"
+    assert reply == "What information should I use to continue?"
     followup_messages = gateway.chat_calls[1]["payload"]["messages"]
     tool_message = next(message for message in followup_messages if message.get("tool_call_id") == "bad-finish")
     assert json.loads(tool_message["content"])["ok"] is False
@@ -285,7 +285,7 @@ def test_multiple_client_calls_execute_none_and_get_bounded_correction():
         finish_call("needs_clarification", "Which action should I take?", []),
     ])
 
-    assert run(gateway) == "Which action should I take?"
+    assert run(gateway) == "What information should I use to continue?"
     assert gateway.invoke_calls == []
     corrections = [m for m in gateway.chat_calls[1]["payload"]["messages"] if m["role"] == "tool"]
     assert len(corrections) == 2
@@ -304,7 +304,7 @@ def test_bad_model_calls_execute_nothing_and_can_be_corrected(bad_response):
         finish_call("needs_clarification", "Could you clarify what you want?", []),
     ])
 
-    assert run(gateway) == "Could you clarify what you want?"
+    assert run(gateway) == "What information should I use to continue?"
     assert gateway.invoke_calls == []
 
 
@@ -588,7 +588,7 @@ def test_clarification_is_one_question_and_has_no_success_claim():
 
     reply = run(gateway)
 
-    assert reply == "Which Jordan do you mean?"
+    assert reply == "What information should I use to continue?"
     assert reply.count("?") == 1
 
 
@@ -924,7 +924,7 @@ def test_malformed_multi_call_ids_do_not_create_invalid_tool_transcript(bad_call
         finish_call("needs_clarification", "What should I do?", []),
     ])
 
-    assert run(gateway) == "What should I do?"
+    assert run(gateway) == "What information should I use to continue?"
     messages = gateway.chat_calls[1]["payload"]["messages"]
     assert all(message["role"] != "assistant" for message in messages[2:])
     assert all(message["role"] != "tool" for message in messages[2:])
@@ -943,9 +943,137 @@ def test_multiple_unique_calls_keep_valid_error_tool_transcript():
         finish_call("needs_clarification", "What should I do?", []),
     ])
 
-    assert run(gateway) == "What should I do?"
+    assert run(gateway) == "What information should I use to continue?"
     messages = gateway.chat_calls[1]["payload"]["messages"]
     assistant = next(message for message in messages if message["role"] == "assistant")
     tool_messages = [message for message in messages if message["role"] == "tool"]
     assert assistant["tool_calls"] == calls
     assert [message["tool_call_id"] for message in tool_messages] == ["one", "two"]
+
+
+# Fix round 2: clarification and deterministic-render primitive hardening.
+
+
+@pytest.mark.parametrize("unsafe_question", [
+    "Did I add the lead?",
+    "Could you confirm the appointment was recorded?",
+])
+def test_clarification_never_returns_model_state_presupposition(unsafe_question):
+    gateway = ScriptedGateway([
+        finish_call("needs_clarification", unsafe_question, []),
+    ])
+
+    reply = run(gateway)
+
+    assert reply == "What information should I use to continue?"
+    assert reply.count("?") == 1
+    for unsupported in ("added", "recorded", "created", "applied", "completed"):
+        assert unsupported not in reply.lower()
+
+
+def test_appointment_object_location_never_enters_evidence():
+    result = [{
+        "lead_id": 4,
+        "lead_name": "Jordan",
+        "start_ts": "2026-08-24T17:00:00",
+        "end_ts": "2026-08-24T17:30:00",
+        "location": {"invented": "office"},
+    }]
+    gateway = ScriptedGateway(
+        [
+            request_call("appointments", "list_appointments", {}),
+            finish_call("failed", "Failed.", ["appointments"]),
+        ],
+        [read_receipt("list_appointments", result)],
+    )
+
+    assert run(gateway) == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation returned an invalid receipt."
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "arguments", "result"),
+    [
+        ("list_leads", {}, [{"id": 4, "name": "  ", "status": "new"}]),
+        (
+            "check_availability",
+            {"date": "2026-08-24"},
+            [{"start_ts": " ", "end_ts": "2026-08-24T17:30:00"}],
+        ),
+        (
+            "list_appointments",
+            {},
+            [{
+                "lead_id": 4, "lead_name": "Jordan", "start_ts": "2026-08-24T17:00:00",
+                "end_ts": "", "location": None,
+            }],
+        ),
+        (
+            "generate_dashboard_insights",
+            {},
+            {
+                "active_leads": 1, "high_priority": 0, "followups_due": 0,
+                "appointments_booked": 0, "avg_response_minutes": None,
+                "agent_mode": " ", "cloud_llm_requests": 0,
+            },
+        ),
+    ],
+)
+def test_blank_required_common_text_never_enters_evidence(operation, arguments, result):
+    gateway = ScriptedGateway(
+        [
+            request_call("read", operation, arguments),
+            finish_call("failed", "Failed.", ["read"]),
+        ],
+        [read_receipt(operation, result)],
+    )
+
+    assert run(gateway) == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation returned an invalid receipt."
+    )
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_dashboard_metric_never_enters_evidence(nonfinite):
+    result = {
+        "active_leads": 1, "high_priority": 0, "followups_due": 0,
+        "appointments_booked": 0, "avg_response_minutes": nonfinite,
+        "agent_mode": "openclaw", "cloud_llm_requests": 0,
+    }
+    gateway = ScriptedGateway(
+        [
+            request_call("metrics", "generate_dashboard_insights", {}),
+            finish_call("failed", "Failed.", ["metrics"]),
+        ],
+        [read_receipt("generate_dashboard_insights", result)],
+    )
+
+    reply = run(gateway)
+
+    assert reply == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation returned an invalid receipt."
+    )
+    assert "nan" not in reply.lower()
+    assert "inf" not in reply.lower()
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_lead_budget_never_enters_evidence(nonfinite):
+    gateway = ScriptedGateway(
+        [
+            request_call("lead", "get_lead_context", {"lead_id": 4}),
+            finish_call("failed", "Failed.", ["lead"]),
+        ],
+        [read_receipt("get_lead_context", {
+            "id": 4, "name": "Jordan", "budget": nonfinite,
+        })],
+    )
+
+    assert run(gateway) == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation returned an invalid receipt."
+    )

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -34,6 +35,7 @@ AMBIGUOUS_INVOKE_REPLY = (
     "I couldn't verify the CRM request because the local agent became unavailable. "
     "I did not retry it. Check Pending approvals before trying again."
 )
+CLARIFICATION_REPLY = "What information should I use to continue?"
 
 _SAFE_ERROR_CODES = frozenset({
     "invalid_arguments", "not_found", "ambiguous_match", "schedule_conflict",
@@ -219,25 +221,31 @@ def _is_int(value: object, *, minimum: int | None = None) -> bool:
 
 
 def _is_number_or_none(value: object) -> bool:
-    return value is None or (
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-    )
+    if value is None:
+        return True
+    if isinstance(value, int) and not isinstance(value, bool):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _is_nonblank_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _valid_lead_row(row: object, *, require_status: bool = True) -> bool:
     return (
         isinstance(row, dict)
         and _is_int(row.get("id"), minimum=1)
-        and isinstance(row.get("name"), str)
-        and (not require_status or isinstance(row.get("status"), str))
+        and _is_nonblank_text(row.get("name"))
+        and (not require_status or _is_nonblank_text(row.get("status")))
         and (
             "score" not in row
             or row["score"] is None
             or (_is_int(row["score"], minimum=0) and row["score"] <= 100)
         )
-        and ("area" not in row or row["area"] is None or isinstance(row["area"], str))
-        and ("timeline" not in row or row["timeline"] is None or isinstance(row["timeline"], str))
-        and ("intent" not in row or row["intent"] is None or isinstance(row["intent"], str))
+        and ("area" not in row or row["area"] is None or _is_nonblank_text(row["area"]))
+        and ("timeline" not in row or row["timeline"] is None or _is_nonblank_text(row["timeline"]))
+        and ("intent" not in row or row["intent"] is None or _is_nonblank_text(row["intent"]))
         and (
             "is_neglected" not in row
             or (
@@ -272,17 +280,15 @@ def _valid_common_result(operation: str, result: object) -> bool:
             isinstance(result, dict)
             and all(_is_int(result.get(key), minimum=0) for key in count_keys)
             and _is_number_or_none(result.get("avg_response_minutes"))
-            and isinstance(result.get("agent_mode"), str)
+            and _is_nonblank_text(result.get("agent_mode"))
         )
     if operation == "check_availability":
         return (
             isinstance(result, list)
             and all(
                 isinstance(item, dict)
-                and isinstance(item.get("start_ts"), str)
-                and bool(item["start_ts"])
-                and isinstance(item.get("end_ts"), str)
-                and bool(item["end_ts"])
+                and _is_nonblank_text(item.get("start_ts"))
+                and _is_nonblank_text(item.get("end_ts"))
                 for item in result
             )
         )
@@ -292,9 +298,14 @@ def _valid_common_result(operation: str, result: object) -> bool:
             and all(
                 isinstance(item, dict)
                 and _is_int(item.get("lead_id"), minimum=1)
-                and isinstance(item.get("lead_name"), str)
-                and isinstance(item.get("start_ts"), str)
-                and isinstance(item.get("end_ts"), str)
+                and _is_nonblank_text(item.get("lead_name"))
+                and _is_nonblank_text(item.get("start_ts"))
+                and _is_nonblank_text(item.get("end_ts"))
+                and (
+                    "location" not in item
+                    or item["location"] is None
+                    or isinstance(item["location"], str)
+                )
                 for item in result
             )
         )
@@ -304,7 +315,7 @@ def _valid_common_result(operation: str, result: object) -> bool:
             and all(
                 key not in result
                 or result[key] is None
-                or isinstance(result[key], str)
+                or _is_nonblank_text(result[key])
                 for key in ("status", "phone", "email")
             )
             and (
@@ -318,14 +329,14 @@ def _valid_common_result(operation: str, result: object) -> bool:
             )
         )
     if operation == "draft_followup":
-        return isinstance(result, str) and bool(result.strip())
+        return _is_nonblank_text(result)
     if operation == "score_lead":
         return (
             isinstance(result, dict)
             and _is_int(result.get("lead_id"), minimum=1)
             and _is_int(result.get("score"), minimum=0)
             and result["score"] <= 100
-            and isinstance(result.get("score_reason"), str)
+            and _is_nonblank_text(result.get("score_reason"))
         )
     return True
 
@@ -659,8 +670,7 @@ def render_verified_reply(decision: FinishDecision, receipts: list[CrmCallReceip
             )[:4000]
         return "Nothing was queued or changed. The CRM request could not be verified."
     if decision.classification == "needs_clarification":
-        question = decision.message.split("?", 1)[0].strip()
-        return (question + "?")[:4000]
+        return CLARIFICATION_REPLY
     rendered = []
     for receipt in evidence:
         if receipt.ok and receipt.kind in {"read", "validated_write"}:

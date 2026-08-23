@@ -295,7 +295,7 @@ def test_valid_completion_marks_chat_verified(monkeypatch):
     reply = asyncio.run(driver.chat("hello", "dashboard"))
     probe = asyncio.run(driver.probe())
 
-    assert reply == "What would you like me to check?"
+    assert reply == "What information should I use to continue?"
     assert probe.status == "chat_verified"
     assert probe.last_chat_ok is True
     assert probe.crm_verified is False
@@ -741,7 +741,9 @@ def test_send_targets_configured_crm_agent(monkeypatch):
             }],
         }}],
     }
-    assert asyncio.run(driver.chat("List leads", "dash-fresh")) == "Which leads should I list?"
+    assert asyncio.run(driver.chat("List leads", "dash-fresh")) == (
+        "What information should I use to continue?"
+    )
     assert fake.last_post_json["model"] == "openclaw/openhouse-crm"
     assert fake.last_post_json["user"] == "dash-fresh"
     assert fake.last_post_json["tool_choice"] == "required"
