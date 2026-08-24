@@ -754,12 +754,12 @@ def run_acceptance(
     test_id = test_id or uuid.uuid4().hex[:12]
     briefing_date = briefing_date or "2099-12-31"
     agent_config_error = False
-    if discord_bound is None:
-        try:
-            runtime_agent_id = _runtime_agent_id()
-        except (OSError, UnicodeError, SetupConflict):
-            agent_config_error = True
-        else:
+    try:
+        runtime_agent_id = _runtime_agent_id()
+    except (OSError, UnicodeError, SetupConflict):
+        agent_config_error = True
+    else:
+        if discord_bound is None:
             discord_bound = _capture_discord_binding(runtime_agent_id)
     tracked_api = _SessionTrackingAPI(api)
 

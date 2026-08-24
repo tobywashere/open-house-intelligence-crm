@@ -24,6 +24,7 @@ class FakeAPI:
     """Stateful HTTP-boundary fake with complete response shapes."""
 
     def __init__(self):
+        self.request_calls: list[tuple[str, str, dict | None]] = []
         self.leads = [
             {"id": 1, "name": "Jordan Ellis", "status": "new"},
             {"id": 2, "name": "Alex Rivera", "status": "contacted"},
@@ -53,6 +54,7 @@ class FakeAPI:
         self.concurrent_pending: dict | None = None
 
     def request(self, method: str, path: str, payload: dict | None = None):
+        self.request_calls.append((method, path, payload))
         if path == "/health" and method == "GET":
             if self.health_error:
                 raise self.health_error
@@ -323,6 +325,59 @@ def test_discord_binding_inspection_rejects_explicit_invalid_repo_agent_id(
     assert acceptance.exit_code(result) == 1
     assert captured == []
     assert by_name(result, "CRM agent configuration")["level"] == "FAIL"
+
+
+@pytest.mark.parametrize("discord_bound", [True, False])
+@pytest.mark.parametrize(
+    "agent_id",
+    ["", "Custom CRM", "main"],
+    ids=["empty", "invalid", "reserved"],
+)
+def test_explicit_discord_status_cannot_bypass_invalid_runtime_agent_id(
+    monkeypatch, agent_id, discord_bound
+):
+    api = FakeAPI()
+    monkeypatch.setenv("AGENT_ID", agent_id)
+
+    result = acceptance.run_acceptance(
+        api,
+        allow_test_write=True,
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=discord_bound,
+        session_id="accept-agent-invalid-explicit-binding",
+        test_id="agent-invalid-explicit-binding",
+    )
+
+    assert acceptance.exit_code(result) == 1
+    assert by_name(result, "CRM agent configuration")["level"] == "FAIL"
+    assert api.request_calls == []
+    assert api.chat_messages == []
+    assert api.pending_get_calls == 0
+    assert api.pending_posts == []
+    assert api.deleted_sessions == []
+
+
+@pytest.mark.parametrize("discord_bound", [True, False])
+def test_explicit_discord_status_keeps_absent_agent_id_default_valid(
+    monkeypatch, tmp_path, discord_bound
+):
+    monkeypatch.delenv("AGENT_ID", raising=False)
+    monkeypatch.setattr(acceptance, "REPO", tmp_path)
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=discord_bound,
+        session_id="accept-agent-default-explicit-binding",
+        test_id="agent-default-explicit-binding",
+    )
+
+    assert acceptance.exit_code(result) == 0
+    assert all(
+        check["name"] != "CRM agent configuration" for check in result["checks"]
+    )
 
 
 def by_name(result: dict, name: str) -> dict:
