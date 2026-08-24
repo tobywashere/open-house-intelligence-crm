@@ -12,6 +12,8 @@ a tool-capable model in OpenClaw. The model choice controls memory use, speed,
 and quality. Record what you used in the acceptance checklist below instead of
 assuming a particular model or hardware combination is verified.
 
+Native Windows is unsupported; use Windows 11 with WSL2.
+
 Enable the chat endpoint once:
 
 ```bash
@@ -57,9 +59,12 @@ only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the
 recovery notes in [LOCAL-AI.md](LOCAL-AI.md#recovery). Do not trust a generic
 assistant answer as proof that it can access CRM tools.
 
-After the read-only check succeeds, use the full acceptance runner only when
-you want to authorize one disposable proposal. It is never approved and is
-denied during cleanup:
+After the read-only check succeeds, the automated CRM chat acceptance proves an
+audited CRM read and exact lead count, an invalid-write safety attempt, truthful
+briefing behavior, one disposable create-lead proposal that is never approved
+and is denied and cleaned up, and session cleanup. It does not automate booking,
+voice, or Discord delivery. Run it only when you want to authorize that
+disposable proposal:
 
 ```bash
 python3 scripts/acceptance_openclaw.py --json --allow-test-write
@@ -67,8 +72,8 @@ python3 scripts/acceptance_openclaw.py --json --allow-test-write
 
 ## Optional Discord
 
-Dashboard chat is the primary experience. Discord is optional and should be
-tested only after dashboard acceptance. Bind it only when you need it:
+Discord is optional and is tested only after dashboard acceptance. Bind it only
+when you need it:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
@@ -85,6 +90,8 @@ It uses the same dedicated agent. CRM writes wait for review in dashboard
 - Voice intake has a separate optional prerequisite: an optional transcription
   provider configured in OpenClaw. After setup, transcription reaches an
   editable review screen before any lead write.
+- If no transcription provider is configured, record voice as
+  SKIP (not configured); voice is optional and is not a release blocker.
 - A deterministic fallback is visibly labeled for review.
 - Daily schedule facts match the CRM and missing market information stays
   unavailable and is never synthesized.
@@ -101,10 +108,11 @@ These are intentionally unchecked. Fill them out after an actual GB10 run.
 - [ ] Memory:
 - [ ] Date and operator:
 - [ ] `--live-agent --live-crm` reports CRM capability verified
-- [ ] Full `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+- [ ] Automated CRM chat acceptance with
+  `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
   report inspected and attached
 - [ ] Dashboard chat proposes a reviewed CRM write
-- [ ] Voice note reaches the review screen
+- [ ] Voice (optional): PASS with a configured provider, or SKIP (not configured)
 - [ ] Optional Discord binding, if used, reaches the same agent
 
 Keep the gateway and CRM on a private interface. Do not commit `.env`, tokens,

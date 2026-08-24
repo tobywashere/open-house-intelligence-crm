@@ -7,6 +7,8 @@ Windows browser to open the dashboard.
 Native PowerShell setup is not supported yet. Do not mix a Windows OpenClaw
 installation with a WSL copy of this repository.
 
+Native Windows is unsupported; use Windows 11 with WSL2.
+
 ## What you need
 
 - Windows 11 with WSL2 and a Linux distribution such as Ubuntu
@@ -196,9 +198,12 @@ memory, dependency versions, and application checks. It is designed not to
 include tokens, environment values, CRM rows, chat content, model responses, or
 home-directory paths. Inspect the file yourself before sharing it.
 
-After that read-only check reports `crm_verified`, use the complete acceptance
-runner if you want to authorize one disposable proposal. It never approves the
-proposal; it denies it and removes its test chat:
+After that read-only check reports `crm_verified`, the automated CRM chat
+acceptance proves an audited CRM read and exact lead count, an invalid-write
+safety attempt, truthful briefing behavior, one disposable create-lead proposal
+that is never approved and is denied and cleaned up, and session cleanup. It
+does not automate booking, voice, or Discord delivery. Run it only if you want
+to authorize that disposable proposal:
 
 ```bash
 python3 scripts/acceptance_openclaw.py --json --allow-test-write
@@ -217,12 +222,14 @@ CRM writes wait for review in **Pending approvals**. Test in this order:
 4. Voice intake has a separate optional prerequisite: an optional
    transcription provider in OpenClaw. After configuring one, record or upload
    a short voice note. Confirm the transcript and extracted fields appear for
-   editing before any lead is created. Cancel the draft.
+   editing before any lead is created. Cancel the draft. If no transcription
+   provider is configured, record voice as SKIP (not configured); voice is
+   optional and is not a release blocker.
 5. Open **Daily summary**. CRM facts must match stored data. Missing market
    information must stay unavailable and is never synthesized. A displayed
    market item requires a source URL, publication date, summary, and geographic area.
    A **deterministic fallback** is labeled for review.
-6. Discord is optional. Test it only after dashboard acceptance. Confirm Discord
+6. Discord is optional and is tested only after dashboard acceptance. Confirm it
    reads through the same dedicated agent and sends writes to dashboard Pending
    approvals.
 
@@ -243,7 +250,7 @@ at a time:
 - `openhouse-compatibility.json`
 - Pass or fail for dashboard CRM read
 - Pass or fail for the reviewed disposable write
-- Pass or fail for voice review
+- Voice review: PASS with a configured provider, or SKIP (not configured)
 - Pass or fail for the truthful daily briefing state
 - Optional Discord result
 
@@ -270,5 +277,5 @@ recordings, or screenshots containing client information.
   manually. Send the complete test bundle so the compatibility adapter can be
   fixed against the real output.
 
-For the security model, recovery details, and full acceptance checklist, see
+For the security model, recovery details, and ordered acceptance checklist, see
 [LOCAL-AI.md](LOCAL-AI.md).

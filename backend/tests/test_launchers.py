@@ -67,6 +67,10 @@ def _bash_blocks(text: str) -> list[str]:
     return re.findall(r"```bash\n(.*?)```", text, flags=re.DOTALL)
 
 
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
+
+
 def test_primary_setup_regions_have_a_safe_runnable_sequence():
     for path, (start, end, doctor_cd, _) in GUIDE_SETUP_REGIONS.items():
         primary = _section_between(path.read_text(), start, end)
@@ -146,20 +150,32 @@ def test_beginner_guides_explain_reviewed_writes_in_plain_language():
 
 
 def test_beginner_guides_do_not_prescribe_manual_openclaw_policy_repairs():
-    forbidden_commands = re.compile(
-        r"openclaw\s+(?:config\s+(?:set|patch).*(?:agents\.|tools\.)|"
-        r"plugins?\s+(?:install|enable|disable|remove))",
-        flags=re.IGNORECASE,
-    )
-    forbidden_files = ("agents.list", "openclaw.json", "plugin manifest")
-
     for path in BEGINNER_GUIDES:
         text = path.read_text()
-        for block in _bash_blocks(text):
-            assert forbidden_commands.search(block) is None, (path, block)
-        normalized = " ".join(text.lower().split())
-        for name in forbidden_files:
-            assert f"edit {name}" not in normalized, (path, name)
+        commands = re.findall(
+            r"openclaw\s+(?:config\s+(?:set|patch)|plugins?\s+"
+            r"(?:install|enable|disable|remove))[^\n`]*",
+            text,
+            flags=re.IGNORECASE,
+        )
+        assert commands == [
+            "openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json"
+        ], (path, commands)
+
+        normalized = _normalized(text.lower())
+        safe_negations = re.compile(
+            r"(?:do not|never|without|rather than|no need to|does not|is not) "
+            r"(?:manually )?(?:edit|change|patch|set|configure|install|enable) "
+            r"[^.!]+[.!]"
+        )
+        positive_only = safe_negations.sub(" ", normalized)
+        manual_repair = re.compile(
+            r"(?:edit|change|patch|set|configure|install|enable) "
+            r"(?:the )?(?:agents\.list|openclaw\.json|plugin (?:file|files|manifest|settings)|"
+            r"agent(?:'s)? (?:profile|tool|tools|exec|plugin)|global (?:tool profile|"
+            r"tool profiles|profile|tools\.exec)|exec (?:host|mode|policy|security))"
+        )
+        assert manual_repair.search(positive_only) is None, path
 
 
 def test_beginner_guides_state_supported_hardware_and_optional_features():
@@ -177,6 +193,71 @@ def test_beginner_guides_state_supported_hardware_and_optional_features():
     normalized_local = " ".join(local.lower().split())
     assert "optional transcription provider" in normalized_local
     assert "after dashboard acceptance" in normalized_local
+
+
+def test_every_beginner_guide_explicitly_rejects_native_windows_setup():
+    expected = "Native Windows is unsupported; use Windows 11 with WSL2."
+    for path in BEGINNER_GUIDES:
+        assert expected in _normalized(path.read_text()), path
+
+
+def test_acceptance_scope_is_accurate_in_every_beginner_guide():
+    required = (
+        "automated CRM chat acceptance",
+        "audited CRM read",
+        "exact lead count",
+        "invalid-write safety",
+        "truthful briefing",
+        "disposable create-lead proposal",
+        "never approved",
+        "denied and cleaned up",
+        "session cleanup",
+        "does not automate booking, voice, or Discord delivery",
+    )
+    misleading = re.compile(r"\b(?:full|complete) acceptance\b|\bsupported full test\b")
+
+    for path in BEGINNER_GUIDES:
+        normalized = _normalized(path.read_text())
+        for phrase in required:
+            assert phrase in normalized, (path, phrase)
+        assert misleading.search(normalized.lower()) is None, path
+
+
+def test_voice_is_conditional_and_not_a_release_blocker_in_every_beginner_guide():
+    expected = (
+        "If no transcription provider is configured, record voice as "
+        "SKIP (not configured); voice is optional and is not a release blocker."
+    )
+    for path in BEGINNER_GUIDES:
+        assert expected in _normalized(path.read_text()), path
+
+    for path in (
+        REPO / "docs/LOCAL-AI.md",
+        REPO / "docs/MAC-MINI-SETUP.md",
+        REPO / "docs/GB10-SETUP.md",
+    ):
+        assert any(
+            line.startswith("- [ ]") and "Voice (optional):" in line
+            for line in path.read_text().splitlines()
+        ), path
+
+
+def test_discord_is_optional_and_follows_dashboard_acceptance_everywhere():
+    expected = "Discord is optional and is tested only after dashboard acceptance."
+    for path in BEGINNER_GUIDES:
+        assert expected in _normalized(path.read_text()), path
+
+
+def test_local_ai_acceptance_checklist_has_one_numbered_sequence():
+    text = (REPO / "docs/LOCAL-AI.md").read_text()
+    section = text[text.index("## Target hardware and live acceptance record") : text.index(
+        "Optional feature checks after the ordered acceptance run"
+    )]
+    numbers = [
+        int(value)
+        for value in re.findall(r"^- \[ \] (\d+)\.", section, flags=re.MULTILINE)
+    ]
+    assert numbers == list(range(1, 11))
 
 
 def test_local_ai_explains_evidence_statuses_without_equating_chat_and_crm():
@@ -227,7 +308,7 @@ def test_acceptance_records_remain_unchecked_for_all_target_hosts():
             "Date and operator:",
             "--live-agent --live-crm",
             "Dashboard chat proposes a reviewed CRM write",
-            "Voice note reaches the review screen",
+            "Voice (optional):",
             "Optional Discord binding",
         ):
             assert any(

@@ -21,6 +21,8 @@ baseline. Native PowerShell setup is not supported. A modest quantized model is
 appropriate at 16 GB; larger models can need considerably more memory. A GB10
 is an optional host, not a dependency.
 
+Native Windows is unsupported; use Windows 11 with WSL2.
+
 OpenClaw's own Node.js requirements can change independently of this CRM. Use
 its current [installation guide](https://docs.openclaw.ai/install) rather than
 forcing OpenClaw onto the CRM's minimum Node version.
@@ -240,18 +242,20 @@ same application checks. It does not include tokens, environment values, CRM
 records, chat content, model responses, or home-directory paths. Inspect any
 file yourself before sharing it.
 
-After the read-only doctor reports `crm_verified`, you may run the complete
-acceptance check. The extra flag explicitly permits one disposable CRM proposal;
-the runner confirms it was not applied, denies it, and cleans up its test chat:
+After the read-only doctor reports `crm_verified`, the automated CRM chat
+acceptance proves an audited CRM read and exact lead count, an invalid-write
+safety attempt, truthful briefing behavior, one disposable create-lead proposal
+that is never approved and is denied and cleaned up, and session cleanup. It
+does not automate booking, voice, or Discord delivery.
 
 ```bash
 python3 scripts/acceptance_openclaw.py --json
 python3 scripts/acceptance_openclaw.py --json --allow-test-write
 ```
 
-The first form remains read-only. The second is the supported full test. It
-does not approve a write and does not ask you to edit OpenClaw configuration
-between checks.
+The first form remains read-only. The second explicitly authorizes the disposable
+proposal. It does not approve a write and does not ask you to edit OpenClaw
+configuration between checks.
 
 Status meanings:
 
@@ -290,7 +294,9 @@ dashboard remains the place to review proposed CRM changes.
 
 Voice intake has a separate optional prerequisite: an optional transcription
 provider configured in OpenClaw. The CRM does not silently substitute a cloud
-provider. Test the provider itself before relying on voice intake.
+provider. Test the provider itself before relying on voice intake. If no
+transcription provider is configured, record voice as SKIP (not configured);
+voice is optional and is not a release blocker.
 
 The app calls this OpenClaw CLI surface without a shell:
 
@@ -409,26 +415,31 @@ account. Fill them in only after a person records a real run.
 - [ ] Date and operator:
 - [ ] Sanitized JSON report inspected and attached:
 
-Verify the dashboard, voice intake, and truthful briefing first. Then test
-Discord and external providers in this order:
+Verify required dashboard behavior and truthful briefing first. Then record
+optional providers in this order. Steps 7 through 10 are conditional and may be
+recorded as SKIP when those optional accounts are not configured:
 
 - [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
-- [ ] Full `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+- [ ] 2. Automated CRM chat acceptance with
+  `python3 scripts/acceptance_openclaw.py --json --allow-test-write` has its
   report inspected and attached.
-- [ ] 2. Dashboard chat lists real CRM leads.
-- [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
+- [ ] 3. Dashboard chat lists real CRM leads.
+- [ ] 4. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.
-- [ ] 4. Voice note reaches the review screen without creating a lead first.
-- [ ] 5. Daily briefing uses stored CRM facts and leaves missing market
+- [ ] 5. Voice (optional): when a transcription provider is configured, a note
+  reaches the review screen without creating a lead; otherwise record
+  SKIP (not configured).
+- [ ] 6. Daily briefing uses stored CRM facts and leaves missing market
    information unavailable.
-- [ ] 6. Optional Discord binding lists the same real CRM leads through the
-   dedicated agent.
-- [ ] 7. Discord proposes a disposable write that appears in the same Pending
-   approvals.
-- [ ] 8. With live integrations enabled, approve one disposable booking and
-   verify one Google Calendar event.
-- [ ] 9. Approve one disposable lead with an email and verify one Calendar call
-   block plus one Gmail draft.
+- [ ] 7. Optional Discord binding: if bound, it lists the same real CRM leads
+  through the dedicated agent; otherwise record SKIP.
+- [ ] 8. If Discord is bound, it proposes a disposable write that appears in the
+  same Pending approvals; otherwise record SKIP.
+- [ ] 9. With live integrations enabled, approve one disposable booking and
+  verify one Google Calendar event; otherwise record SKIP.
+- [ ] 10. With live integrations enabled, approve one disposable lead with an
+  email and verify one Calendar call block plus one Gmail draft; otherwise
+  record SKIP.
 
 Optional feature checks after the ordered acceptance run:
 

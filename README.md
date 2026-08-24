@@ -58,8 +58,11 @@ CRM, not merely that a generic assistant answered. Setup installs the
 repair OpenClaw agent, tool, exec, profile, or plugin settings by hand. Rerun
 the same setup command if it reports a partial installation.
 
-For a complete opt-in test, including one disposable write that is denied and
-cleaned up, run:
+The automated CRM chat acceptance proves an audited CRM read and exact lead
+count, an invalid-write safety attempt, truthful briefing behavior, one
+disposable create-lead proposal that is never approved and is denied and
+cleaned up, and session cleanup. It does not automate booking, voice, or
+Discord delivery. To authorize that disposable proposal, run:
 
 ```bash
 python3 scripts/acceptance_openclaw.py --json --allow-test-write
@@ -82,12 +85,14 @@ status and the recovery steps.
 | Apple-silicon Mac mini, 16 GB or more | Primary path |
 | Linux x86_64 or ARM64, 16 GB or more | Supported |
 | Windows 11 with WSL2, 16 GB or more | Supported inside WSL2 |
-| Native Windows | Not currently supported |
+| Native Windows | Unsupported; use Windows 11 with WSL2 |
 
 Sixteen gigabytes is the minimum for the CRM plus a modest quantized model. A
 larger model may need more memory. See the [Mac mini guide](docs/MAC-MINI-SETUP.md),
 [Windows/WSL2 guide](docs/WINDOWS-WSL-SETUP.md), [GB10 guide](docs/GB10-SETUP.md),
 or [full local-AI guide](docs/LOCAL-AI.md).
+
+Native Windows is unsupported; use Windows 11 with WSL2.
 
 ## What happens in the app
 
@@ -96,7 +101,8 @@ or [full local-AI guide](docs/LOCAL-AI.md).
   wait in **Pending approvals**. You choose whether to approve or deny them.
 - Voice intake is optional. Configure a transcription provider first, then
   review the transcript and extracted details before creating or updating a
-  lead.
+  lead. If no transcription provider is configured, record voice as
+  SKIP (not configured); voice is optional and is not a release blocker.
 - A **deterministic fallback** is labeled as a draft for review.
 - Briefing schedule facts come from the CRM. Market items require a source URL,
   publication date, summary, and geographic area. Missing information is shown
@@ -104,8 +110,8 @@ or [full local-AI guide](docs/LOCAL-AI.md).
 
 ## Optional Discord
 
-The dashboard is the primary experience. Complete dashboard acceptance first.
-Then, if wanted, bind Discord to the same agent:
+Discord is optional and is tested only after dashboard acceptance. Then, if
+wanted, bind it to the same agent:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT

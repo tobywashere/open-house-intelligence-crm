@@ -14,6 +14,8 @@ does not mean every local model will fit. Choose a smaller quantized model if
 responses are slow or memory pressure is high. The CRM does not require a
 specific model, provider, GPU, or GB10.
 
+Native Windows is unsupported; use Windows 11 with WSL2.
+
 ## 1. Check the basics
 
 Open **Terminal** and run:
@@ -96,9 +98,12 @@ python3 scripts/doctor.py --live-agent --live-crm --json \
 Inspect the file before sharing it. The report is designed to omit tokens, CRM
 records, chat content, model responses, and your home-directory path.
 
-After the read-only check reports `crm_verified`, run the full acceptance only
-when you are comfortable creating one disposable proposal. It is never
-approved; the runner denies it and cleans up its test chat:
+After the read-only check reports `crm_verified`, the automated CRM chat
+acceptance proves an audited CRM read and exact lead count, an invalid-write
+safety attempt, truthful briefing behavior, one disposable create-lead proposal
+that is never approved and is denied and cleaned up, and session cleanup. It
+does not automate booking, voice, or Discord delivery. Run it only when you are
+comfortable authorizing that disposable proposal:
 
 ```bash
 python3 scripts/acceptance_openclaw.py --json --allow-test-write
@@ -112,8 +117,9 @@ CRM writes wait for review. Test that rule in this order:
    not immediately in **Leads**.
 2. Approve the lead, then ask to add a note, reminder, and tour booking. Review
    each proposed change before applying it.
-3. Open **Add voice note**, record a short note, review its transcript and
-   details, then cancel. Confirm no lead was added.
+3. If a transcription provider is configured, open **Add voice note**, record a
+   short note, review its transcript and details, then cancel. Confirm no lead
+   was added. Otherwise record this check as SKIP (not configured).
 4. Open **Daily summary**. Appointments and follow-ups must match the CRM. A
    missing market summary must stay unavailable, not turn into sample news.
    Missing briefing content is never synthesized.
@@ -128,6 +134,9 @@ summary, and geographic area; incomplete information stays unavailable.
 Voice intake has a separate optional prerequisite: an optional transcription
 provider configured in OpenClaw. Check it before relying on voice input:
 
+If no transcription provider is configured, record voice as
+SKIP (not configured); voice is optional and is not a release blocker.
+
 ```bash
 openclaw infer audio transcribe --file /path/to/a-short-recording.m4a --json
 ```
@@ -139,9 +148,8 @@ no cloud transcription fallback.
 
 ## 6. Optional Discord
 
-Dashboard chat is the primary experience. Test Discord only after dashboard
-acceptance passes. To use the same dedicated agent, run this from the project
-folder:
+Discord is optional and is tested only after dashboard acceptance. To use the
+same dedicated agent, run this from the project folder:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
@@ -176,10 +184,11 @@ Do not check these boxes until someone has completed the run on this machine.
 - [ ] Date and operator:
 - [ ] Product revision from the compatibility report:
 - [ ] `--live-agent --live-crm` reports CRM capability verified
-- [ ] Full `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+- [ ] Automated CRM chat acceptance with
+  `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
   report inspected and attached
 - [ ] Dashboard chat proposes a reviewed CRM write
-- [ ] Voice note reaches the review screen
+- [ ] Voice (optional): PASS with a configured provider, or SKIP (not configured)
 - [ ] Optional Discord binding, if used, reaches the same agent
 - [ ] Sanitized compatibility report inspected and attached
 
