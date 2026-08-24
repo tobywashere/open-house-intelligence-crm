@@ -155,8 +155,9 @@ class FakeCLI:
         plugin_enabled=False,
         plugin_runtime=None,
         client_tool_probe=None,
-        dashboard_block_probe=None,
         configured_agent_guard_probe=None,
+        analysis_tool_probe=None,
+        channel_probe_statuses=None,
         effective_tools=None,
         primary_agent_id="openhouse-crm",
     ):
@@ -172,13 +173,15 @@ class FakeCLI:
         self.approval_patterns = set()
         self.plugin_runtime = plugin_runtime
         self.client_tool_probe = client_tool_probe
-        self.dashboard_block_probe = dashboard_block_probe
         self.configured_agent_guard_probe = configured_agent_guard_probe
+        self.analysis_tool_probe = analysis_tool_probe
+        self.channel_probe_statuses = dict(channel_probe_statuses or {})
         self.primary_agent_id = primary_agent_id
-        self.effective_tools = [] if effective_tools is None else effective_tools
+        self.effective_tools = effective_tools
         self.client_tool_probe_calls = []
-        self.dashboard_block_probe_calls = []
         self.configured_agent_guard_probe_calls = []
+        self.analysis_tool_probe_calls = []
+        self.channel_probe_status_calls = []
         self.extra_agents = {}
         self.bindings = set()
 
@@ -229,10 +232,44 @@ class FakeCLI:
             return agent, field
         return None, None
 
-    def probe_client_tools(self, *, agent_id, nonce):
-        self.client_tool_probe_calls.append({"agent_id": agent_id, "nonce": nonce})
+    def probe_client_tools(self, *, agent_id, nonce, tools=None):
+        self.client_tool_probe_calls.append(
+            {"agent_id": agent_id, "nonce": nonce, "tools": tools}
+        )
         if self.client_tool_probe is not None:
             return self.client_tool_probe
+        if tools is not None:
+            return CommandResult(
+                200,
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "finish_reason": "tool_calls",
+                                "message": {
+                                    "tool_calls": [
+                                        {
+                                            "id": "setup-call-1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "finish_crm_response",
+                                                "arguments": json.dumps(
+                                                    {
+                                                        "classification": "needs_clarification",
+                                                        "message": nonce,
+                                                        "evidence_call_ids": [],
+                                                    }
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
         return CommandResult(
             200,
             json.dumps(
@@ -259,21 +296,37 @@ class FakeCLI:
             "",
         )
 
-    def probe_dashboard_tool_block(self, *, agent_id, nonce):
-        self.dashboard_block_probe_calls.append(
-            {
-                "agent_id": agent_id,
-                "nonce": nonce,
-                "operation": "__openhouse_setup_probe__",
-            }
-        )
-        if self.dashboard_block_probe is not None:
-            return self.dashboard_block_probe
+    def probe_analysis_tool_block(self, *, agent_id, nonce):
+        self.analysis_tool_probe_calls.append({"agent_id": agent_id, "nonce": nonce})
+        if self.analysis_tool_probe is not None:
+            return self.analysis_tool_probe
         return CommandResult(
-            403,
+            200,
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "blocked"},
+                        }
+                    ]
+                }
+            ),
             "",
-            "Dashboard CRM calls must use the verified tool invocation path.",
         )
+
+    def probe_channel_status(self, *, agent_id, nonce, channel):
+        self.channel_probe_status_calls.append(
+            {"agent_id": agent_id, "nonce": nonce, "channel": channel}
+        )
+        status = self.channel_probe_statuses.get(channel, "tool_blocked")
+        details = {
+            "schema_version": 1,
+            "channel": channel,
+            "nonce": nonce,
+            "status": status,
+        }
+        return CommandResult(200, json.dumps({"details": details}), "")
 
     def probe_configured_agent_guard(self, *, agent_id, nonce):
         self.configured_agent_guard_probe_calls.append(
@@ -552,13 +605,25 @@ class FakeCLI:
         if args[1:4] == ["gateway", "call", "tools.effective"]:
             params = json.loads(args[args.index("--params") + 1])
             agent_id = params["sessionKey"].split(":", 2)[1]
+            agent = self.extra_agents.get(agent_id) or self.created_agent or {}
+            tools = agent.get("tools", {})
+            setup_probe = self.config_values.get(PLUGIN_CONFIG_PATH, {}).get(
+                "setupProbe", {}
+            )
+            if setup_probe.get("agentId") == agent_id and not tools:
+                tools = setup_openclaw.DIAGNOSTIC_TOOL_POLICY
+            effective = (
+                list(tools.get("allow", []))
+                if self.effective_tools is None
+                else self.effective_tools
+            )
             return CommandResult(
                 0,
                 json.dumps(
                     {
                         "agentId": agent_id,
-                        "profile": "minimal",
-                        "found": [["core", self.effective_tools]],
+                        "profile": tools.get("profile"),
+                        "found": [["core", effective]],
                     }
                 ),
                 "",
@@ -1618,7 +1683,7 @@ def test_setup_rejects_optional_crm_runtime_tool_and_restores_state(tmp_path):
     assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
 
 
-def test_runtime_without_authoritative_hook_inventory_uses_only_bounded_block_probe(
+def test_runtime_without_authoritative_hook_inventory_uses_bounded_chat_path_probes(
     tmp_path,
 ):
     cli = FakeCLI(
@@ -1636,9 +1701,12 @@ def test_runtime_without_authoritative_hook_inventory_uses_only_bounded_block_pr
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
     assert result.ok, result.render()
-    assert len(cli.dashboard_block_probe_calls) == 1
-    assert cli.dashboard_block_probe_calls[0]["operation"] == "__openhouse_setup_probe__"
     assert len(cli.client_tool_probe_calls) == 1
+    assert len(cli.analysis_tool_probe_calls) == 1
+    assert [call["channel"] for call in cli.channel_probe_status_calls] == [
+        "openhouse-dashboard",
+        "openhouse-analysis",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1646,7 +1714,7 @@ def test_runtime_without_authoritative_hook_inventory_uses_only_bounded_block_pr
     [
         (
             CommandResult(400, "", "unsupported tools field"),
-            "does not support required request-scoped function tools",
+            "rejected the full production CRM and finish schemas",
         ),
         (
             CommandResult(503, "", "provider unavailable"),
@@ -1673,7 +1741,187 @@ def test_setup_rejects_unproven_client_tool_capability_and_rolls_back(
     assert "Validated the native CRM tool" not in result.render()
 
 
-def test_client_tool_probe_uses_deleted_zero_native_tool_diagnostic_agent(tmp_path):
+def test_setup_and_dashboard_share_the_exact_full_client_tool_contract():
+    from app.agent.crm_chat import _finish_tool, _crm_request_tool
+
+    snapshot = setup_openclaw._capture_canonical_contract(REPO_ROOT)
+    setup_tools = setup_openclaw._capture_dashboard_client_tools(
+        REPO_ROOT, snapshot
+    ).tools
+
+    assert setup_tools == [_crm_request_tool(), _finish_tool()]
+    assert [tool["function"]["name"] for tool in setup_tools] == [
+        "openhouse_crm_request",
+        "finish_crm_response",
+    ]
+    assert len(setup_tools[0]["function"]["parameters"]["oneOf"]) == len(
+        snapshot.operations
+    )
+
+
+def test_setup_proves_full_schema_and_both_production_channel_markers(tmp_path):
+    cli = FakeCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert len(cli.client_tool_probe_calls) == 1
+    dashboard_call = cli.client_tool_probe_calls[0]
+    assert [tool["function"]["name"] for tool in dashboard_call["tools"]] == [
+        "openhouse_crm_request",
+        "finish_crm_response",
+    ]
+    assert cli.analysis_tool_probe_calls == [
+        {"agent_id": dashboard_call["agent_id"], "nonce": dashboard_call["nonce"]}
+    ]
+    assert cli.channel_probe_status_calls == [
+        {
+            "agent_id": dashboard_call["agent_id"],
+            "nonce": dashboard_call["nonce"],
+            "channel": "openhouse-dashboard",
+        },
+        {
+            "agent_id": dashboard_call["agent_id"],
+            "nonce": dashboard_call["nonce"],
+            "channel": "openhouse-analysis",
+        },
+    ]
+    assert cli.config_values[PLUGIN_CONFIG_PATH] == {"agentId": "openhouse-crm"}
+    probe_configs = [
+        json.loads(call[-2])
+        for call in cli.mutating_calls
+        if call[1:4] == ["config", "set", PLUGIN_CONFIG_PATH]
+        and "setupProbe" in json.loads(call[-2])
+    ]
+    assert len(probe_configs) == 1
+    assert probe_configs[0]["setupProbe"] == {
+        "agentId": dashboard_call["agent_id"],
+        "nonce": dashboard_call["nonce"],
+    }
+    assert "full production CRM and finish schemas" in result.render()
+    assert "dashboard and internal-analysis channel markers" in result.render()
+
+
+@pytest.mark.parametrize(
+    ("channel", "status", "message"),
+    [
+        (
+            "openhouse-dashboard",
+            "tool_not_attempted",
+            "did not attempt the setup sentinel",
+        ),
+        (
+            "openhouse-dashboard",
+            "sentinel_executed",
+            "dashboard channel marker was not propagated",
+        ),
+        (
+            "openhouse-dashboard",
+            "hook_context_unsupported",
+            "dashboard hook context was unsupported",
+        ),
+        (
+            "openhouse-analysis",
+            "tool_not_attempted",
+            "did not attempt the setup sentinel",
+        ),
+        (
+            "openhouse-analysis",
+            "sentinel_executed",
+            "internal-analysis channel marker was not propagated",
+        ),
+        (
+            "openhouse-analysis",
+            "hook_context_unsupported",
+            "internal-analysis hook context was unsupported",
+        ),
+    ],
+)
+def test_setup_fails_closed_for_each_unproven_channel_marker(
+    tmp_path, channel, status, message
+):
+    cli = FakeCLI(channel_probe_statuses={channel: status})
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert message in result.render()
+    assert "dashboard and internal-analysis channel markers" not in result.render()
+    assert cli.extra_agents == {}
+    assert cli.config_values.get(PLUGIN_CONFIG_PATH) is None
+
+
+@pytest.mark.parametrize(
+    ("channel", "probe_field"),
+    [
+        ("openhouse-dashboard", "client_tool_probe"),
+        ("openhouse-analysis", "analysis_tool_probe"),
+    ],
+)
+def test_setup_reports_no_sentinel_attempt_before_malformed_completion(
+    tmp_path, channel, probe_field
+):
+    cli = FakeCLI(
+        **{
+            probe_field: CommandResult(200, '{"choices":[]}', ""),
+            "channel_probe_statuses": {channel: "tool_not_attempted"},
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "did not attempt the setup sentinel" in result.render()
+    assert "structurally incompatible" not in result.render()
+
+
+def test_setup_rejects_provider_that_cannot_accept_the_full_production_schema(
+    tmp_path,
+):
+    cli = FakeCLI(client_tool_probe=CommandResult(400, "", "schema unsupported"))
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "full production CRM and finish schemas" in result.render()
+    assert len(cli.client_tool_probe_calls) == 1
+    assert cli.client_tool_probe_calls[0]["tools"] is not None
+    assert cli.extra_agents == {}
+
+
+def test_setup_rolls_back_when_temporary_probe_config_cannot_be_removed(tmp_path):
+    class ProbeCleanupFailureCLI(FakeCLI):
+        probe_configured = False
+
+        def run(self, args, *, mutate=False):
+            if (
+                mutate
+                and args[1:4] == ["config", "set", PLUGIN_CONFIG_PATH]
+                and "setupProbe" in json.loads(args[-2])
+            ):
+                self.probe_configured = True
+            if (
+                self.probe_configured
+                and mutate
+                and args[1:4] == ["config", "set", PLUGIN_CONFIG_PATH]
+                and json.loads(args[-2]) == {"agentId": "openhouse-crm"}
+            ):
+                self.calls.append(args)
+                self.mutating_calls.append(args)
+                return CommandResult(1, "", "probe cleanup rejected")
+            return super().run(args, mutate=mutate)
+
+    cli = ProbeCleanupFailureCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "temporary setup marker probe" in result.render()
+    assert cli.extra_agents == {}
+    assert PLUGIN_CONFIG_PATH not in cli.config_values
+
+
+def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path):
     options = make_options(tmp_path)
     cli = FakeCLI()
 
@@ -1697,7 +1945,7 @@ def test_client_tool_probe_uses_deleted_zero_native_tool_diagnostic_agent(tmp_pa
     assert cli.mutating_calls.count(["openclaw", "gateway", "restart"]) == 2
 
 
-def test_client_tool_probe_fails_before_inference_if_any_native_tool_is_effective(
+def test_client_tool_probe_fails_before_inference_for_any_extra_native_tool(
     tmp_path,
 ):
     cli = FakeCLI(effective_tools=["session_status"])
@@ -1705,7 +1953,7 @@ def test_client_tool_probe_fails_before_inference_if_any_native_tool_is_effectiv
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
     assert not result.ok
-    assert "empty effective native-tool inventory" in result.render()
+    assert "exactly the setup sentinel tool" in result.render()
     assert cli.client_tool_probe_calls == []
     assert cli.extra_agents == {}
 
@@ -1736,22 +1984,18 @@ def test_client_tool_probe_rejects_and_cleans_up_bound_diagnostic_agent(tmp_path
 
 def test_names_present_but_wrong_dashboard_block_behavior_is_rejected(tmp_path):
     cli = FakeCLI(
-        dashboard_block_probe=CommandResult(
-            400,
-            '{"error":"unknown operation"}',
-            "",
-        )
+        channel_probe_statuses={"openhouse-dashboard": "sentinel_executed"}
     )
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
     assert not result.ok
-    assert "dashboard CRM tool block" in result.render()
-    assert len(cli.dashboard_block_probe_calls) == 1
+    assert "dashboard channel marker was not propagated" in result.render()
+    assert len(cli.channel_probe_status_calls) == 1
 
 
 @pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
-@pytest.mark.parametrize("probe", ["client_tools", "dashboard_block"])
+@pytest.mark.parametrize("probe", ["client_tools", "analysis", "status"])
 def test_authenticated_gateway_probes_never_follow_redirects(
     monkeypatch, redirect_status, probe
 ):
@@ -1791,10 +2035,22 @@ def test_authenticated_gateway_probes_never_follow_redirects(
             monkeypatch.setenv("AGENT_GATEWAY_TOKEN", gateway_token)
             cli = OpenClawCLI()
             if probe == "client_tools":
-                result = cli.probe_client_tools(agent_id="openhouse-crm", nonce="abc123")
-            else:
-                result = cli.probe_dashboard_tool_block(
+                snapshot = setup_openclaw._capture_canonical_contract(REPO_ROOT)
+                tools = setup_openclaw._capture_dashboard_client_tools(
+                    REPO_ROOT, snapshot
+                ).tools
+                result = cli.probe_client_tools(
+                    agent_id="openhouse-crm", nonce="abc123", tools=tools
+                )
+            elif probe == "analysis":
+                result = cli.probe_analysis_tool_block(
                     agent_id="openhouse-crm", nonce="abc123"
+                )
+            else:
+                result = cli.probe_channel_status(
+                    agent_id="openhouse-crm",
+                    nonce="abc123",
+                    channel="openhouse-dashboard",
                 )
 
     assert result.returncode == redirect_status
@@ -2904,17 +3160,43 @@ def test_contract_snapshot_detects_source_change_and_installs_captured_bytes(tmp
         setup_openclaw._verify_contract_source_unchanged(snapshot)
 
 
-def test_fallback_refuses_sentinel_that_exists_in_captured_contract():
-    cli = FakeCLI()
+def test_dashboard_client_tool_builder_capture_handles_short_file_reads(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    setup_openclaw.shutil.copytree(REPO_ROOT / "skills", repo / "skills")
+    contract_snapshot = setup_openclaw._capture_canonical_contract(repo)
+    real_read = setup_openclaw.os.read
 
-    with pytest.raises(SetupConflict, match="diagnostic sentinel"):
-        setup_openclaw._verify_dashboard_tool_block(
-            cli,
-            "openhouse-crm",
-            frozenset({"__openhouse_setup_probe__"}),
-        )
+    def short_read(descriptor, size):
+        return real_read(descriptor, min(size, 11))
 
-    assert cli.dashboard_block_probe_calls == []
+    monkeypatch.setattr(setup_openclaw.os, "read", short_read)
+
+    snapshot = setup_openclaw._capture_dashboard_client_tools(
+        repo, contract_snapshot
+    )
+
+    assert [tool["function"]["name"] for tool in snapshot.tools] == [
+        "openhouse_crm_request",
+        "finish_crm_response",
+    ]
+
+
+def test_dashboard_client_tool_builder_failure_is_redacted_and_fail_closed(tmp_path):
+    repo = tmp_path / "repo"
+    setup_openclaw.shutil.copytree(REPO_ROOT / "skills", repo / "skills")
+    contract_snapshot = setup_openclaw._capture_canonical_contract(repo)
+    builder = repo / setup_openclaw.CLIENT_TOOLS_RELATIVE_PATH
+    builder.write_text('raise RuntimeError("private diagnostic path /secret/token")\n')
+
+    with pytest.raises(
+        SetupConflict,
+        match="canonical dashboard client-tool builder is incompatible",
+    ) as failure:
+        setup_openclaw._capture_dashboard_client_tools(repo, contract_snapshot)
+
+    assert "/secret/token" not in str(failure.value)
 
 
 def test_sync_skills_creates_a_missing_custom_workspace_parent(tmp_path):
@@ -3299,13 +3581,14 @@ def test_dry_run_describes_contract_cleanup_and_capability_checks_without_io(
     assert "contract.json" in rendered
     assert "SHA-256" in rendered
     assert "operations.json" in rendered
-    assert "request-scoped function tools" in rendered
+    assert "full production CRM and finish schemas" in rendered
     assert "required CRM outcome hooks" in rendered
-    assert "dashboard-block behavior diagnostic" in rendered
+    assert "dashboard and internal-analysis channel markers" in rendered
     assert (installed / "operations.json").read_bytes() == before
     assert cli.mutating_calls == []
     assert cli.client_tool_probe_calls == []
-    assert cli.dashboard_block_probe_calls == []
+    assert cli.analysis_tool_probe_calls == []
+    assert cli.channel_probe_status_calls == []
 
 
 def test_crm_skill_declares_the_api_token_as_its_primary_environment_variable():
@@ -3415,6 +3698,21 @@ def test_setup_configures_and_behaviorally_proves_the_custom_runtime_agent(tmp_p
     assert [call["agent_id"] for call in cli.configured_agent_guard_probe_calls] == [
         "custom-crm"
     ]
+    assert len(cli.client_tool_probe_calls) == 1
+    diagnostic_call = cli.client_tool_probe_calls[0]
+    probe_config = next(
+        json.loads(call[-2])
+        for call in cli.mutating_calls
+        if call[1:4] == ["config", "set", PLUGIN_CONFIG_PATH]
+        and "setupProbe" in json.loads(call[-2])
+    )
+    assert probe_config == {
+        "agentId": "custom-crm",
+        "setupProbe": {
+            "agentId": diagnostic_call["agent_id"],
+            "nonce": diagnostic_call["nonce"],
+        },
+    }
     config_set_index = cli.mutating_calls.index(
         [
             "openclaw",
@@ -3455,7 +3753,7 @@ def test_setup_fails_closed_when_plugin_agent_config_readback_is_wrong(tmp_path)
     result = configure_openclaw(options, cli=cli)
 
     assert not result.ok
-    assert "configured CRM agent" in result.render()
+    assert "exact bundled CRM plugin configuration" in result.render()
     assert PLUGIN_CONFIG_PATH not in cli.config_values
     assert cli.configured_agent_guard_probe_calls == []
 
@@ -4664,7 +4962,8 @@ def test_existing_agent_rollback_requires_authoritative_exact_readback(tmp_path)
             super().__init__(dict(original))
             self.probe_failed = False
 
-        def probe_client_tools(self, *, agent_id, nonce):
+        def probe_client_tools(self, *, agent_id, nonce, tools):
+            del tools
             self.probe_failed = True
             return CommandResult(503, "", "provider unavailable")
 

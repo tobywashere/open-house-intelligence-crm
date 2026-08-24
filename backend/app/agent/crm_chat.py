@@ -16,8 +16,6 @@ import time
 from typing import Any
 
 
-CRM_REQUEST_TOOL = "openhouse_crm_request"
-FINISH_TOOL = "finish_crm_response"
 DASHBOARD_CHANNEL = "openhouse-dashboard"
 MAX_MODEL_ROUNDS = 8
 MAX_CRM_CALLS = 6
@@ -87,8 +85,26 @@ def _load_contract_module():
     return module
 
 
+def _load_client_tools_module():
+    module_path = (
+        Path(__file__).resolve().parents[3]
+        / "skills" / "crm-db-operations" / "client_tools.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_openhouse_dashboard_client_tools", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("CRM client-tool contract is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _CONTRACT_MODULE = _load_contract_module()
 _CONTRACT = _CONTRACT_MODULE.CONTRACT
+_CLIENT_TOOLS_MODULE = _load_client_tools_module()
+CRM_REQUEST_TOOL = _CLIENT_TOOLS_MODULE.CRM_REQUEST_TOOL
+FINISH_TOOL = _CLIENT_TOOLS_MODULE.FINISH_TOOL
 _MUTATING_EFFECTS = frozenset({"proposal", "validated_write"})
 
 
@@ -116,60 +132,11 @@ class FinishDecision:
 
 
 def _crm_request_tool() -> dict:
-    branches = []
-    for operation, entry in _CONTRACT["operations"].items():
-        branches.append({
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["operation", "arguments"],
-            "properties": {
-                "operation": {
-                    "const": operation,
-                    "description": entry["description"],
-                },
-                "arguments": deepcopy(entry["arguments"]),
-            },
-        })
-    return {
-        "type": "function",
-        "function": {
-            "name": CRM_REQUEST_TOOL,
-            "description": (
-                "Read the local CRM or propose one reviewed CRM change. "
-                "Use only contract arguments and never invent CRM facts."
-            ),
-            "parameters": {"oneOf": branches},
-        },
-    }
+    return _CLIENT_TOOLS_MODULE.build_dashboard_client_tools(_CONTRACT)[0]
 
 
 def _finish_tool() -> dict:
-    return {
-        "type": "function",
-        "function": {
-            "name": FINISH_TOOL,
-            "description": "Finish with a classification supported by collected CRM evidence.",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["classification", "message", "evidence_call_ids"],
-                "properties": {
-                    "classification": {
-                        "type": "string",
-                        "enum": ["answered", "queued", "needs_clarification", "failed"],
-                    },
-                    "message": {"type": "string", "maxLength": 4000},
-                    "evidence_call_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "uniqueItems": True,
-                        "maxItems": 6,
-                    },
-                    "pending_id": {"type": "integer", "minimum": 1},
-                },
-            },
-        },
-    }
+    return _CLIENT_TOOLS_MODULE.build_dashboard_client_tools(_CONTRACT)[1]
 
 
 def _tool_error(message: str) -> str:

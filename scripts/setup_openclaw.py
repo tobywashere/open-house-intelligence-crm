@@ -59,18 +59,22 @@ REQUIRED_PLUGIN_HOOKS = (
 DASHBOARD_CHANNEL = "openhouse-dashboard"
 SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability"
 SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard"
-SETUP_PROBE_TOOL = "openhouse_setup_capability_probe"
-SETUP_BLOCK_PROBE_OPERATION = "__openhouse_setup_probe__"
+INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis"
+SETUP_MARKER_TOOL = "openhouse_setup_marker_probe"
 SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__"
 GATEWAY_PROBE_TIMEOUT_SECONDS = 30
 GATEWAY_PROBE_MAX_BYTES = 256 * 1024
 CONTRACT_MAX_BYTES = 1024 * 1024
 CONTRACT_RELATIVE_PATH = Path("skills") / "crm-db-operations" / "contract.json"
+CLIENT_TOOLS_RELATIVE_PATH = (
+    Path("skills") / "crm-db-operations" / "client_tools.py"
+)
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
 PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
 DIAGNOSTIC_TOOL_POLICY = {
-    "profile": "minimal",
-    "deny": ["session_status"],
+    "profile": "full",
+    "allow": [SETUP_MARKER_TOOL],
+    "deny": [PLUGIN_TOOL, "exec"],
 }
 DESIRED_SANDBOX = {"mode": "off"}
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
@@ -144,6 +148,15 @@ class ContractSnapshot:
     digest: str
     identity: tuple[int, int, int, int]
     operations: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ClientToolsSnapshot:
+    path: Path
+    contents: bytes
+    digest: str
+    identity: tuple[int, int, int, int]
+    tools: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -233,7 +246,9 @@ class OpenClawCLI:
             )
         return CommandResult(status_code, rendered, "")
 
-    def probe_client_tools(self, *, agent_id: str, nonce: str) -> CommandResult:
+    def probe_client_tools(
+        self, *, agent_id: str, nonce: str, tools: list[dict[str, Any]]
+    ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
         except SetupConflict as exc:
@@ -246,53 +261,68 @@ class OpenClawCLI:
                 {
                     "role": "system",
                     "content": (
-                        "Call the one provided client function exactly once with the "
-                        "required nonce. Do not use any internal tool."
+                        f"First call the native {SETUP_MARKER_TOOL} tool with action "
+                        f"attempt, channel {DASHBOARD_CHANNEL}, and the exact nonce. "
+                        "After that attempt is blocked, call finish_crm_response exactly "
+                        "once with classification needs_clarification, the nonce as its "
+                        "message, and an empty evidence_call_ids array."
                     ),
                 },
                 {"role": "user", "content": f"Capability nonce: {nonce}"},
             ],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": SETUP_PROBE_TOOL,
-                        "description": "Return the setup capability nonce without side effects.",
-                        "parameters": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["nonce"],
-                            "properties": {"nonce": {"const": nonce}},
-                        },
-                    },
-                }
-            ],
+            "tools": tools,
             "tool_choice": "required",
-            "max_completion_tokens": 128,
+            "max_completion_tokens": 256,
         }
         return self._post_gateway_json(
-            chat_path, payload, channel=SETUP_CAPABILITY_CHANNEL
+            chat_path, payload, channel=DASHBOARD_CHANNEL
         )
 
-    def probe_dashboard_tool_block(
+    def probe_analysis_tool_block(
         self, *, agent_id: str, nonce: str
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
         except SetupConflict as exc:
             return CommandResult(503, "", str(exc))
+        chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
         payload = {
-            "tool": PLUGIN_TOOL,
-            "args": {
-                "operation": SETUP_BLOCK_PROBE_OPERATION,
-                "arguments": {},
-            },
-            "agentId": agent_id,
-            "sessionKey": f"dashboard:setup-capability:{nonce}",
-            "idempotencyKey": f"setup-capability:{nonce}",
+            "model": f"openclaw/{agent_id}",
+            "user": f"setup-analysis-capability:{nonce}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Call the native {SETUP_MARKER_TOOL} tool with action attempt, "
+                        f"channel {INTERNAL_ANALYSIS_CHANNEL}, and nonce {nonce}. Then "
+                        "reply briefly after the attempt is blocked."
+                    ),
+                }
+            ],
+            "tools": [],
+            "tool_choice": "none",
+            "max_completion_tokens": 128,
         }
         return self._post_gateway_json(
-            "/tools/invoke", payload, channel=DASHBOARD_CHANNEL
+            chat_path, payload, channel=INTERNAL_ANALYSIS_CHANNEL
+        )
+
+    def probe_channel_status(
+        self, *, agent_id: str, nonce: str, channel: str
+    ) -> CommandResult:
+        try:
+            _loopback_gateway_base_url()
+        except SetupConflict as exc:
+            return CommandResult(503, "", str(exc))
+        payload = {
+            "tool": SETUP_MARKER_TOOL,
+            "args": {"action": "status", "channel": channel, "nonce": nonce},
+            "agentId": agent_id,
+            "sessionKey": f"marker-status:setup-capability:{nonce}:{channel}",
+            "idempotencyKey": f"setup-marker-status:{nonce}:{channel}",
+        }
+        return self._post_gateway_json(
+            "/tools/invoke", payload, channel=SETUP_CAPABILITY_CHANNEL
         )
 
     def probe_configured_agent_guard(
@@ -1070,6 +1100,119 @@ def _verify_contract_source_unchanged(snapshot: ContractSnapshot) -> None:
     current = _read_contract_snapshot(snapshot.path, "canonical CRM operation contract")
     if current.identity != snapshot.identity or current.digest != snapshot.digest:
         raise SetupConflict("canonical CRM operation contract changed after validation")
+
+
+def _capture_dashboard_client_tools(
+    repo: Path, contract_snapshot: ContractSnapshot
+) -> ClientToolsSnapshot:
+    path = repo / CLIENT_TOOLS_RELATIVE_PATH
+    absolute = _validate_no_symlink_components(
+        path, "canonical dashboard client-tool builder", leaf_directory=False
+    )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(absolute, flags)
+    except FileNotFoundError as exc:
+        raise SetupConflict("canonical dashboard client-tool builder is missing") from exc
+    except OSError as exc:
+        raise SetupConflict(
+            "could not open canonical dashboard client-tool builder"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise SetupConflict(
+                "canonical dashboard client-tool builder is not a regular file"
+            )
+        chunks: list[bytes] = []
+        remaining = CONTRACT_MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        contents = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if len(contents) > CONTRACT_MAX_BYTES:
+        raise SetupConflict("canonical dashboard client-tool builder is unexpectedly large")
+    try:
+        source = contents.decode("utf-8")
+        contract = _decode_json(
+            contract_snapshot.contents.decode("utf-8"),
+            "captured canonical CRM operation contract",
+        )
+        namespace: dict[str, Any] = {
+            "__file__": str(absolute),
+            "__name__": "_openhouse_setup_dashboard_client_tools",
+        }
+        exec(compile(source, str(absolute), "exec"), namespace)
+        builder = namespace.get("build_dashboard_client_tools")
+        if not callable(builder):
+            raise TypeError("builder is unavailable")
+        tools = builder(contract)
+        encoded = json.dumps(
+            tools, allow_nan=False, separators=(",", ":")
+        ).encode("utf-8")
+    except Exception as exc:
+        raise SetupConflict(
+            "canonical dashboard client-tool builder is incompatible"
+        ) from exc
+    if (
+        not isinstance(tools, list)
+        or len(tools) != 2
+        or len(encoded) > GATEWAY_PROBE_MAX_BYTES
+        or [
+            tool.get("function", {}).get("name")
+            if isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            else None
+            for tool in tools
+        ]
+        != ["openhouse_crm_request", "finish_crm_response"]
+    ):
+        raise SetupConflict("canonical dashboard client-tool builder is incompatible")
+    request_parameters = tools[0]["function"].get("parameters")
+    finish_parameters = tools[1]["function"].get("parameters")
+    if (
+        not isinstance(request_parameters, dict)
+        or not isinstance(request_parameters.get("oneOf"), list)
+        or len(request_parameters["oneOf"]) != len(contract_snapshot.operations)
+        or not isinstance(finish_parameters, dict)
+        or finish_parameters.get("additionalProperties") is not False
+    ):
+        raise SetupConflict("canonical dashboard client-tool builder is incompatible")
+    identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+    return ClientToolsSnapshot(
+        path=absolute,
+        contents=contents,
+        digest=hashlib.sha256(contents).hexdigest(),
+        identity=identity,
+        tools=tools,
+    )
+
+
+def _verify_client_tools_source_unchanged(
+    snapshot: ClientToolsSnapshot, contract_snapshot: ContractSnapshot
+) -> None:
+    current = _capture_dashboard_client_tools(
+        snapshot.path.parents[2], contract_snapshot
+    )
+    if current.identity != snapshot.identity or current.digest != snapshot.digest:
+        raise SetupConflict("canonical dashboard client-tool builder changed after validation")
+
+
+def _verify_installed_client_tools(
+    workspace: Path,
+    snapshot: ClientToolsSnapshot,
+    contract_snapshot: ContractSnapshot,
+) -> None:
+    installed = _capture_dashboard_client_tools(workspace, contract_snapshot)
+    if installed.digest != snapshot.digest or installed.tools != snapshot.tools:
+        raise SetupConflict(
+            "installed dashboard client-tool builder does not match the canonical source"
+        )
 
 
 def _verify_installed_contract(workspace: Path, expected_digest: str) -> None:
@@ -2726,7 +2869,7 @@ def _remove_diagnostic_workspace(root: Path) -> bool:
         return False
 
 
-def _verify_empty_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
+def _verify_diagnostic_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
     params = json.dumps(
         {"sessionKey": f"agent:{agent_id}:main"}, separators=(",", ":")
     )
@@ -2749,12 +2892,13 @@ def _verify_empty_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
     if (
         not isinstance(payload, dict)
         or payload.get("agentId") != agent_id
-        or payload.get("profile") != "minimal"
+        or payload.get("profile") != "full"
         or not isinstance(payload.get("found"), list)
     ):
         raise SetupConflict(
-            "OpenClaw did not expose an authoritative empty effective native-tool inventory"
+            "OpenClaw did not expose an authoritative setup sentinel tool inventory"
         )
+    effective: set[str] = set()
     for group in payload["found"]:
         if (
             not isinstance(group, list)
@@ -2765,21 +2909,26 @@ def _verify_empty_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
             or not all(isinstance(name, str) and name for name in group[1])
         ):
             raise SetupConflict(
-                "OpenClaw did not expose an authoritative empty effective native-tool inventory"
+                "OpenClaw did not expose an authoritative setup sentinel tool inventory"
             )
-        if group[1]:
-            raise SetupConflict(
-                "OpenClaw diagnostic agent does not have an empty effective native-tool inventory"
-            )
+        effective.update(group[1])
+    if effective != {SETUP_MARKER_TOOL}:
+        raise SetupConflict(
+            "OpenClaw diagnostic agent must expose exactly the setup sentinel tool"
+        )
 
 
-def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
-    nonce = secrets.token_hex(16)
-    result = cli.probe_client_tools(agent_id=agent_id, nonce=nonce)
+def _request_client_tool_capability(
+    cli: OpenClawCLI,
+    agent_id: str,
+    nonce: str,
+    tools: list[dict[str, Any]],
+) -> CommandResult:
+    result = cli.probe_client_tools(agent_id=agent_id, nonce=nonce, tools=tools)
     if result.returncode == 400:
         raise SetupConflict(
-            "unsupported OpenClaw installation: Chat Completions does not support "
-            "required request-scoped function tools with tool_choice:\"required\""
+            "unsupported OpenClaw installation: Chat Completions rejected the full "
+            "production CRM and finish schemas with tool_choice:\"required\""
         )
     if result.returncode in {401, 403}:
         raise SetupConflict(
@@ -2789,8 +2938,12 @@ def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
     if result.returncode != 200:
         raise SetupConflict(
             "OpenClaw provider/model capability was not proven by the bounded "
-            "request-scoped client-tool probe"
+            "full production CRM and finish schemas probe"
         )
+    return result
+
+
+def _verify_client_tool_completion(result: CommandResult, nonce: str) -> None:
     try:
         payload = _decode_json(result.stdout, "client-tool capability probe")
     except SetupConflict as exc:
@@ -2810,8 +2963,15 @@ def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
         valid = (
             choice["finish_reason"] == "tool_calls"
             and call["type"] == "function"
-            and function["name"] == SETUP_PROBE_TOOL
-            and arguments == {"nonce": nonce}
+            and isinstance(call.get("id"), str)
+            and bool(call["id"])
+            and function["name"] == "finish_crm_response"
+            and arguments
+            == {
+                "classification": "needs_clarification",
+                "message": nonce,
+                "evidence_call_ids": [],
+            }
         )
     except (KeyError, IndexError, TypeError, SetupConflict):
         valid = False
@@ -2821,36 +2981,127 @@ def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
         )
 
 
-def _verify_dashboard_tool_block(
-    cli: OpenClawCLI, agent_id: str, contract_operations: frozenset[str]
-) -> None:
-    if SETUP_BLOCK_PROBE_OPERATION in contract_operations:
+def _request_analysis_completion(
+    cli: OpenClawCLI, agent_id: str, nonce: str
+) -> CommandResult:
+    result = cli.probe_analysis_tool_block(agent_id=agent_id, nonce=nonce)
+    if result.returncode in {401, 403}:
         raise SetupConflict(
-            "dashboard diagnostic sentinel unexpectedly exists in the canonical contract"
+            "OpenClaw internal-analysis channel capability was not proven because "
+            "Gateway authentication failed"
         )
-    nonce = secrets.token_hex(16)
-    result = cli.probe_dashboard_tool_block(agent_id=agent_id, nonce=nonce)
-    response = f"{result.stdout}\n{result.stderr}".lower()
-    expected_reason = "dashboard crm calls must use the verified tool invocation path"
-    if result.returncode != 403 or expected_reason not in response:
+    if result.returncode != 200:
         raise SetupConflict(
-            "the bounded loopback diagnostic did not prove the dashboard CRM tool block; "
-            "no supported CRM operation was executed"
+            "OpenClaw internal-analysis Chat Completions path was not proven"
+        )
+    return result
+
+
+def _verify_analysis_completion(result: CommandResult) -> None:
+    try:
+        payload = _decode_json(result.stdout, "internal-analysis capability probe")
+        choices = payload["choices"]
+        choice = choices[0] if len(choices) == 1 else None
+        message = choice["message"]
+        valid = (
+            isinstance(message.get("content"), str)
+            and bool(message["content"].strip())
+            and not message.get("tool_calls")
+        )
+    except (KeyError, IndexError, TypeError, SetupConflict):
+        valid = False
+    if not valid:
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible internal-analysis response"
+        )
+
+
+def _channel_probe_details(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    candidates = [payload.get("details")]
+    result = payload.get("result")
+    if isinstance(result, dict):
+        candidates.extend([result, result.get("details")])
+    for candidate in candidates:
+        if isinstance(candidate, dict) and set(candidate) == {
+            "schema_version",
+            "channel",
+            "nonce",
+            "status",
+        }:
+            return candidate
+    return None
+
+
+def _verify_channel_marker(
+    cli: OpenClawCLI, agent_id: str, nonce: str, channel: str
+) -> None:
+    result = cli.probe_channel_status(
+        agent_id=agent_id, nonce=nonce, channel=channel
+    )
+    label = "dashboard" if channel == DASHBOARD_CHANNEL else "internal-analysis"
+    if result.returncode != 200:
+        raise SetupConflict(
+            f"the {label} channel marker proof status could not be read"
+        )
+    try:
+        payload = _decode_json(result.stdout, f"{label} channel marker status")
+    except SetupConflict as exc:
+        raise SetupConflict(
+            f"the {label} channel marker proof returned an incompatible status"
+        ) from exc
+    details = _channel_probe_details(payload)
+    if (
+        details is None
+        or details.get("schema_version") != 1
+        or details.get("channel") != channel
+        or details.get("nonce") != nonce
+        or not isinstance(details.get("status"), str)
+    ):
+        raise SetupConflict(
+            f"the {label} channel marker proof returned an incompatible status"
+        )
+    status = details["status"]
+    if status == "tool_blocked":
+        return
+    if status == "tool_not_attempted":
+        raise SetupConflict(
+            f"the {label} model did not attempt the setup sentinel; channel protection "
+            "is unverified"
+        )
+    if status in {"sentinel_executed", "marker_missing"}:
+        raise SetupConflict(
+            f"the {label} channel marker was not propagated and the setup sentinel "
+            "was not safely blocked"
+        )
+    if status == "hook_context_unsupported":
+        raise SetupConflict(f"the {label} hook context was unsupported")
+    raise SetupConflict(
+        f"the {label} channel marker proof returned an incompatible status"
+    )
+
+
+def _verify_plugin_config(
+    cli: OpenClawCLI, expected: dict[str, Any], label: str
+) -> None:
+    result = _run_required(
+        cli,
+        ["openclaw", "config", "get", PLUGIN_CONFIG_PATH, "--json"],
+        label,
+    )
+    if _json(result, label) != expected:
+        raise SetupConflict(
+            "OpenClaw did not retain the exact bundled CRM plugin configuration"
         )
 
 
 def _verify_plugin_agent_config(cli: OpenClawCLI, agent_id: str) -> None:
-    result = _run_required(
+    _verify_plugin_config(
         cli,
-        ["openclaw", "config", "get", PLUGIN_CONFIG_PATH, "--json"],
+        {"agentId": agent_id},
         "configured CRM agent plugin readback",
     )
-    if _json(result, "configured CRM agent plugin readback") != {
-        "agentId": agent_id
-    }:
-        raise SetupConflict(
-            "OpenClaw did not retain the configured CRM agent for the bundled plugin"
-        )
 
 
 def _verify_configured_agent_guard(cli: OpenClawCLI, agent_id: str) -> None:
@@ -3106,6 +3357,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     crm_agent_preexisting = False
     crm_agent_creation_attempted = False
     diagnostic_agent_id: str | None = None
+    diagnostic_nonce: str | None = None
     diagnostic_root: Path | None = None
     diagnostic_agent_creation_attempted = False
     gateway_restart_attempted = False
@@ -3121,11 +3373,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         _preflight(cli, options)
         repo = Path(__file__).resolve().parents[1]
         contract_snapshot = _capture_canonical_contract(repo)
+        client_tools_snapshot = _capture_dashboard_client_tools(
+            repo, contract_snapshot
+        )
         contract_digest = contract_snapshot.digest
-        if (
-            SETUP_BLOCK_PROBE_OPERATION in contract_snapshot.operations
-            or SETUP_AGENT_GUARD_OPERATION in contract_snapshot.operations
-        ):
+        if SETUP_AGENT_GUARD_OPERATION in contract_snapshot.operations:
             raise SetupConflict(
                 "setup diagnostic sentinel unexpectedly exists in the canonical contract"
             )
@@ -3292,12 +3544,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Would verify exact openhouse_crm registration and the required CRM outcome hooks."
             )
             messages.append(
-                "Would run the bounded dashboard-block behavior diagnostic with an "
-                "operation absent from the production contract."
+                "Would prove the dashboard and internal-analysis channel markers through "
+                "the production Chat Completions path with one isolated no-CRM sentinel."
             )
             messages.append(
-                "Would verify Chat Completions request-scoped function tools with "
-                'tool_choice:"required" using one bounded no-write probe.'
+                "Would verify Chat Completions with the full production CRM and finish "
+                'schemas and tool_choice:"required".'
             )
             if gateway_env_path is not None:
                 messages.append(
@@ -3334,6 +3586,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 *_binding_agent_ids(binding_snapshot),
             }
         )
+        diagnostic_nonce = secrets.token_hex(16)
         if configured_agent is not None:
             rollback = AgentRollback(
                 snapshot=_managed_agent_snapshot(configured_agent), changed_fields=[]
@@ -3366,7 +3619,13 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             contract_snapshot=contract_snapshot,
         )
         _verify_contract_source_unchanged(contract_snapshot)
+        _verify_client_tools_source_unchanged(
+            client_tools_snapshot, contract_snapshot
+        )
         _verify_installed_contract(options.workspace, contract_digest)
+        _verify_installed_client_tools(
+            options.workspace, client_tools_snapshot, contract_snapshot
+        )
         messages.append(
             f"Installed CRM skills in {options.workspace / 'skills'} and verified "
             f"contract.json SHA-256 {contract_digest}"
@@ -3740,6 +3999,34 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         diagnostic_agent_creation_attempted = True
         _create_diagnostic_agent(cli, diagnostic_agent_id, diagnostic_workspace)
         _verify_diagnostic_agent_unbound(cli, diagnostic_agent_id)
+        if diagnostic_nonce is None:
+            raise SetupConflict("could not allocate a setup marker probe nonce")
+        probe_plugin_config = {
+            "agentId": options.agent_id,
+            "setupProbe": {
+                "agentId": diagnostic_agent_id,
+                "nonce": diagnostic_nonce,
+            },
+        }
+        configure_probe = cli.run(
+            [
+                "openclaw",
+                "config",
+                "set",
+                PLUGIN_CONFIG_PATH,
+                json.dumps(probe_plugin_config, separators=(",", ":")),
+                "--strict-json",
+            ],
+            mutate=True,
+        )
+        if configure_probe.returncode != 0:
+            raise SetupConflict(
+                "Could not enable the temporary setup marker probe: "
+                + (configure_probe.stderr or configure_probe.stdout).strip()
+            )
+        _verify_plugin_config(
+            cli, probe_plugin_config, "temporary setup marker probe readback"
+        )
         diagnostic_validate = _run_required(
             cli,
             ["openclaw", "config", "validate", "--json"],
@@ -3754,14 +4041,54 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 f"Gateway restart failed: {(restart.stderr or restart.stdout).strip()}"
             )
         _verify_contract_source_unchanged(contract_snapshot)
-        _verify_installed_contract(options.workspace, contract_snapshot.digest)
-        _verify_empty_effective_tools(cli, diagnostic_agent_id)
-        _verify_client_tool_capability(cli, diagnostic_agent_id)
-        _verify_plugin_agent_config(cli, options.agent_id)
-        _verify_configured_agent_guard(cli, options.agent_id)
-        _verify_dashboard_tool_block(
-            cli, options.agent_id, contract_snapshot.operations
+        _verify_client_tools_source_unchanged(
+            client_tools_snapshot, contract_snapshot
         )
+        _verify_installed_contract(options.workspace, contract_snapshot.digest)
+        _verify_installed_client_tools(
+            options.workspace, client_tools_snapshot, contract_snapshot
+        )
+        _verify_diagnostic_effective_tools(cli, diagnostic_agent_id)
+        dashboard_completion = _request_client_tool_capability(
+            cli,
+            diagnostic_agent_id,
+            diagnostic_nonce,
+            client_tools_snapshot.tools,
+        )
+        _verify_channel_marker(
+            cli, diagnostic_agent_id, diagnostic_nonce, DASHBOARD_CHANNEL
+        )
+        _verify_client_tool_completion(dashboard_completion, diagnostic_nonce)
+        analysis_completion = _request_analysis_completion(
+            cli, diagnostic_agent_id, diagnostic_nonce
+        )
+        _verify_channel_marker(
+            cli, diagnostic_agent_id, diagnostic_nonce, INTERNAL_ANALYSIS_CHANNEL
+        )
+        _verify_analysis_completion(analysis_completion)
+        _verify_plugin_config(
+            cli, probe_plugin_config, "temporary setup marker probe readback"
+        )
+        _verify_configured_agent_guard(cli, options.agent_id)
+        remove_probe = cli.run(
+            [
+                "openclaw",
+                "config",
+                "set",
+                PLUGIN_CONFIG_PATH,
+                json.dumps(
+                    {"agentId": options.agent_id}, separators=(",", ":")
+                ),
+                "--strict-json",
+            ],
+            mutate=True,
+        )
+        if remove_probe.returncode != 0:
+            raise SetupConflict(
+                "Could not remove the temporary setup marker probe: "
+                + (remove_probe.stderr or remove_probe.stdout).strip()
+            )
+        _verify_plugin_agent_config(cli, options.agent_id)
         if not _delete_agent_and_verify(
             cli, diagnostic_agent_id, expected_workspace=diagnostic_workspace
         ):
@@ -3782,6 +4109,16 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             raise SetupConflict(
                 "OpenClaw did not retain diagnostic-agent cleanup after restart"
             )
+        final_runtime_plugin = _run_required(
+            cli,
+            ["openclaw", "plugins", "inspect", PLUGIN_ID, "--runtime", "--json"],
+            "final openhouse-crm runtime inspection",
+        )
+        _validate_runtime_plugin(
+            _json(final_runtime_plugin, "final openhouse-crm runtime inspection"),
+            plugin_source,
+        )
+        _verify_plugin_agent_config(cli, options.agent_id)
         if skill_rollback is not None:
             if not _discard_skill_snapshot(skill_rollback):
                 skill_snapshot_cleanup_failed = True
@@ -3792,9 +4129,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             skill_rollback = None
         rollback = None
         messages.append(
-            "Validated the native CRM tool, required CRM outcome hooks, dashboard "
-            "tool block, configured-agent guard, request-scoped client tools, and "
-            "restricted agent configuration, "
+            "Validated the native CRM tool, required CRM outcome hooks, full production "
+            "CRM and finish schemas, dashboard and internal-analysis channel markers, "
+            "configured-agent guard, and restricted agent configuration, "
             "then restarted the OpenClaw Gateway for validation and diagnostic cleanup. "
             "Runtime CRM verification is still required: "
             "python scripts/doctor.py --live-agent --live-crm"

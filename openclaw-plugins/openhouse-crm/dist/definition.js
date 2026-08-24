@@ -9,8 +9,11 @@ const DEFAULT_CRM_AGENT_ID = "openhouse-crm";
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const DASHBOARD_CHANNEL = "openhouse-dashboard";
 const INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis";
+const SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability";
 const SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard";
 const SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__";
+const SETUP_MARKER_TOOL = "openhouse_setup_marker_probe";
+const SETUP_NONCE_PATTERN = /^[a-f0-9]{32}$/;
 const TOOL_BLOCKED_CHANNELS = new Set([
   DASHBOARD_CHANNEL,
   INTERNAL_ANALYSIS_CHANNEL,
@@ -57,6 +60,55 @@ function configuredAgentId(pluginConfig) {
 }
 
 
+function configuredSetupProbe(pluginConfig) {
+  const setupProbe = pluginConfig?.setupProbe;
+  if (setupProbe === undefined) return undefined;
+  if (
+    setupProbe === null
+    || typeof setupProbe !== "object"
+    || Array.isArray(setupProbe)
+    || Object.keys(setupProbe).length !== 2
+    || typeof setupProbe.agentId !== "string"
+    || !AGENT_ID_PATTERN.test(setupProbe.agentId)
+    || typeof setupProbe.nonce !== "string"
+    || !SETUP_NONCE_PATTERN.test(setupProbe.nonce)
+  ) {
+    throw new TypeError("Configured setup probe is invalid");
+  }
+  return setupProbe;
+}
+
+
+function setupProbeParameters(nonce) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["action", "channel", "nonce"],
+    properties: {
+      action: { type: "string", enum: ["attempt", "status"] },
+      channel: {
+        type: "string",
+        enum: [DASHBOARD_CHANNEL, INTERNAL_ANALYSIS_CHANNEL],
+      },
+      nonce: { const: nonce },
+    },
+  };
+}
+
+
+function validSetupProbeParams(params, nonce) {
+  return (
+    params !== null
+    && typeof params === "object"
+    && !Array.isArray(params)
+    && Object.keys(params).length === 3
+    && (params.action === "attempt" || params.action === "status")
+    && TOOL_BLOCKED_CHANNELS.has(params.channel)
+    && params.nonce === nonce
+  );
+}
+
+
 export function createPluginDefinition(executeCrm = runCrmTool) {
   const outcomeGuard = createOutcomeGuard();
   return {
@@ -65,9 +117,51 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
     description: "Provides audited CRM reads and approval-gated CRM writes.",
     register(api) {
       const crmAgentId = configuredAgentId(api.pluginConfig);
+      const setupProbe = configuredSetupProbe(api.pluginConfig);
+      const setupProbeState = new Map();
       api.on(
         "before_tool_call",
         (event, context) => {
+          if (setupProbe && event.toolName === SETUP_MARKER_TOOL) {
+            const params = event.params;
+            const channel = TOOL_BLOCKED_CHANNELS.has(params?.channel)
+              ? params.channel
+              : undefined;
+            const contextSupported = (
+              context?.agentId === setupProbe.agentId
+              && context.requester !== null
+              && typeof context.requester === "object"
+              && !Array.isArray(context.requester)
+              && typeof context.requester.channel === "string"
+            );
+            if (
+              validSetupProbeParams(params, setupProbe.nonce)
+              && params.action === "status"
+              && contextSupported
+              && context.requester.channel === SETUP_CAPABILITY_CHANNEL
+            ) return;
+            if (
+              !validSetupProbeParams(params, setupProbe.nonce)
+              || params.action !== "attempt"
+              || !contextSupported
+            ) {
+              for (const target of channel ? [channel] : TOOL_BLOCKED_CHANNELS) {
+                setupProbeState.set(target, "hook_context_unsupported");
+              }
+              return {
+                block: true,
+                blockReason: "Setup marker probe hook context is unsupported.",
+              };
+            }
+            if (context.requester.channel === params.channel) {
+              setupProbeState.set(params.channel, "tool_blocked");
+              return {
+                block: true,
+                blockReason: "Internal analysis and dashboard turns must not execute native tools.",
+              };
+            }
+            setupProbeState.set(params.channel, "marker_missing");
+          }
           if (
             context.requester?.channel === SETUP_AGENT_GUARD_CHANNEL
             && context.agentId === crmAgentId
@@ -142,6 +236,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
 
       api.on("gateway_stop", () => {
         outcomeGuard.clear();
+        setupProbeState.clear();
       });
 
       api.registerTool(
@@ -161,6 +256,34 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
         }),
         { name: TOOL_NAME },
       );
+      if (setupProbe) {
+        api.registerTool(
+          () => ({
+            name: SETUP_MARKER_TOOL,
+            description: "Setup-only marker propagation probe with no CRM or exec access.",
+            parameters: setupProbeParameters(setupProbe.nonce),
+            async execute(_callId, params) {
+              if (!validSetupProbeParams(params, setupProbe.nonce)) {
+                throw new TypeError("Invalid setup marker probe arguments");
+              }
+              if (params.action === "attempt") {
+                setupProbeState.set(params.channel, "sentinel_executed");
+              }
+              const details = {
+                schema_version: 1,
+                channel: params.channel,
+                nonce: setupProbe.nonce,
+                status: setupProbeState.get(params.channel) ?? "tool_not_attempted",
+              };
+              return {
+                content: [{ type: "text", text: JSON.stringify(details) }],
+                details,
+              };
+            },
+          }),
+          { name: SETUP_MARKER_TOOL },
+        );
+      }
     },
   };
 }

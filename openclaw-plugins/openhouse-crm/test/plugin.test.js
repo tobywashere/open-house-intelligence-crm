@@ -161,6 +161,148 @@ test("before-tool hook blocks every native tool on analysis and verified dashboa
 });
 
 
+test("setup probe registers one config-gated marker tool without changing normal inventory", () => {
+  const normal = registerPlugin();
+  assert.deepEqual(normal.registrations.map(([, metadata]) => metadata.name), [
+    "openhouse_crm",
+  ]);
+
+  const diagnostic = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: {
+      agentId: "openhouse-setup-probe-a1b2c3d4",
+      nonce: "0123456789abcdef0123456789abcdef",
+    },
+  });
+  assert.deepEqual(diagnostic.registrations.map(([, metadata]) => metadata.name), [
+    "openhouse_crm",
+    "openhouse_setup_marker_probe",
+  ]);
+});
+
+
+for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
+  test(`setup probe records and proves a blocked ${channel} native-tool attempt`, async () => {
+    const nonce = "0123456789abcdef0123456789abcdef";
+    const agentId = "openhouse-setup-probe-a1b2c3d4";
+    const { hooks, registrations } = registerPlugin(undefined, {
+      agentId: "portable-crm",
+      setupProbe: { agentId, nonce },
+    });
+    const beforeToolCall = hooks.get("before_tool_call").handler;
+    const blocked = beforeToolCall(
+      {
+        toolName: "openhouse_setup_marker_probe",
+        params: { action: "attempt", channel, nonce },
+      },
+      { agentId, requester: { channel } },
+    );
+    assert.equal(blocked.block, true);
+
+    assert.equal(
+      beforeToolCall(
+        {
+          toolName: "openhouse_setup_marker_probe",
+          params: { action: "status", channel, nonce },
+        },
+        {
+          agentId,
+          requester: { channel: "openhouse-setup-capability" },
+        },
+      ),
+      undefined,
+    );
+
+    const [factory] = registrations.find(
+      ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+    );
+    const result = await factory({}).execute("status-call", {
+      action: "status",
+      channel,
+      nonce,
+    });
+    assert.deepEqual(result.details, {
+      schema_version: 1,
+      channel,
+      nonce,
+      status: "tool_blocked",
+    });
+  });
+}
+
+
+test("setup probe distinguishes a missing marker that allowed sentinel execution", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const { hooks, registrations } = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  const [factory] = registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const tool = factory({});
+  assert.equal(
+    hooks.get("before_tool_call").handler(
+      {
+        toolName: "openhouse_setup_marker_probe",
+        params: { action: "attempt", channel: "openhouse-dashboard", nonce },
+      },
+      { agentId, requester: { channel: "generic-chat" } },
+    ),
+    undefined,
+  );
+  await tool.execute("attempt-call", {
+    action: "attempt",
+    channel: "openhouse-dashboard",
+    nonce,
+  });
+
+  const result = await tool.execute("status-call", {
+    action: "status",
+    channel: "openhouse-dashboard",
+    nonce,
+  });
+  assert.equal(result.details.status, "sentinel_executed");
+});
+
+
+test("setup probe distinguishes no tool attempt from malformed hook context", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const { hooks, registrations } = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  const [factory] = registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const tool = factory({});
+
+  const untouched = await tool.execute("status-call", {
+    action: "status",
+    channel: "openhouse-dashboard",
+    nonce,
+  });
+  assert.equal(untouched.details.status, "tool_not_attempted");
+
+  const blocked = hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel: "openhouse-analysis", nonce },
+    },
+    { agentId },
+  );
+  assert.equal(blocked.block, true);
+  const malformed = await tool.execute("status-call", {
+    action: "status",
+    channel: "openhouse-analysis",
+    nonce,
+  });
+  assert.equal(malformed.details.status, "hook_context_unsupported");
+});
+
+
 test("Discord blocks a later mutation in the same run after an unknown outcome", () => {
   const { hooks } = registerPlugin();
   const beforeToolCall = hooks.get("before_tool_call").handler;
@@ -593,8 +735,14 @@ test("manifest declares exact tool ownership and validated agent configuration",
     await readFile(new URL("openclaw.plugin.json", root), "utf8"),
   );
   assert.equal(manifest.id, "openhouse-crm");
-  assert.deepEqual(manifest.contracts, { tools: ["openhouse_crm"] });
-  assert.equal(manifest.toolMetadata, undefined);
+  assert.deepEqual(manifest.contracts, {
+    tools: ["openhouse_crm", "openhouse_setup_marker_probe"],
+  });
+  assert.deepEqual(manifest.toolMetadata, {
+    openhouse_setup_marker_probe: {
+      optional: true,
+    },
+  });
   assert.deepEqual(manifest.activation, {
     onStartup: true,
     onCapabilities: ["hook"],
@@ -606,6 +754,21 @@ test("manifest declares exact tool ownership and validated agent configuration",
       agentId: {
         type: "string",
         pattern: "^[a-z0-9][a-z0-9_-]{0,63}$",
+      },
+      setupProbe: {
+        type: "object",
+        additionalProperties: false,
+        required: ["agentId", "nonce"],
+        properties: {
+          agentId: {
+            type: "string",
+            pattern: "^[a-z0-9][a-z0-9_-]{0,63}$",
+          },
+          nonce: {
+            type: "string",
+            pattern: "^[a-f0-9]{32}$",
+          },
+        },
       },
     },
   });

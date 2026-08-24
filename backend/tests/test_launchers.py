@@ -410,7 +410,7 @@ def test_load_env_accepts_comments_blank_lines_and_quoted_values(tmp_path):
     assert result.stdout == "Annie Example"
 
 
-def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypatch):
+def test_setup_client_probe_uses_full_production_schemas_and_dashboard_channel(monkeypatch):
     setup_path = REPO / "scripts" / "setup_openclaw.py"
     spec = importlib.util.spec_from_file_location("setup_openclaw_launcher_test", setup_path)
     assert spec and spec.loader
@@ -441,8 +441,14 @@ def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypa
                                         "id": "probe-call",
                                         "type": "function",
                                         "function": {
-                                            "name": "openhouse_setup_capability_probe",
-                                            "arguments": json.dumps({"nonce": nonce}),
+                                            "name": "finish_crm_response",
+                                            "arguments": json.dumps(
+                                                {
+                                                    "classification": "needs_clarification",
+                                                    "message": nonce,
+                                                    "evidence_call_ids": [],
+                                                }
+                                            ),
                                         },
                                     }
                                 ]
@@ -467,8 +473,10 @@ def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypa
         module.urllib.request, "build_opener", lambda *_handlers: FakeOpener()
     )
 
+    contract = module._capture_canonical_contract(REPO)
+    tools = module._capture_dashboard_client_tools(REPO, contract).tools
     result = module.OpenClawCLI().probe_client_tools(
-        agent_id="openhouse-crm", nonce=nonce
+        agent_id="openhouse-crm", nonce=nonce, tools=tools
     )
 
     assert result.returncode == 200
@@ -477,18 +485,52 @@ def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypa
     assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
     assert (
         captured["headers"]["X-openclaw-message-channel"]
-        == "openhouse-setup-capability"
+        == "openhouse-dashboard"
     )
     payload = captured["payload"]
     assert payload["model"] == "openclaw/openhouse-crm"
     assert payload["tool_choice"] == "required"
     assert [tool["function"]["name"] for tool in payload["tools"]] == [
-        "openhouse_setup_capability_probe"
+        "openhouse_crm_request",
+        "finish_crm_response",
     ]
-    assert "openhouse_crm" not in json.dumps(payload)
+    assert payload["tools"] == tools
+    assert "openhouse_setup_marker_probe" in payload["messages"][0]["content"]
 
 
-def test_setup_dashboard_fallback_is_loopback_only_and_uses_no_real_operation(
+def test_setup_analysis_probe_matches_the_production_no_tools_path(monkeypatch):
+    setup_path = REPO / "scripts" / "setup_openclaw.py"
+    spec = importlib.util.spec_from_file_location(
+        "setup_openclaw_analysis_probe_test", setup_path
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    captured = {}
+
+    def fake_post(_self, path, payload, *, channel):
+        captured.update(path=path, payload=payload, channel=channel)
+        return module.CommandResult(200, '{"choices":[]}', "")
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", "http://localhost:18789")
+    monkeypatch.setenv("AGENT_CHAT_PATH", "/v1/chat/completions")
+    monkeypatch.setattr(module.OpenClawCLI, "_post_gateway_json", fake_post)
+
+    result = module.OpenClawCLI().probe_analysis_tool_block(
+        agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
+    )
+
+    assert result.returncode == 200
+    assert captured["path"] == "/v1/chat/completions"
+    assert captured["channel"] == "openhouse-analysis"
+    assert captured["payload"]["tools"] == []
+    assert captured["payload"]["tool_choice"] == "none"
+    assert captured["payload"]["model"] == "openclaw/openhouse-setup-probe-safe"
+    assert "openhouse_setup_marker_probe" in captured["payload"]["messages"][0]["content"]
+
+
+def test_setup_channel_status_is_loopback_only_and_uses_no_crm_operation(
     monkeypatch,
 ):
     setup_path = REPO / "scripts" / "setup_openclaw.py"
@@ -505,34 +547,37 @@ def test_setup_dashboard_fallback_is_loopback_only_and_uses_no_real_operation(
         captured["calls"] += 1
         captured.update(path=path, payload=payload, channel=channel)
         return module.CommandResult(
-            403,
+            200,
+            json.dumps({"details": {"status": "tool_blocked"}}),
             "",
-            "Dashboard CRM calls must use the verified tool invocation path.",
         )
 
     monkeypatch.setenv("AGENT_GATEWAY_URL", "http://localhost:18789")
     monkeypatch.setattr(module.OpenClawCLI, "_post_gateway_json", fake_post)
 
-    result = module.OpenClawCLI().probe_dashboard_tool_block(
-        agent_id="openhouse-crm", nonce="bounded-nonce"
+    result = module.OpenClawCLI().probe_channel_status(
+        agent_id="openhouse-setup-probe-safe",
+        nonce="bounded-nonce",
+        channel="openhouse-dashboard",
     )
 
-    assert result.returncode == 403
+    assert result.returncode == 200
     assert captured["path"] == "/tools/invoke"
-    assert captured["channel"] == "openhouse-dashboard"
-    assert captured["payload"]["tool"] == "openhouse_crm"
+    assert captured["channel"] == "openhouse-setup-capability"
+    assert captured["payload"]["tool"] == "openhouse_setup_marker_probe"
     assert captured["payload"]["args"] == {
-        "operation": "__openhouse_setup_probe__",
-        "arguments": {},
+        "action": "status",
+        "channel": "openhouse-dashboard",
+        "nonce": "bounded-nonce",
     }
-    assert "__openhouse_setup_probe__" not in (
-        REPO / "skills" / "crm-db-operations" / "contract.json"
-    ).read_text()
+    assert captured["payload"]["agentId"] == "openhouse-setup-probe-safe"
     assert captured["calls"] == 1
 
     monkeypatch.setenv("AGENT_GATEWAY_URL", "https://gateway.example.test")
-    rejected = module.OpenClawCLI().probe_dashboard_tool_block(
-        agent_id="openhouse-crm", nonce="bounded-nonce"
+    rejected = module.OpenClawCLI().probe_channel_status(
+        agent_id="openhouse-setup-probe-safe",
+        nonce="bounded-nonce",
+        channel="openhouse-dashboard",
     )
     assert rejected.returncode == 503
     assert "loopback" in rejected.stderr
@@ -573,17 +618,27 @@ def test_setup_probes_reject_remote_credentialed_or_ambiguous_gateway_urls(
     monkeypatch.setenv("AGENT_GATEWAY_TOKEN", "must-not-be-attached")
     monkeypatch.setattr(module.urllib.request, "urlopen", forbidden_urlopen)
 
+    contract = module._capture_canonical_contract(REPO)
+    tools = module._capture_dashboard_client_tools(REPO, contract).tools
     client = module.OpenClawCLI().probe_client_tools(
+        agent_id="openhouse-setup-probe-safe",
+        nonce="bounded-nonce",
+        tools=tools,
+    )
+    analysis = module.OpenClawCLI().probe_analysis_tool_block(
         agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
     )
-    dashboard = module.OpenClawCLI().probe_dashboard_tool_block(
-        agent_id="openhouse-crm", nonce="bounded-nonce"
+    status = module.OpenClawCLI().probe_channel_status(
+        agent_id="openhouse-setup-probe-safe",
+        nonce="bounded-nonce",
+        channel="openhouse-dashboard",
     )
 
     assert client.returncode == 503
-    assert dashboard.returncode == 503
+    assert analysis.returncode == 503
+    assert status.returncode == 503
     assert network_calls == []
-    assert "must-not-be-attached" not in client.stderr + dashboard.stderr
+    assert "must-not-be-attached" not in client.stderr + analysis.stderr + status.stderr
 
 
 @pytest.mark.parametrize(
@@ -627,8 +682,12 @@ def test_setup_client_probe_accepts_exact_loopback_hosts(monkeypatch, gateway_ur
         module.urllib.request, "build_opener", lambda *_handlers: FakeOpener()
     )
 
+    contract = module._capture_canonical_contract(REPO)
+    tools = module._capture_dashboard_client_tools(REPO, contract).tools
     result = module.OpenClawCLI().probe_client_tools(
-        agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
+        agent_id="openhouse-setup-probe-safe",
+        nonce="bounded-nonce",
+        tools=tools,
     )
 
     assert result.returncode == 200
