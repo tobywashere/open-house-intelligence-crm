@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -208,9 +209,8 @@ class OpenClawCLI:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
-                request, timeout=GATEWAY_PROBE_TIMEOUT_SECONDS
-            ) as response:
+            opener = urllib.request.build_opener(_NoRedirectHandler())
+            with opener.open(request, timeout=GATEWAY_PROBE_TIMEOUT_SECONDS) as response:
                 body = response.read(GATEWAY_PROBE_MAX_BYTES + 1)
                 status_code = int(response.status)
         except urllib.error.HTTPError as exc:
@@ -224,6 +224,10 @@ class OpenClawCLI:
             rendered = body.decode("utf-8")
         except UnicodeError:
             return CommandResult(502, "", "Gateway capability response was not UTF-8")
+        if 300 <= status_code < 400:
+            return CommandResult(
+                status_code, "", "Gateway capability redirects are unsupported"
+            )
         return CommandResult(status_code, rendered, "")
 
     def probe_client_tools(self, *, agent_id: str, nonce: str) -> CommandResult:
@@ -295,6 +299,12 @@ class SetupConflict(RuntimeError):
 
 class _DuplicateJSONKey(ValueError):
     pass
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        del req, fp, code, msg, headers, newurl
+        return None
 
 
 def _loopback_gateway_base_url() -> str:
@@ -837,7 +847,18 @@ _CONTRACT_SCHEMA_KEYS = frozenset(
 
 
 def _validate_contract_schema(schema: Any) -> None:
+    def contains_non_finite_number(value: Any) -> bool:
+        if isinstance(value, float):
+            return not math.isfinite(value)
+        if isinstance(value, dict):
+            return any(contains_non_finite_number(child) for child in value.values())
+        if isinstance(value, list):
+            return any(contains_non_finite_number(child) for child in value)
+        return False
+
     if not isinstance(schema, dict) or set(schema) - _CONTRACT_SCHEMA_KEYS:
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if contains_non_finite_number(schema):
         raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
     schema_type = schema.get("type")
     if "type" in schema and schema_type not in _CONTRACT_TYPES:
@@ -929,7 +950,14 @@ def _validate_contract_payload(payload: Any, label: str) -> frozenset[str]:
     if not isinstance(payload, dict) or set(payload) != {"version", "operations"}:
         raise SetupConflict(f"{label} has an unsupported contract shape")
     operations = payload.get("operations")
-    if payload.get("version") != 1 or not isinstance(operations, dict) or not operations:
+    version = payload.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != 1
+        or not isinstance(operations, dict)
+        or not operations
+    ):
         raise SetupConflict(f"{label} has an unsupported contract shape")
     for name, entry in operations.items():
         if (
@@ -1156,8 +1184,15 @@ def _skill_trees_match(left: Path, right: Path) -> bool:
         return False
 
 
-def _discard_skill_snapshot(snapshot: SkillRollback) -> None:
-    shutil.rmtree(snapshot.backup_root, ignore_errors=True)
+def _discard_skill_snapshot(snapshot: SkillRollback) -> bool:
+    try:
+        shutil.rmtree(snapshot.backup_root)
+        os.lstat(snapshot.backup_root)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def _write_recovery_manifest(
@@ -3012,6 +3047,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     diagnostic_root: Path | None = None
     diagnostic_agent_creation_attempted = False
     gateway_restart_attempted = False
+    skill_snapshot_cleanup_failed = False
     try:
         _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
@@ -3639,10 +3675,15 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             raise SetupConflict(
                 "OpenClaw did not retain diagnostic-agent cleanup after restart"
             )
-        rollback = None
         if skill_rollback is not None:
-            _discard_skill_snapshot(skill_rollback)
+            if not _discard_skill_snapshot(skill_rollback):
+                skill_snapshot_cleanup_failed = True
+                raise SetupConflict(
+                    "Could not securely remove and verify deletion of the private setup "
+                    "recovery backup"
+                )
             skill_rollback = None
+        rollback = None
         messages.append(
             "Validated the native CRM tool, required CRM outcome hooks, dashboard "
             "tool block, request-scoped client tools, and restricted agent configuration, "
@@ -3657,7 +3698,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         return SetupResult(True, messages)
     except (SetupConflict, OSError) as exc:
-        rollback_failed = False
+        rollback_failed = skill_snapshot_cleanup_failed
 
         # Reverse the disposable diagnostic state first. Its random ID and exact
         # workspace are both checked before any destructive agent operation.
@@ -3780,18 +3821,21 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 rollback_failed = True
                 messages.append("Could not restore the previous plugins.allow value.")
         if plugin_install_attempted and not plugin_preexisting:
-            removed_plugin = cli.run(
-                [
-                    "openclaw",
-                    "plugins",
-                    "uninstall",
-                    PLUGIN_ID,
-                    "--keep-files",
-                    "--force",
-                ],
-                mutate=True,
-            )
-            if removed_plugin.returncode != 0:
+            try:
+                removed_plugin = cli.run(
+                    [
+                        "openclaw",
+                        "plugins",
+                        "uninstall",
+                        PLUGIN_ID,
+                        "--keep-files",
+                        "--force",
+                    ],
+                    mutate=True,
+                )
+            except OSError:
+                removed_plugin = None
+            if removed_plugin is None or removed_plugin.returncode != 0:
                 rollback_failed = True
                 messages.append(
                     "Could not remove the newly linked CRM plugin after setup failed."
@@ -3803,32 +3847,38 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 if plugin_source is None:
                     restored_source = CommandResult(1, "", "missing plugin source")
                 else:
-                    restored_source = cli.run(
-                        [
-                            "openclaw",
-                            "plugins",
-                            "install",
-                            "--link",
-                            str(plugin_source),
-                            "--force",
-                        ],
-                        mutate=True,
-                    )
-                if restored_source.returncode != 0:
+                    try:
+                        restored_source = cli.run(
+                            [
+                                "openclaw",
+                                "plugins",
+                                "install",
+                                "--link",
+                                str(plugin_source),
+                                "--force",
+                            ],
+                            mutate=True,
+                        )
+                    except OSError:
+                        restored_source = None
+                if restored_source is None or restored_source.returncode != 0:
                     rollback_failed = True
                     messages.append(
                         "Could not restore the previous CRM plugin source link."
                     )
-            restore_enablement = cli.run(
-                [
-                    "openclaw",
-                    "plugins",
-                    "enable" if plugin_previously_enabled else "disable",
-                    PLUGIN_ID,
-                ],
-                mutate=True,
-            )
-            if restore_enablement.returncode != 0:
+            try:
+                restore_enablement = cli.run(
+                    [
+                        "openclaw",
+                        "plugins",
+                        "enable" if plugin_previously_enabled else "disable",
+                        PLUGIN_ID,
+                    ],
+                    mutate=True,
+                )
+            except OSError:
+                restore_enablement = None
+            if restore_enablement is None or restore_enablement.returncode != 0:
                 rollback_failed = True
                 messages.append("Could not restore the previous CRM plugin enablement.")
 
@@ -3879,10 +3929,13 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         # A nonzero restart can still have partially reloaded configuration, so
         # restart after restoration whenever the first restart was attempted.
         if gateway_restart_attempted:
-            restored_gateway = cli.run(
-                ["openclaw", "gateway", "restart"], mutate=True
-            )
-            if restored_gateway.returncode != 0:
+            try:
+                restored_gateway = cli.run(
+                    ["openclaw", "gateway", "restart"], mutate=True
+                )
+            except OSError:
+                restored_gateway = None
+            if restored_gateway is None or restored_gateway.returncode != 0:
                 rollback_failed = True
                 messages.append(
                     "Could not restart the OpenClaw Gateway after restoring setup state."
@@ -3930,8 +3983,25 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 messages.append(
                     "Restore only after removing symlinks and verifying the target workspace."
                 )
+                messages.append(
+                    "After recovery, securely remove that exact private backup directory."
+                )
             else:
-                _discard_skill_snapshot(skill_rollback)
+                if not _discard_skill_snapshot(skill_rollback):
+                    rollback_failed = True
+                    messages.append(
+                        "Could not securely remove and verify deletion of the private "
+                        "setup recovery backup."
+                    )
+                    messages.append(
+                        f"Recovery backup retained at {skill_rollback.backup_root}"
+                    )
+                    messages.append(
+                        "Restore only after removing symlinks and verifying the target workspace."
+                    )
+                    messages.append(
+                        "After recovery, securely remove that exact private backup directory."
+                    )
             skill_rollback = None
         messages.append(str(exc))
         return SetupResult(False, messages)

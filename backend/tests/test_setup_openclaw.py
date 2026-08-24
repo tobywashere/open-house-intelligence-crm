@@ -1,10 +1,13 @@
 import importlib.util
+from contextlib import contextmanager
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import threading
 
 import pytest
 
@@ -86,6 +89,19 @@ def make_options(tmp_path, *, dry_run=False, bind_discord=None):
         bind_discord=bind_discord,
         dry_run=dry_run,
     )
+
+
+@contextmanager
+def local_http_server(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def gateway_approval_payload(
@@ -1689,6 +1705,58 @@ def test_names_present_but_wrong_dashboard_block_behavior_is_rejected(tmp_path):
     assert len(cli.dashboard_block_probe_calls) == 1
 
 
+@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize("probe", ["client_tools", "dashboard_block"])
+def test_authenticated_gateway_probes_never_follow_redirects(
+    monkeypatch, redirect_status, probe
+):
+    gateway_token = "gateway-redirect-secret"
+    origin_authorization = []
+    destination_requests = []
+
+    class DestinationHandler(BaseHTTPRequestHandler):
+        def capture(self):
+            destination_requests.append(
+                {"method": self.command, "authorization": self.headers.get("Authorization")}
+            )
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_GET = capture
+        do_POST = capture
+
+        def log_message(self, *_args):
+            pass
+
+    with local_http_server(DestinationHandler) as destination_url:
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                origin_authorization.append(self.headers.get("Authorization"))
+                self.send_response(redirect_status)
+                self.send_header("Location", destination_url + "/capture")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        with local_http_server(RedirectHandler) as gateway_url:
+            monkeypatch.setenv("AGENT_GATEWAY_URL", gateway_url)
+            monkeypatch.setenv("AGENT_GATEWAY_TOKEN", gateway_token)
+            cli = OpenClawCLI()
+            if probe == "client_tools":
+                result = cli.probe_client_tools(agent_id="openhouse-crm", nonce="abc123")
+            else:
+                result = cli.probe_dashboard_tool_block(
+                    agent_id="openhouse-crm", nonce="abc123"
+                )
+
+    assert result.returncode == redirect_status
+    assert origin_authorization == [f"Bearer {gateway_token}"]
+    assert destination_requests == []
+
+
 def test_nonzero_gateway_restart_still_rolls_back_and_attempts_restored_restart(
     tmp_path,
 ):
@@ -1706,6 +1774,102 @@ def test_nonzero_gateway_restart_still_rolls_back_and_attempts_restored_restart(
     assert cli.mutating_calls.count(["openclaw", "gateway", "restart"]) == 2
     assert cli.created_agent is None
     assert cli.extra_agents == {}
+
+
+@pytest.mark.parametrize(
+    ("rollback_action", "plugin_preexisting", "plugin_enabled"),
+    [
+        ("install", True, True),
+        ("enable", True, True),
+        ("disable", True, False),
+        ("uninstall", False, False),
+        ("restart", False, False),
+    ],
+)
+def test_rollback_oserror_does_not_skip_skills_env_or_recovery_reporting(
+    tmp_path,
+    monkeypatch,
+    rollback_action,
+    plugin_preexisting,
+    plugin_enabled,
+):
+    token = "new-crm-secret"
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+    options = make_options(tmp_path)
+    original_skills = {}
+    for name in setup_openclaw.SKILL_NAMES:
+        target = options.workspace / "skills" / name
+        target.mkdir(parents=True)
+        marker = f"original {name}\n"
+        (target / "original.txt").write_text(marker)
+        original_skills[name] = marker
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir(parents=True)
+    gateway_env = state_dir / ".env"
+    original_env = "OHI_API_TOKEN=old-crm-secret\nUNCHANGED=yes\n"
+    gateway_env.write_text(original_env)
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+
+    class RollbackOSErrorCLI(FakeCLI):
+        def __init__(self):
+            super().__init__(
+                config_path=tmp_path / "openclaw.json",
+                plugin_path=plugin_path if plugin_preexisting else None,
+                plugin_enabled=plugin_enabled,
+                client_tool_probe=CommandResult(503, "", "provider unavailable"),
+            )
+            self.rollback_counts = {
+                "install": 0,
+                "enable": 0,
+                "disable": 0,
+                "uninstall": 0,
+                "restart": 0,
+            }
+
+        def run(self, args, *, mutate=False):
+            action = None
+            if mutate and args[1:3] == ["plugins", "install"]:
+                action = "install"
+            elif mutate and args[1:3] == ["plugins", "enable"]:
+                action = "enable"
+            elif mutate and args[1:3] == ["plugins", "disable"]:
+                action = "disable"
+            elif mutate and args[1:3] == ["plugins", "uninstall"]:
+                action = "uninstall"
+            elif mutate and args == ["openclaw", "gateway", "restart"]:
+                action = "restart"
+            if action is not None:
+                self.rollback_counts[action] += 1
+                is_rollback = (
+                    (action in {"install", "enable"} and self.rollback_counts[action] == 2)
+                    or (action in {"disable", "uninstall"} and self.rollback_counts[action] == 1)
+                    or (action == "restart" and self.rollback_counts[action] == 2)
+                )
+                if action == rollback_action and is_rollback:
+                    self.calls.append(args)
+                    self.mutating_calls.append(args)
+                    raise OSError(f"simulated rollback {action} failure")
+            return super().run(args, mutate=mutate)
+
+    cli = RollbackOSErrorCLI()
+    cli.config_values[CRM_URL_CONFIG_PATH] = "http://old.example/api"
+    cli.config_values["plugins.allow"] = ["discord"]
+
+    result = configure_openclaw(options, cli=cli)
+    rendered = result.render()
+
+    assert not result.ok
+    assert cli.config_values[CRM_URL_CONFIG_PATH] == "http://old.example/api"
+    assert cli.config_values["plugins.allow"] == ["discord"]
+    for name, marker in original_skills.items():
+        assert (options.workspace / "skills" / name / "original.txt").read_text() == marker
+    assert gateway_env.read_text() == original_env
+    assert token not in rendered
+    match = re.search(r"Recovery backup retained at ([^\n]+)", rendered)
+    assert match is not None
+    assert Path(match.group(1).rstrip(".")).is_dir()
+    assert "Restore only after removing symlinks" in rendered
+    assert "securely remove that exact private backup" in rendered
 
 
 def test_rollback_verifies_exact_state_after_restored_gateway_restart(tmp_path):
@@ -2560,6 +2724,62 @@ def test_canonical_contract_digest_rejects_missing_malformed_and_duplicate_keys(
     assert validate(repo) == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("version", ["true", "false"])
+def test_canonical_contract_requires_exact_non_boolean_integer_version(tmp_path, version):
+    repo = tmp_path / "repo"
+    contract = repo / "skills" / "crm-db-operations" / "contract.json"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        '{"version":'
+        + version
+        + ',"operations":{"probe":{"description":"Probe.","effect":"read",'
+        '"arguments":{"type":"object","additionalProperties":false}}}}'
+    )
+
+    with pytest.raises(SetupConflict, match="unsupported contract shape"):
+        setup_openclaw._canonical_contract_digest(repo)
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum"),
+    [("1e1000", "1e1000"), ("-1e1000", "0"), ("0", "1e1000"), ("-1e1000", "-1e1000")],
+)
+def test_canonical_contract_rejects_overflow_generated_non_finite_schema_numbers(
+    tmp_path, minimum, maximum
+):
+    repo = tmp_path / "repo"
+    contract = repo / "skills" / "crm-db-operations" / "contract.json"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        '{"version":1,"operations":{"probe":{"description":"Probe.","effect":"read",'
+        '"arguments":{"type":"object","additionalProperties":false,"properties":'
+        '{"amount":{"type":"number","minimum":'
+        + minimum
+        + ',"maximum":'
+        + maximum
+        + "}}}}}}"
+    )
+
+    with pytest.raises(SetupConflict, match="unsupported contract shape"):
+        setup_openclaw._canonical_contract_digest(repo)
+
+
+def test_canonical_contract_accepts_finite_schema_number_boundaries(tmp_path):
+    repo = tmp_path / "repo"
+    contract = repo / "skills" / "crm-db-operations" / "contract.json"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        '{"version":1,"operations":{"probe":{"description":"Probe.","effect":"read",'
+        '"arguments":{"type":"object","additionalProperties":false,"properties":'
+        '{"amount":{"type":"number","minimum":-1.7976931348623157e308,'
+        '"maximum":1.7976931348623157e308}}}}}}'
+    )
+
+    assert setup_openclaw._canonical_contract_digest(repo) == hashlib.sha256(
+        contract.read_bytes()
+    ).hexdigest()
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -2737,6 +2957,102 @@ def test_partial_skill_restore_retains_private_backup_and_reports_recovery_path(
         "plugins.allow",
     }
     assert "Restore only after removing symlinks" in result.render()
+
+
+def test_success_fails_closed_and_retains_private_backup_when_cleanup_raises(
+    tmp_path, monkeypatch
+):
+    token = "cleanup-secret"
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+    real_rmtree = setup_openclaw.shutil.rmtree
+    cleanup_targets = []
+
+    def fail_backup_cleanup(path, *args, **kwargs):
+        target = Path(path)
+        if target.name.startswith("openhouse-skill-rollback-"):
+            cleanup_targets.append(target)
+            if kwargs.get("ignore_errors"):
+                return None
+            raise OSError("simulated backup cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", fail_backup_cleanup)
+
+    result = configure_openclaw(
+        make_options(tmp_path), cli=FakeCLI(config_path=tmp_path / "openclaw.json")
+    )
+    rendered = result.render()
+
+    assert not result.ok
+    assert cleanup_targets
+    assert cleanup_targets[0].is_dir()
+    assert f"Recovery backup retained at {cleanup_targets[0]}" in rendered
+    assert "Restore only after removing symlinks" in rendered
+    assert "securely remove that exact private backup" in rendered
+    assert token not in rendered
+
+
+def test_success_fails_closed_and_reports_partial_backup_cleanup(
+    tmp_path, monkeypatch
+):
+    token = "partial-cleanup-secret"
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+    options = make_options(tmp_path)
+    for name in setup_openclaw.SKILL_NAMES:
+        target = options.workspace / "skills" / name
+        target.mkdir(parents=True)
+        (target / "original.txt").write_text(f"original {name}\n")
+    real_rmtree = setup_openclaw.shutil.rmtree
+    cleanup_targets = []
+
+    def partially_delete_backup(path, *args, **kwargs):
+        target = Path(path)
+        if target.name.startswith("openhouse-skill-rollback-"):
+            cleanup_targets.append(target)
+            child = next(
+                entry for entry in sorted(target.iterdir()) if entry.is_dir()
+            )
+            real_rmtree(child)
+            if kwargs.get("ignore_errors"):
+                return None
+            raise OSError("simulated partial backup cleanup")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", partially_delete_backup)
+
+    result = configure_openclaw(
+        options, cli=FakeCLI(config_path=tmp_path / "openclaw.json")
+    )
+    rendered = result.render()
+
+    assert not result.ok
+    assert cleanup_targets
+    retained = cleanup_targets[0]
+    assert retained.is_dir()
+    assert any(retained.iterdir())
+    assert f"Recovery backup retained at {retained}" in rendered
+    assert "Restore only after removing symlinks" in rendered
+    assert "securely remove that exact private backup" in rendered
+    assert token not in rendered
+
+
+def test_successful_setup_verifies_private_backup_is_gone(tmp_path, monkeypatch):
+    real_mkdtemp = setup_openclaw.tempfile.mkdtemp
+    backup_roots = []
+
+    def record_mkdtemp(*args, **kwargs):
+        path = Path(real_mkdtemp(*args, **kwargs))
+        if kwargs.get("prefix") == "openhouse-skill-rollback-":
+            backup_roots.append(path)
+        return str(path)
+
+    monkeypatch.setattr(setup_openclaw.tempfile, "mkdtemp", record_mkdtemp)
+
+    result = configure_openclaw(make_options(tmp_path), cli=FakeCLI())
+
+    assert result.ok, result.render()
+    assert len(backup_roots) == 1
+    assert not backup_roots[0].exists()
 
 
 def test_sync_skills_preflights_every_source_before_mutating(tmp_path):

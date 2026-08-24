@@ -235,3 +235,94 @@ The residual integration concern is unchanged: the repository has no live
 OpenClaw Gateway fixture. The tests use authoritative-shaped fakes, while a real
 installation remains fail-closed unless its own runtime reads and bounded live
 probes establish the required behavior.
+
+## Fix Round 2
+
+This round addressed only the four remaining review findings.
+
+### TDD / RED evidence
+
+Focused regressions were added before production changes for:
+
+- `OSError` from rollback plugin install, enable, disable, and uninstall, plus
+  the restored-Gateway restart. The unguarded calls escaped `configure_openclaw`
+  instead of completing skill/env restoration and recovery reporting.
+- boolean contract versions and exponent-overflow schema bounds. `version:true`
+  and nested `1e1000`/`-1e1000` values were accepted by the prior validator.
+- POST 301, 302, 303, 307, and 308 responses for both authenticated probes,
+  using only two temporary loopback listeners. Outside the listener-restricted
+  sandbox, the prior default urllib opener followed 301/302/303 to the second
+  listener and returned its 200 response (`7 failed, 3 passed`).
+- backup deletion failure and partial deletion. The regressions model
+  `ignore_errors=True` suppressing cleanup failure and require a failed result,
+  retained private path, safe recovery/cleanup guidance, and no secret output.
+
+The initial combined focused run recorded `20 failed, 4 passed`; ten listener
+cases were separately rerun with loopback permission so sandbox denial was not
+mistaken for product RED evidence.
+
+### Minimal GREEN changes
+
+- Every direct rollback plugin mutation and the rollback restart now catches
+  `OSError` independently, records the failed restoration, and continues through
+  later plugin verification, skill restoration, Gateway env restoration, and
+  recovery-path reporting.
+- Contract version is accepted only when it is the exact non-boolean integer
+  `1`. Schema validation recursively rejects non-finite decoded floats, while
+  finite IEEE-754 boundary values remain accepted.
+- Both authenticated probes share an explicit no-redirect urllib opener. Every
+  3xx response is returned as an unsupported probe result without following its
+  `Location`; real-server tests prove the destination receives zero requests.
+- Private snapshot cleanup no longer ignores errors. Setup requires both
+  deletion and authoritative `lstat` absence verification before success. A
+  deletion error or remaining node triggers rollback, retains/reports the
+  private path, and includes exact-directory recovery and cleanup guidance.
+
+### Fix-round-2 verification
+
+New focused regressions:
+
+```text
+24 passed
+```
+
+Required focused setup/launcher suite:
+
+```text
+PYTHONPATH=.. /Users/johaanmannanal/Documents/GitHub/open-intelligence-crm/.venv/bin/pytest tests/test_setup_openclaw.py tests/test_launchers.py -q
+280 passed, 5 warnings
+```
+
+Broader relevant Python suite:
+
+```text
+PYTHONPATH=.. /Users/johaanmannanal/Documents/GitHub/open-intelligence-crm/.venv/bin/pytest tests/test_setup_openclaw.py tests/test_launchers.py tests/test_doctor.py tests/test_openclaw.py tests/test_crm_chat.py tests/test_crm_operation_catalog.py -q
+421 passed, 5 warnings
+```
+
+Bundled plugin suite:
+
+```text
+npm test
+48 passed, 0 failed
+```
+
+`python -m py_compile` for the setup script and both changed test modules and
+`git diff --check` pass. The five Python warnings remain the pre-existing
+Starlette/FastAPI deprecations.
+
+### Fix-round-2 self-review
+
+- Authenticated urllib use exists only in `_post_gateway_json`; it always builds
+  the explicit no-redirect opener, and both probe methods route through it.
+- Rollback helpers already convert their own `OSError`/`SetupConflict` failures
+  to false/error results. The previously direct plugin and restart mutations now
+  have local exception boundaries, so no rollback CLI action can skip later
+  skill/env restoration or final recovery reporting.
+- Cleanup failure keeps the agent rollback snapshot live until deletion is
+  verified, so a late cleanup failure still enters the full reverse transaction.
+- No plugin runtime, CRM API, database, or policy surface was broadened.
+
+Residual concern remains limited to live OpenClaw integration: the repository
+has no real Gateway fixture, so real installations remain fail-closed behind
+their authoritative inventory and bounded loopback probes.

@@ -243,17 +243,20 @@ def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypa
                 }
             ).encode()
 
-    def fake_urlopen(request, *, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = dict(request.header_items())
-        captured["payload"] = json.loads(request.data)
-        captured["timeout"] = timeout
-        return Response()
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["payload"] = json.loads(request.data)
+            captured["timeout"] = timeout
+            return Response()
 
     monkeypatch.setenv("AGENT_GATEWAY_URL", "http://127.0.0.1:18789/")
     monkeypatch.setenv("AGENT_CHAT_PATH", "/v1/chat/completions")
     monkeypatch.setenv("AGENT_GATEWAY_TOKEN", "gateway-secret")
-    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        module.urllib.request, "build_opener", lambda *_handlers: FakeOpener()
+    )
 
     result = module.OpenClawCLI().probe_client_tools(
         agent_id="openhouse-crm", nonce=nonce
@@ -405,12 +408,15 @@ def test_setup_client_probe_accepts_exact_loopback_hosts(monkeypatch, gateway_ur
         def read(self, *_args):
             return b"{}"
 
-    def fake_urlopen(request, *, timeout):
-        calls.append((request.full_url, timeout))
-        return Response()
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            calls.append((request.full_url, timeout))
+            return Response()
 
     monkeypatch.setenv("AGENT_GATEWAY_URL", gateway_url)
-    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        module.urllib.request, "build_opener", lambda *_handlers: FakeOpener()
+    )
 
     result = module.OpenClawCLI().probe_client_tools(
         agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
