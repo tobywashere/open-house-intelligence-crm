@@ -53,6 +53,24 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
               blockReason: "Internal analysis and dashboard turns must not execute native tools.",
             };
           }
+          const runId = exactRunId(event, context);
+          if (
+            event.toolName === TOOL_NAME
+            && context.agentId === CRM_AGENT_ID
+            && context.requester?.channel === "discord"
+            && outcomeGuard.mutationBlocked({
+              runId,
+              agentId: context.agentId,
+              operation: event.params?.operation,
+            })
+          ) {
+            return {
+              block: true,
+              blockReason: "An earlier CRM mutation outcome is unknown. "
+                + "Inspect the CRM and Pending approvals before retrying; "
+                + "later CRM mutations are blocked for this run.",
+            };
+          }
         },
       );
 

@@ -177,7 +177,7 @@ export function createOutcomeGuard({
     }
     if (entry.status === "unknown") {
       return "The CRM change may have reached the backend, but its result could not be verified. "
-        + "Do not retry automatically. Check Pending approvals first.";
+        + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.";
     }
     return `I could not queue that CRM change. Nothing was changed. ${sentence(entry.error)}`;
   }
@@ -193,5 +193,16 @@ export function createOutcomeGuard({
     }
   }
 
-  return Object.freeze({ record, rewrite, clear });
+  function mutationBlocked({ runId, agentId, operation } = {}) {
+    if (
+      !validIdentity(runId)
+      || !validIdentity(agentId)
+      || !mutationOperations.has(operation)
+    ) return false;
+    const timestamp = now();
+    removeExpired(timestamp);
+    return entries.get(scopeKey(runId, agentId))?.status === "unknown";
+  }
+
+  return Object.freeze({ record, rewrite, clear, mutationBlocked });
 }

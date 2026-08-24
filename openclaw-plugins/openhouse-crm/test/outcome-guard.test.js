@@ -155,7 +155,8 @@ test("never claims nothing changed when a mutation outcome is unknown", () => {
   });
   assert.equal(
     reply,
-    "The CRM change may have reached the backend, but its result could not be verified. Do not retry automatically. Check Pending approvals first.",
+    "The CRM change may have reached the backend, but its result could not be verified. "
+      + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
   );
   assert.doesNotMatch(reply, /nothing (?:was )?changed/i);
 });

@@ -40,12 +40,6 @@ const mutatingOperations = new Set(
     .filter(([, entry]) => entry.effect === "proposal" || entry.effect === "validated_write")
     .map(([operation]) => operation),
 );
-const DETERMINISTIC_MUTATION_FAILURES = new Set([
-  "invalid_arguments",
-  "not_found",
-  "ambiguous_match",
-  "schedule_conflict",
-]);
 const PRE_DISPATCH_CHILD_ERRORS = new Set(["EACCES", "ENOENT", "ENOTDIR"]);
 
 
@@ -163,13 +157,7 @@ function parseCliError(operation, stderr) {
 
 function mapChildError(operation, error) {
   const cliReceipt = parseCliError(operation, error?.stderr);
-  if (cliReceipt) {
-    if (
-      mutatingOperations.has(operation)
-      && !DETERMINISTIC_MUTATION_FAILURES.has(cliReceipt.error.code)
-    ) return unknownMutationReceipt(operation);
-    return cliReceipt;
-  }
+  if (cliReceipt) return cliReceipt;
   if (PRE_DISPATCH_CHILD_ERRORS.has(error?.code)) {
     return errorReceipt(operation, "operation_failed");
   }

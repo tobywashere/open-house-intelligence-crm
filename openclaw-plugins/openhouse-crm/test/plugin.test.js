@@ -43,6 +43,20 @@ function pendingReceipt() {
 }
 
 
+function unknownMutationReceipt() {
+  return {
+    ok: false,
+    operation: "create_lead",
+    kind: "error",
+    error: {
+      code: "outcome_unknown",
+      message: "CRM mutation outcome is unknown",
+      retryable: false,
+    },
+  };
+}
+
+
 function toolResult(details) {
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
@@ -142,6 +156,130 @@ test("before-tool hook blocks every native tool on analysis and verified dashboa
       { toolName: "other_tool", requester: { channel: "openhouse-dashboard" } },
     ).block,
     true,
+  );
+});
+
+
+test("Discord blocks a later mutation in the same run after an unknown outcome", () => {
+  const { hooks } = registerPlugin();
+  const beforeToolCall = hooks.get("before_tool_call").handler;
+  hooks.get("after_tool_call").handler(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-gate",
+      params: { operation: "create_lead", arguments: { name: "Jordan" } },
+      result: toolResult(unknownMutationReceipt()),
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-gate",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
+  );
+
+  const blocked = beforeToolCall(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-gate",
+      params: { operation: "book_appointment", arguments: {} },
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-gate",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
+  );
+
+  assert.equal(blocked.block, true);
+  assert.match(blocked.blockReason, /earlier CRM mutation outcome is unknown/i);
+  assert.match(blocked.blockReason, /CRM and Pending approvals/i);
+  assert.deepEqual(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "Retried it" },
+        kind: "final",
+        runId: "run-unknown-gate",
+        usageState: { agentId: "openhouse-crm" },
+      },
+      { channelId: "discord-channel", runId: "run-unknown-gate" },
+    ),
+    {
+      payload: {
+        text: "The CRM change may have reached the backend, but its result could not be verified. "
+          + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
+      },
+    },
+  );
+});
+
+
+test("Discord still allows reads after an unknown mutation and preserves the unknown output", () => {
+  const { hooks } = registerPlugin();
+  const afterToolCall = hooks.get("after_tool_call").handler;
+  afterToolCall(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-read",
+      params: { operation: "create_lead", arguments: { name: "Jordan" } },
+      result: toolResult(unknownMutationReceipt()),
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-read",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
+  );
+
+  assert.equal(
+    hooks.get("before_tool_call").handler(
+      {
+        toolName: "openhouse_crm",
+        runId: "run-unknown-read",
+        params: { operation: "list_leads", arguments: {} },
+      },
+      {
+        toolName: "openhouse_crm",
+        runId: "run-unknown-read",
+        agentId: "openhouse-crm",
+        requester: { channel: "discord" },
+      },
+    ),
+    undefined,
+  );
+  afterToolCall(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-read",
+      params: { operation: "list_leads", arguments: {} },
+      result: toolResult({ ok: true, operation: "list_leads", kind: "read", result: [] }),
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-unknown-read",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
+  );
+
+  assert.deepEqual(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "No leads" },
+        kind: "final",
+        runId: "run-unknown-read",
+        usageState: { agentId: "openhouse-crm" },
+      },
+      { channelId: "discord-channel", runId: "run-unknown-read" },
+    ),
+    {
+      payload: {
+        text: "The CRM change may have reached the backend, but its result could not be verified. "
+          + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
+      },
+    },
   );
 });
 

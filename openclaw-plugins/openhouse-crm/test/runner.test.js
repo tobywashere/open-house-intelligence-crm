@@ -209,10 +209,30 @@ test("keeps a mutation child spawn failure deterministic before dispatch", async
 });
 
 
-test("upgrades an old retryable mutation CLI error to outcome unknown", async () => {
+test("preserves a definite HTTP rejection classified by the Python source", async () => {
+  const failure = Object.assign(new Error("private HTTP 403 rejection"), {
+    code: 2,
+    stderr: '{"ok":false,"error":{"code":"operation_failed","message":"CRM operation failed","retryable":false}}',
+  });
+
+  const receipt = await runCrmTool(
+    { operation: "create_lead", arguments: { name: "Jordan" } },
+    context,
+    childFailure(failure),
+  );
+
+  assert.deepEqual(receipt.error, {
+    code: "operation_failed",
+    message: "CRM operation failed",
+    retryable: false,
+  });
+});
+
+
+test("preserves an unknown mutation outcome classified by the Python source", async () => {
   const failure = Object.assign(new Error("private child failure"), {
     code: 2,
-    stderr: '{"ok":false,"error":{"code":"backend_unavailable","message":"CRM backend is unavailable","retryable":true}}',
+    stderr: '{"ok":false,"error":{"code":"outcome_unknown","message":"CRM mutation outcome is unknown","retryable":false}}',
   });
 
   const receipt = await runCrmTool(

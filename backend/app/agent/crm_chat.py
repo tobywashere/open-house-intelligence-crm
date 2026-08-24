@@ -90,10 +90,6 @@ def _load_contract_module():
 _CONTRACT_MODULE = _load_contract_module()
 _CONTRACT = _CONTRACT_MODULE.CONTRACT
 _MUTATING_EFFECTS = frozenset({"proposal", "validated_write"})
-_UNCERTAIN_MUTATION_CODES = frozenset({
-    "backend_unavailable", "timeout", "result_too_large", "operation_failed",
-    "outcome_unknown",
-})
 
 
 @dataclass(frozen=True)
@@ -401,8 +397,6 @@ def _normalize_gateway_receipt(call_id: str, operation: str, payload: object) ->
             and error["retryable"] == (error["code"] in {"backend_unavailable", "timeout"})
         ):
             code = error["code"]
-            if _is_mutating_operation(operation) and code in _UNCERTAIN_MUTATION_CODES:
-                return _unknown_outcome_receipt(call_id, operation)
             return CrmCallReceipt(
                 call_id,
                 operation,

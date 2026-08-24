@@ -428,26 +428,43 @@ def test_malformed_mutation_receipt_is_unknown_and_stops_without_retry():
     assert "nothing was queued or changed" not in reply.lower()
 
 
-def test_retryable_mutation_error_is_treated_as_unknown_defensively():
-    gateway = ScriptedGateway(
-        [request_call("write", "book_appointment", {
+@pytest.mark.parametrize(
+    ("operation", "arguments"),
+    [
+        ("create_lead", {"name": "Jordan"}),
+        ("book_appointment", {
             "lead_id": 4,
             "start_ts": "2026-08-24T17:00:00",
             "end_ts": "2026-08-24T17:30:00",
-        })],
+        }),
+    ],
+    ids=["child_spawn", "http_403"],
+)
+def test_definite_mutation_failure_reaches_dashboard_as_failed(
+    operation, arguments
+):
+    gateway = ScriptedGateway(
+        [
+            request_call("write", operation, arguments),
+            finish_call("failed", "Failed.", ["write"]),
+        ],
         [error_receipt(
-            "book_appointment",
-            "timeout",
-            "CRM operation timed out",
-            retryable=True,
+            operation,
+            "operation_failed",
+            "CRM operation failed",
+            retryable=False,
         )],
     )
 
     reply = run(gateway)
 
+    assert len(gateway.chat_calls) == 2
     assert len(gateway.invoke_calls) == 1
-    assert "unknown" in reply.lower()
-    assert "nothing was queued or changed" not in reply.lower()
+    assert reply == (
+        "Nothing was queued or changed. [operation_failed] "
+        "CRM operation failed."
+    )
+    assert "unknown" not in reply.lower()
 
 
 def test_repeated_tool_call_id_is_never_executed_twice():
