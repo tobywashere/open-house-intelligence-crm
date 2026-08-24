@@ -67,8 +67,12 @@ class ScriptedGateway:
         self.chat_calls = []
         self.invoke_calls = []
 
-    async def chat_completion(self, payload, *, channel=None):
-        self.chat_calls.append({"payload": payload, "channel": channel})
+    async def chat_completion(self, payload, *, channel=None, timeout=None):
+        self.chat_calls.append({
+            "payload": payload,
+            "channel": channel,
+            "timeout": timeout,
+        })
         if not self.chat_responses:
             raise AssertionError("unexpected model round")
         response = self.chat_responses.pop(0)
@@ -76,13 +80,16 @@ class ScriptedGateway:
             raise response
         return response
 
-    async def invoke_tool(self, name, args, *, agent_id, session_key, idempotency_key):
+    async def invoke_tool(
+        self, name, args, *, agent_id, session_key, idempotency_key, timeout=None
+    ):
         self.invoke_calls.append({
             "name": name,
             "args": args,
             "agent_id": agent_id,
             "session_key": session_key,
             "idempotency_key": idempotency_key,
+            "timeout": timeout,
         })
         if not self.invoke_responses:
             raise AssertionError("unexpected CRM invocation")
@@ -92,9 +99,9 @@ class ScriptedGateway:
         return response
 
 
-def run(gateway, message="question", session_id="dashboard"):
+def run(gateway, message="question", session_id="dashboard", **kwargs):
     return asyncio.run(run_verified_crm_chat(
-        gateway, message, session_id, "openhouse-crm"
+        gateway, message, session_id, "openhouse-crm", **kwargs
     ))
 
 
@@ -369,6 +376,78 @@ def test_ambiguous_invoke_failure_is_not_retried():
     assert "did not retry" in reply.lower()
     assert "check pending approvals" in reply.lower()
     assert "created" not in reply.lower()
+
+
+def test_read_invoke_transport_failure_does_not_claim_a_mutation_may_exist():
+    gateway = ScriptedGateway(
+        [request_call("read", "list_leads", {})],
+        [OpenClawGatewayError("gateway request failed")],
+    )
+
+    reply = run(gateway)
+
+    assert len(gateway.invoke_calls) == 1
+    assert "unavailable" in reply.lower()
+    assert "crm change may have reached" not in reply.lower()
+    assert "pending approvals" not in reply.lower()
+
+
+def test_structured_unknown_mutation_outcome_stops_the_turn_without_retry():
+    gateway = ScriptedGateway(
+        [request_call("write", "create_lead", {"name": "Jordan"})],
+        [error_receipt(
+            "create_lead",
+            "outcome_unknown",
+            "private transport detail",
+            retryable=False,
+        )],
+    )
+
+    reply = run(gateway)
+
+    assert len(gateway.chat_calls) == 1
+    assert len(gateway.invoke_calls) == 1
+    assert "outcome" in reply.lower() and "unknown" in reply.lower()
+    assert "check pending approvals" in reply.lower()
+    assert "do not retry" in reply.lower()
+    assert "nothing was queued or changed" not in reply.lower()
+
+
+def test_malformed_mutation_receipt_is_unknown_and_stops_without_retry():
+    gateway = ScriptedGateway(
+        [request_call("write", "create_lead", {"name": "Jordan"})],
+        [{"ok": True, "truncated": True}],
+    )
+
+    reply = run(gateway)
+
+    assert len(gateway.chat_calls) == 1
+    assert len(gateway.invoke_calls) == 1
+    assert "outcome" in reply.lower() and "unknown" in reply.lower()
+    assert "check pending approvals" in reply.lower()
+    assert "nothing was queued or changed" not in reply.lower()
+
+
+def test_retryable_mutation_error_is_treated_as_unknown_defensively():
+    gateway = ScriptedGateway(
+        [request_call("write", "book_appointment", {
+            "lead_id": 4,
+            "start_ts": "2026-08-24T17:00:00",
+            "end_ts": "2026-08-24T17:30:00",
+        })],
+        [error_receipt(
+            "book_appointment",
+            "timeout",
+            "CRM operation timed out",
+            retryable=True,
+        )],
+    )
+
+    reply = run(gateway)
+
+    assert len(gateway.invoke_calls) == 1
+    assert "unknown" in reply.lower()
+    assert "nothing was queued or changed" not in reply.lower()
 
 
 def test_repeated_tool_call_id_is_never_executed_twice():
@@ -882,7 +961,7 @@ def test_gateway_error_messages_are_not_reflected(code, unsafe_message, trusted_
     assert "recorded" not in reply.lower()
 
 
-def test_idempotency_key_has_no_delimiter_collision_and_is_deterministic():
+def test_idempotency_key_has_no_delimiter_collision_and_is_scoped_to_one_turn():
     first = ScriptedGateway(
         [request_call("c", "list_leads", {}), finish_call("answered", "Done.", ["c"])],
         [read_receipt("list_leads", [])],
@@ -903,9 +982,84 @@ def test_idempotency_key_has_no_delimiter_collision_and_is_deterministic():
     first_key = first.invoke_calls[0]["idempotency_key"]
     second_key = second.invoke_calls[0]["idempotency_key"]
     assert first_key != second_key
-    assert first_key == repeated.invoke_calls[0]["idempotency_key"]
+    assert first_key != repeated.invoke_calls[0]["idempotency_key"]
     assert first_key.startswith("ohi:v1:")
     assert len(first_key) == len("ohi:v1:") + 64
+
+
+def test_total_deadline_passes_remaining_budget_to_each_gateway_call():
+    class ClockedGateway(ScriptedGateway):
+        async def chat_completion(self, payload, *, channel=None, timeout=None):
+            result = await super().chat_completion(
+                payload, channel=channel, timeout=timeout
+            )
+            clock[0] += 3.0
+            return result
+
+        async def invoke_tool(
+            self, name, args, *, agent_id, session_key, idempotency_key,
+            timeout=None,
+        ):
+            result = await super().invoke_tool(
+                name,
+                args,
+                agent_id=agent_id,
+                session_key=session_key,
+                idempotency_key=idempotency_key,
+                timeout=timeout,
+            )
+            clock[0] += 1.5
+            return result
+
+    clock = [0.0]
+    gateway = ClockedGateway(
+        [request_call("read", "list_leads", {})],
+        [read_receipt("list_leads", [])],
+    )
+
+    reply = run(
+        gateway,
+        deadline_seconds=4.0,
+        monotonic=lambda: clock[0],
+    )
+
+    assert reply == (
+        "I couldn't verify a CRM answer within the total time limit. "
+        "No unverified action was reported."
+    )
+    assert gateway.chat_calls[0]["timeout"] == pytest.approx(4.0)
+    assert gateway.invoke_calls[0]["timeout"] == pytest.approx(1.0)
+    assert len(gateway.chat_calls) == 1
+    assert len(gateway.invoke_calls) == 1
+
+
+def test_total_deadline_is_configurable_from_environment(monkeypatch):
+    monkeypatch.setenv("CRM_CHAT_DEADLINE_SECONDS", "7.5")
+    gateway = ScriptedGateway([
+        finish_call("needs_clarification", "What should I check?", []),
+    ])
+
+    assert run(gateway) == "What information should I use to continue?"
+    assert 0 < gateway.chat_calls[0]["timeout"] <= 7.5
+
+
+def test_total_deadline_during_mutation_invoke_reports_unknown_without_retry():
+    class SlowMutationGateway(ScriptedGateway):
+        async def invoke_tool(self, *args, **kwargs):
+            self.invoke_calls.append({"timeout": kwargs.get("timeout")})
+            await asyncio.sleep(1)
+            raise AssertionError("deadline should cancel the in-flight invoke")
+
+    gateway = SlowMutationGateway([
+        request_call("write", "create_lead", {"name": "Jordan"}),
+    ])
+
+    reply = run(gateway, deadline_seconds=0.01)
+
+    assert len(gateway.invoke_calls) == 1
+    assert "unknown" in reply.lower()
+    assert "check pending approvals" in reply.lower()
+    assert "nothing was queued or changed" not in reply.lower()
 
 
 @pytest.mark.parametrize("bad_calls", [

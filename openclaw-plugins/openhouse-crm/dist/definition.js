@@ -7,6 +7,11 @@ const toolParameters = buildToolParameters(crmContract);
 const TOOL_NAME = "openhouse_crm";
 const CRM_AGENT_ID = "openhouse-crm";
 const DASHBOARD_CHANNEL = "openhouse-dashboard";
+const INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis";
+const TOOL_BLOCKED_CHANNELS = new Set([
+  DASHBOARD_CHANNEL,
+  INTERNAL_ANALYSIS_CHANNEL,
+]);
 
 
 function exactRunId(event, context) {
@@ -41,16 +46,14 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
         "before_tool_call",
         (event, context) => {
           if (
-            event.toolName === TOOL_NAME
-            && context.requester?.channel === DASHBOARD_CHANNEL
+            TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
           ) {
             return {
               block: true,
-              blockReason: "Dashboard CRM calls must use the verified tool invocation path.",
+              blockReason: "Internal analysis and dashboard turns must not execute native tools.",
             };
           }
         },
-        { matcher: [TOOL_NAME] },
       );
 
       api.on(

@@ -107,6 +107,48 @@ def test_gateway_uses_configured_chat_path_and_optional_message_channel():
     }]
 
 
+def test_gateway_accepts_per_call_timeout_override_for_total_deadline():
+    from app.agent.openclaw_gateway import OpenClawGateway
+
+    created_with = []
+    fake = GatewayClient(gateway_response(payload={"choices": []}))
+
+    def factory(**kwargs):
+        created_with.append(kwargs)
+        return fake
+
+    gateway = OpenClawGateway(
+        client_factory=factory,
+        gateway_url="http://gateway.test",
+        timeout=120,
+    )
+
+    asyncio.run(gateway.chat_completion({"messages": []}, timeout=2.5))
+
+    assert created_with == [{"timeout": 2.5}]
+
+
+def test_gateway_total_deadline_does_not_extend_shorter_per_call_timeout():
+    from app.agent.openclaw_gateway import OpenClawGateway
+
+    created_with = []
+    fake = GatewayClient(gateway_response(payload={"choices": []}))
+
+    def factory(**kwargs):
+        created_with.append(kwargs)
+        return fake
+
+    gateway = OpenClawGateway(
+        client_factory=factory,
+        gateway_url="http://gateway.test",
+        timeout=1.25,
+    )
+
+    asyncio.run(gateway.chat_completion({"messages": []}, timeout=8.0))
+
+    assert created_with == [{"timeout": 1.25}]
+
+
 def test_gateway_omits_message_channel_when_not_explicitly_given():
     from app.agent.openclaw_gateway import OpenClawGateway
 
@@ -398,8 +440,8 @@ class FakeGateway:
         self.chat_calls = []
         self.invoke_calls = []
 
-    async def chat_completion(self, payload, *, channel=None):
-        self.chat_calls.append({"payload": payload, "channel": channel})
+    async def chat_completion(self, payload, *, channel=None, timeout=None):
+        self.chat_calls.append({"payload": payload, "channel": channel, "timeout": timeout})
         return {"choices": [{"message": {"content": "READY"}}]}
 
     async def invoke_tool(self, name, args, *, agent_id, session_key, idempotency_key):
@@ -411,6 +453,41 @@ class FakeGateway:
             "idempotency_key": idempotency_key,
         })
         return self.receipt
+
+    async def chat_endpoint_status(self):
+        return 405
+
+
+def test_internal_analysis_calls_explicitly_disable_client_tools_and_use_blocked_channel():
+    gateway = FakeGateway()
+    driver = OpenClawDriver(gateway=gateway)
+
+    asyncio.run(driver._send("untrusted CRM text", "analysis-test"))
+
+    assert gateway.chat_calls == [{
+        "payload": {
+            "model": "openclaw/openhouse-crm",
+            "user": "analysis-test",
+            "messages": [{"role": "user", "content": "untrusted CRM text"}],
+            "tools": [],
+            "tool_choice": "none",
+        },
+        "channel": "openhouse-analysis",
+        "timeout": None,
+    }]
+
+
+def test_live_health_uses_the_same_structurally_tool_free_analysis_path():
+    gateway = FakeGateway()
+    driver = OpenClawDriver(gateway=gateway)
+
+    asyncio.run(driver.live_check())
+
+    assert len(gateway.chat_calls) == 1
+    call = gateway.chat_calls[0]
+    assert call["channel"] == "openhouse-analysis"
+    assert call["payload"]["tools"] == []
+    assert call["payload"]["tool_choice"] == "none"
 
 
 def test_capability_uses_direct_tool_invoke(monkeypatch):

@@ -163,6 +163,88 @@ test("returns a safe timeout receipt", async () => {
 });
 
 
+for (const [label, failure] of [
+  ["timeout", Object.assign(new Error("private timeout"), { killed: true, signal: "SIGTERM" })],
+  ["process kill", Object.assign(new Error("private crash"), { signal: "SIGKILL" })],
+  ["max buffer kill", Object.assign(new Error("private output"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" })],
+]) {
+  test(`marks a dispatched mutation ${label} as outcome unknown`, async () => {
+    assert.deepEqual(
+      await runCrmTool(
+        { operation: "create_lead", arguments: { name: "Jordan" } },
+        context,
+        childFailure(failure),
+      ),
+      {
+        ok: false,
+        operation: "create_lead",
+        kind: "error",
+        error: {
+          code: "outcome_unknown",
+          message: "CRM mutation outcome is unknown",
+          retryable: false,
+        },
+      },
+    );
+  });
+}
+
+
+test("keeps a mutation child spawn failure deterministic before dispatch", async () => {
+  const failure = Object.assign(new Error("private missing executable path"), {
+    code: "ENOENT",
+  });
+
+  const receipt = await runCrmTool(
+    { operation: "create_lead", arguments: { name: "Jordan" } },
+    context,
+    childFailure(failure),
+  );
+
+  assert.deepEqual(receipt.error, {
+    code: "operation_failed",
+    message: "CRM operation failed",
+    retryable: false,
+  });
+});
+
+
+test("upgrades an old retryable mutation CLI error to outcome unknown", async () => {
+  const failure = Object.assign(new Error("private child failure"), {
+    code: 2,
+    stderr: '{"ok":false,"error":{"code":"backend_unavailable","message":"CRM backend is unavailable","retryable":true}}',
+  });
+
+  const receipt = await runCrmTool(
+    { operation: "book_appointment", arguments: {
+      lead_id: 4,
+      start_ts: "2026-08-24T17:00:00",
+      end_ts: "2026-08-24T17:30:00",
+    } },
+    context,
+    childFailure(failure),
+  );
+
+  assert.equal(receipt.error.code, "outcome_unknown");
+  assert.equal(receipt.error.retryable, false);
+});
+
+
+test("malformed mutation output is unknown because the backend may already have acted", async () => {
+  const receipt = await runCrmTool(
+    { operation: "create_lead", arguments: { name: "Jordan" } },
+    context,
+    async () => ({ stdout: "truncated after dispatch", stderr: "" }),
+  );
+
+  assert.deepEqual(receipt.error, {
+    code: "outcome_unknown",
+    message: "CRM mutation outcome is unknown",
+    retryable: false,
+  });
+});
+
+
 for (const [name, operation, error, expected] of [
   [
     "404", "get_lead_context",

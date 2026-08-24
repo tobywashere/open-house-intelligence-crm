@@ -134,6 +134,33 @@ test("rewrites a failed proposal with a fixed safe reason and no raw error text"
 });
 
 
+test("never claims nothing changed when a mutation outcome is unknown", () => {
+  const guard = createOutcomeGuard();
+  guard.record({
+    runId: "run-unknown",
+    agentId: "openhouse-crm",
+    receipt: failedReceipt({
+      error: {
+        code: "outcome_unknown",
+        message: "private transport details",
+        retryable: false,
+      },
+    }),
+  });
+
+  const reply = guard.rewrite({
+    runId: "run-unknown",
+    agentId: "openhouse-crm",
+    text: "Nothing happened, retrying now",
+  });
+  assert.equal(
+    reply,
+    "The CRM change may have reached the backend, but its result could not be verified. Do not retry automatically. Check Pending approvals first.",
+  );
+  assert.doesNotMatch(reply, /nothing (?:was )?changed/i);
+});
+
+
 test("ignores inherited object property names presented as error codes", () => {
   const guard = createOutcomeGuard();
   guard.record({

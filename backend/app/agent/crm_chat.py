@@ -1,14 +1,18 @@
 """Evidence-verified CRM orchestration for dashboard chat."""
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import re
+import secrets
+import time
 from typing import Any
 
 
@@ -18,6 +22,8 @@ DASHBOARD_CHANNEL = "openhouse-dashboard"
 MAX_MODEL_ROUNDS = 8
 MAX_CRM_CALLS = 6
 MAX_RECEIPT_BYTES = 32 * 1024
+DEFAULT_DEADLINE_SECONDS = 120.0
+DEADLINE_ENV = "CRM_CHAT_DEADLINE_SECONDS"
 
 UNAVAILABLE_REPLY = (
     "⚠ The local agent is unavailable or returned an invalid response. "
@@ -32,14 +38,20 @@ CALL_LIMIT_REPLY = (
     "No unverified action was reported."
 )
 AMBIGUOUS_INVOKE_REPLY = (
-    "I couldn't verify the CRM request because the local agent became unavailable. "
-    "I did not retry it. Check Pending approvals before trying again."
+    "The CRM change may have reached the backend, but its outcome is unknown. "
+    "I did not retry it. Do not retry automatically. "
+    "Check Pending approvals before trying again."
+)
+DEADLINE_REPLY = (
+    "I couldn't verify a CRM answer within the total time limit. "
+    "No unverified action was reported."
 )
 CLARIFICATION_REPLY = "What information should I use to continue?"
 
 _SAFE_ERROR_CODES = frozenset({
     "invalid_arguments", "not_found", "ambiguous_match", "schedule_conflict",
     "backend_unavailable", "timeout", "result_too_large", "operation_failed",
+    "outcome_unknown",
 })
 _SAFE_ERROR_MESSAGES = {
     "invalid_arguments": "Invalid CRM arguments",
@@ -50,6 +62,7 @@ _SAFE_ERROR_MESSAGES = {
     "timeout": "CRM operation timed out",
     "result_too_large": "CRM operation returned too much data",
     "operation_failed": "CRM operation failed",
+    "outcome_unknown": "CRM mutation outcome is unknown",
 }
 _INVALID_RECEIPT_MESSAGE = "CRM operation returned an invalid receipt"
 _SAFE_ARGUMENT_ERROR_RE = re.compile(
@@ -76,6 +89,11 @@ def _load_contract_module():
 
 _CONTRACT_MODULE = _load_contract_module()
 _CONTRACT = _CONTRACT_MODULE.CONTRACT
+_MUTATING_EFFECTS = frozenset({"proposal", "validated_write"})
+_UNCERTAIN_MUTATION_CODES = frozenset({
+    "backend_unavailable", "timeout", "result_too_large", "operation_failed",
+    "outcome_unknown",
+})
 
 
 @dataclass(frozen=True)
@@ -202,6 +220,34 @@ def _local_error(call_id: str, operation: str, message: str) -> CrmCallReceipt:
         "error",
         None,
         {"code": "invalid_arguments", "message": message[:256], "retryable": False},
+    )
+
+
+def _is_mutating_operation(operation: str) -> bool:
+    entry = _CONTRACT["operations"].get(operation)
+    return bool(entry and entry["effect"] in _MUTATING_EFFECTS)
+
+
+def _unknown_outcome_receipt(call_id: str, operation: str) -> CrmCallReceipt:
+    return CrmCallReceipt(
+        call_id,
+        operation,
+        False,
+        "error",
+        None,
+        {
+            "code": "outcome_unknown",
+            "message": _SAFE_ERROR_MESSAGES["outcome_unknown"],
+            "retryable": False,
+        },
+    )
+
+
+def _is_unknown_outcome(receipt: CrmCallReceipt) -> bool:
+    return (
+        not receipt.ok
+        and isinstance(receipt.error, dict)
+        and receipt.error.get("code") == "outcome_unknown"
     )
 
 
@@ -355,6 +401,8 @@ def _normalize_gateway_receipt(call_id: str, operation: str, payload: object) ->
             and error["retryable"] == (error["code"] in {"backend_unavailable", "timeout"})
         ):
             code = error["code"]
+            if _is_mutating_operation(operation) and code in _UNCERTAIN_MUTATION_CODES:
+                return _unknown_outcome_receipt(call_id, operation)
             return CrmCallReceipt(
                 call_id,
                 operation,
@@ -391,6 +439,8 @@ def _normalize_gateway_receipt(call_id: str, operation: str, payload: object) ->
 
 
 def _invalid_gateway_receipt(call_id: str, operation: str) -> CrmCallReceipt:
+    if _is_mutating_operation(operation):
+        return _unknown_outcome_receipt(call_id, operation)
     return CrmCallReceipt(
         call_id,
         operation,
@@ -406,6 +456,8 @@ def _invalid_gateway_receipt(call_id: str, operation: str) -> CrmCallReceipt:
 
 
 def _result_too_large_receipt(call_id: str, operation: str) -> CrmCallReceipt:
+    if _is_mutating_operation(operation):
+        return _unknown_outcome_receipt(call_id, operation)
     return CrmCallReceipt(
         call_id,
         operation,
@@ -661,6 +713,8 @@ def render_verified_reply(decision: FinishDecision, receipts: list[CrmCallReceip
         failure = next((receipt for receipt in reversed(evidence) if not receipt.ok and receipt.error), None)
         if failure:
             code = failure.error.get("code")
+            if code == "outcome_unknown":
+                return AMBIGUOUS_INVOKE_REPLY
             if code not in _SAFE_ERROR_CODES:
                 code = "operation_failed"
             message = _trusted_error_message(code, failure.error.get("message"))
@@ -763,9 +817,14 @@ def _append_cardinality_correction(messages: list[dict], calls: list) -> None:
         })
 
 
-def _idempotency_key(agent_id: str, session_id: str, call_id: str) -> str:
+def _idempotency_key(
+    agent_id: str,
+    session_id: str,
+    turn_nonce: str,
+    call_id: str,
+) -> str:
     identity = json.dumps(
-        [agent_id, session_id, call_id],
+        [agent_id, session_id, turn_nonce, call_id],
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
@@ -776,13 +835,37 @@ def _terminal_reply(receipts: list[CrmCallReceipt], fallback: str) -> str:
     return _single_proposal_reply(receipts) or fallback
 
 
+def _deadline_seconds(configured: float | None) -> float | None:
+    raw: object = (
+        os.environ.get(DEADLINE_ENV, str(DEFAULT_DEADLINE_SECONDS))
+        if configured is None
+        else configured
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
 async def run_verified_crm_chat(
     gateway,
     message: str,
     session_id: str,
     agent_id: str,
+    *,
+    deadline_seconds: float | None = None,
+    monotonic=None,
 ) -> str:
     """Run a bounded required-client-tool loop and return only verified prose."""
+    total_budget = _deadline_seconds(deadline_seconds)
+    if total_budget is None:
+        return DEADLINE_REPLY
+    clock = time.monotonic if monotonic is None else monotonic
+    deadline_at = clock() + total_budget
+    turn_nonce = secrets.token_hex(16)
     messages = [
         {
             "role": "system",
@@ -800,6 +883,9 @@ async def run_verified_crm_chat(
     model = f"openclaw/{agent_id.strip()}" if agent_id.strip() else "openclaw"
 
     for _round in range(MAX_MODEL_ROUNDS):
+        remaining = deadline_at - clock()
+        if remaining <= 0:
+            return _terminal_reply(receipts, DEADLINE_REPLY)
         payload = {
             "model": model,
             "user": session_id,
@@ -808,8 +894,17 @@ async def run_verified_crm_chat(
             "tool_choice": "required",
         }
         try:
-            data = await gateway.chat_completion(payload, channel=DASHBOARD_CHANNEL)
+            data = await asyncio.wait_for(
+                gateway.chat_completion(
+                    payload,
+                    channel=DASHBOARD_CHANNEL,
+                    timeout=remaining,
+                ),
+                timeout=remaining,
+            )
             assistant = _model_message(data)
+        except TimeoutError:
+            return _terminal_reply(receipts, DEADLINE_REPLY)
         except Exception:
             return _terminal_reply(receipts, UNAVAILABLE_REPLY)
         calls = assistant.get("tool_calls", [])
@@ -895,20 +990,58 @@ async def run_verified_crm_chat(
                         return _terminal_reply(receipts, CALL_LIMIT_REPLY)
                     else:
                         crm_calls += 1
+                        remaining = deadline_at - clock()
+                        if remaining <= 0:
+                            return _terminal_reply(receipts, DEADLINE_REPLY)
                         try:
-                            raw_receipt = await gateway.invoke_tool(
-                                "openhouse_crm",
-                                {"operation": operation, "arguments": validated},
-                                agent_id=agent_id,
-                                session_key=f"dashboard:{session_id}",
-                                idempotency_key=_idempotency_key(
-                                    agent_id, session_id, call_id
+                            raw_receipt = await asyncio.wait_for(
+                                gateway.invoke_tool(
+                                    "openhouse_crm",
+                                    {"operation": operation, "arguments": validated},
+                                    agent_id=agent_id,
+                                    session_key=f"dashboard:{session_id}",
+                                    idempotency_key=_idempotency_key(
+                                        agent_id,
+                                        session_id,
+                                        turn_nonce,
+                                        call_id,
+                                    ),
+                                    timeout=remaining,
                                 ),
+                                timeout=remaining,
                             )
+                        except TimeoutError:
+                            if _is_mutating_operation(operation):
+                                receipt = _unknown_outcome_receipt(
+                                    call_id, operation
+                                )
+                                receipts.append(receipt)
+                                return render_verified_reply(
+                                    FinishDecision(
+                                        "failed", "", (receipt.call_id,)
+                                    ),
+                                    receipts,
+                                )
+                            return _terminal_reply(receipts, DEADLINE_REPLY)
                         except Exception:
-                            return _terminal_reply(receipts, AMBIGUOUS_INVOKE_REPLY)
+                            if _is_mutating_operation(operation):
+                                receipt = _unknown_outcome_receipt(
+                                    call_id, operation
+                                )
+                                receipts.append(receipt)
+                                return render_verified_reply(
+                                    FinishDecision(
+                                        "failed", "", (receipt.call_id,)
+                                    ),
+                                    receipts,
+                                )
+                            return _terminal_reply(receipts, UNAVAILABLE_REPLY)
                         receipt = _normalize_gateway_receipt(call_id, operation, raw_receipt)
         receipts.append(receipt)
+        if _is_unknown_outcome(receipt):
+            return render_verified_reply(
+                FinishDecision("failed", "", (receipt.call_id,)), receipts
+            )
         messages.append({
             "role": "tool",
             "tool_call_id": call_id,

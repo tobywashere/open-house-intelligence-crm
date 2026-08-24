@@ -261,6 +261,32 @@ def test_lead_directory_returns_exact_total_and_compact_page(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("function_name", "expected"),
+    [
+        ("score_lead", {"lead_id": 7, "score": 81, "score_reason": "Strong fit"}),
+        ("draft_followup", "Hi Jordan, would Tuesday work?"),
+    ],
+)
+def test_narrative_tools_use_non_proposing_process_path(monkeypatch, function_name, expected):
+    calls = []
+
+    def fake_request(method, path, *, params=None, body=None):
+        calls.append((method, path, params, body))
+        return {
+            "lead": {"score": 81, "score_reason": "Strong fit"},
+            "followup_draft": "Hi Jordan, would Tuesday work?",
+            "pending_change": None,
+        }
+
+    monkeypatch.setattr(crm, "_request", fake_request)
+
+    assert getattr(crm, function_name)(7) == expected
+    assert calls == [
+        ("POST", "/leads/7/process", {"propose_changes": False}, None)
+    ]
+
+
 def test_add_note_uses_reviewed_event_endpoint():
     captured = {}
 
@@ -356,7 +382,7 @@ def test_close_lead_tool_rejects_ambiguous_outcome_before_request():
         crm.close_lead(1, "unknown")
 
 
-def test_score_lead_returns_candidate_without_persisting_before_approval(live_server):
+def test_score_lead_returns_narrative_without_persisting_or_proposing(live_server):
     created = httpx.post(
         f"{live_server}/api/leads",
         json={
@@ -381,21 +407,10 @@ def test_score_lead_returns_candidate_without_persisting_before_approval(live_se
     assert repeated_candidate == candidate
     assert persisted["score"] is None
     assert persisted["score_reason"] is None
-    pending = httpx.get(f"{live_server}/api/pending-changes").json()
-    assert len(pending) == 1
-    assert pending[0]["payload"]["score"] == candidate["score"]
-    assert pending[0]["payload"]["score_reason"] == candidate["score_reason"]
-
-    approved = httpx.post(
-        f"{live_server}/api/pending-changes/{pending[0]['id']}/approve"
-    )
-    assert approved.status_code == 200, approved.text
-    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
-    assert persisted["score"] == candidate["score"]
-    assert persisted["score_reason"] == candidate["score_reason"]
+    assert httpx.get(f"{live_server}/api/pending-changes").json() == []
 
 
-def test_draft_followup_does_not_persist_candidate_score_before_approval(live_server):
+def test_draft_followup_does_not_persist_or_propose_candidate_score(live_server):
     created = httpx.post(
         f"{live_server}/api/leads",
         json={
@@ -418,15 +433,4 @@ def test_draft_followup_does_not_persist_candidate_score_before_approval(live_se
     assert "Draft" in draft
     assert persisted["score"] is None
     assert persisted["score_reason"] is None
-    pending = httpx.get(f"{live_server}/api/pending-changes").json()
-    assert len(pending) == 1
-    assert pending[0]["payload"]["score"] > 0
-    assert pending[0]["payload"]["score_reason"]
-
-    approved = httpx.post(
-        f"{live_server}/api/pending-changes/{pending[0]['id']}/approve"
-    )
-    assert approved.status_code == 200, approved.text
-    persisted = httpx.get(f"{live_server}/api/leads/{lead_id}").json()
-    assert persisted["score"] == pending[0]["payload"]["score"]
-    assert persisted["score_reason"] == pending[0]["payload"]["score_reason"]
+    assert httpx.get(f"{live_server}/api/pending-changes").json() == []

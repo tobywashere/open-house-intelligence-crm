@@ -31,6 +31,7 @@ from .status import (
 
 
 AGENT_ID = os.environ.get("AGENT_ID", "openhouse-crm").strip()
+INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis"
 
 
 def openclaw_model(agent_id: str | None = None) -> str:
@@ -72,11 +73,16 @@ class OpenClawDriver(AgentDriver):
 
     async def _send(self, message: str, session_id: str = "backend") -> str:
         try:
-            data = await self._gateway.chat_completion({
-                "model": openclaw_model(),
-                "user": session_id,
-                "messages": [{"role": "user", "content": message}],
-            })
+            data = await self._gateway.chat_completion(
+                {
+                    "model": openclaw_model(),
+                    "user": session_id,
+                    "messages": [{"role": "user", "content": message}],
+                    "tools": [],
+                    "tool_choice": "none",
+                },
+                channel=INTERNAL_ANALYSIS_CHANNEL,
+            )
             content = data["choices"][0]["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("OpenClaw completion content was empty")

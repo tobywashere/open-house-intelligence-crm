@@ -1,4 +1,5 @@
 """The single HTTP boundary for the local OpenClaw Gateway."""
+import math
 import os
 from collections.abc import Mapping
 
@@ -42,8 +43,11 @@ class OpenClawGateway:
         payload: dict,
         *,
         channel: str | None = None,
+        timeout: float | None = None,
     ) -> dict:
-        return await self._post_json(self._chat_path, payload, channel=channel)
+        return await self._post_json(
+            self._chat_path, payload, channel=channel, timeout=timeout
+        )
 
     async def invoke_tool(
         self,
@@ -53,6 +57,7 @@ class OpenClawGateway:
         agent_id: str,
         session_key: str,
         idempotency_key: str,
+        timeout: float | None = None,
     ) -> dict:
         payload = {
             "tool": name,
@@ -61,7 +66,7 @@ class OpenClawGateway:
             "sessionKey": session_key,
             "idempotencyKey": idempotency_key,
         }
-        return await self._post_json("/tools/invoke", payload)
+        return await self._post_json("/tools/invoke", payload, timeout=timeout)
 
     async def chat_endpoint_status(self) -> int:
         try:
@@ -83,9 +88,22 @@ class OpenClawGateway:
         payload: dict,
         *,
         channel: str | None = None,
+        timeout: float | None = None,
     ) -> dict:
+        timeout_candidates = (
+            (self._timeout,) if timeout is None else (self._timeout, timeout)
+        )
+        if any(
+            not isinstance(candidate, (int, float))
+            or isinstance(candidate, bool)
+            or not math.isfinite(candidate)
+            or candidate <= 0
+            for candidate in timeout_candidates
+        ):
+            raise OpenClawGatewayError("gateway timeout")
+        request_timeout = min(timeout_candidates)
         try:
-            async with self._client_factory(timeout=self._timeout) as client:
+            async with self._client_factory(timeout=request_timeout) as client:
                 response = await client.post(
                     self._url(path),
                     headers=self._headers(channel),

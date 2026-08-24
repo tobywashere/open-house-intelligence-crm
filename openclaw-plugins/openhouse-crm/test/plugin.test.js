@@ -107,27 +107,27 @@ test("plugin registers the four supported scoped hooks", () => {
     "reply_payload_sending",
     "gateway_stop",
   ]);
-  assert.deepEqual(hooks.get("before_tool_call").options, { matcher: ["openhouse_crm"] });
+  assert.equal(hooks.get("before_tool_call").options, undefined);
   assert.deepEqual(hooks.get("after_tool_call").options, { matcher: ["openhouse_crm"] });
   assert.equal(hooks.get("reply_payload_sending").options, undefined);
   assert.equal(hooks.get("gateway_stop").options, undefined);
 });
 
 
-test("before-tool hook blocks only internal CRM calls from the exact dashboard marker", () => {
+test("before-tool hook blocks every native tool on analysis and verified dashboard channels", () => {
   const { hooks } = registerPlugin();
   const beforeToolCall = hooks.get("before_tool_call").handler;
 
-  assert.deepEqual(
-    beforeToolCall(
-      { toolName: "openhouse_crm", params: {} },
-      { toolName: "openhouse_crm", requester: { channel: "openhouse-dashboard" } },
-    ),
-    {
-      block: true,
-      blockReason: "Dashboard CRM calls must use the verified tool invocation path.",
-    },
-  );
+  for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
+    for (const toolName of ["openhouse_crm", "exec", "session_status", "web_search"]) {
+      const blocked = beforeToolCall(
+        { toolName, params: {} },
+        { toolName, requester: { channel } },
+      );
+      assert.equal(blocked.block, true);
+      assert.match(blocked.blockReason, /must not execute native tools/i);
+    }
+  }
   for (const ctx of [
     { toolName: "openhouse_crm", requester: { channel: "discord" } },
     { toolName: "openhouse_crm", requester: { channel: "slack" } },
@@ -140,8 +140,8 @@ test("before-tool hook blocks only internal CRM calls from the exact dashboard m
     beforeToolCall(
       { toolName: "other_tool", params: {} },
       { toolName: "other_tool", requester: { channel: "openhouse-dashboard" } },
-    ),
-    undefined,
+    ).block,
+    true,
   );
 });
 

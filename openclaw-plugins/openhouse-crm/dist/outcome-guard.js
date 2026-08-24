@@ -30,14 +30,13 @@ const SAFE_ERROR_REASONS = Object.freeze({
   timeout: "CRM operation timed out",
   result_too_large: "CRM operation returned too much data",
   operation_failed: "CRM operation failed",
+  outcome_unknown: "CRM mutation outcome is unknown",
 });
-const proposalOperations = new Set(
+const mutationOperations = new Set(
   Object.entries(crmContract.operations)
-    .filter(([, entry]) => entry.effect === "proposal")
+    .filter(([, entry]) => entry.effect === "proposal" || entry.effect === "validated_write")
     .map(([operation]) => operation),
 );
-
-
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -76,7 +75,7 @@ function proposalOutcome(receipt) {
   if (
     receipt.ok !== true
     || receipt.kind !== "proposal"
-    || !proposalOperations.has(receipt.operation)
+    || !mutationOperations.has(receipt.operation)
     || !isPlainObject(result)
     || result.pending !== true
     || result.operation !== receipt.operation
@@ -99,7 +98,7 @@ function failureOutcome(receipt) {
   if (
     receipt.ok !== false
     || receipt.kind !== "error"
-    || !proposalOperations.has(receipt.operation)
+    || !mutationOperations.has(receipt.operation)
     || !isPlainObject(receipt.error)
   ) return undefined;
   const error = Object.hasOwn(SAFE_ERROR_REASONS, receipt.error.code)
@@ -108,7 +107,7 @@ function failureOutcome(receipt) {
   if (!error) return undefined;
   return {
     operation: receipt.operation,
-    status: "failed",
+    status: receipt.error.code === "outcome_unknown" ? "unknown" : "failed",
     error,
   };
 }
@@ -175,6 +174,10 @@ export function createOutcomeGuard({
     entries.delete(key);
     if (entry.status === "pending") {
       return `Proposal #${entry.proposalId} is waiting for your review: ${sentence(entry.summary)}`;
+    }
+    if (entry.status === "unknown") {
+      return "The CRM change may have reached the backend, but its result could not be verified. "
+        + "Do not retry automatically. Check Pending approvals first.";
     }
     return `I could not queue that CRM change. Nothing was changed. ${sentence(entry.error)}`;
   }

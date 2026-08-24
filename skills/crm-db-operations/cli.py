@@ -6,7 +6,7 @@ import json
 import re
 import sys
 
-from contract import operation_names, validate_arguments
+from contract import CONTRACT, operation_names, validate_arguments
 import tools
 
 
@@ -20,6 +20,7 @@ def _bounded_crm_message(code: str, _message: str) -> str:
         "schedule_conflict": "Requested schedule conflicts with an existing appointment",
         "invalid_arguments": "Invalid CRM arguments",
         "operation_failed": "CRM operation failed",
+        "outcome_unknown": "CRM mutation outcome is unknown",
     }.get(code, "CRM operation failed")
 
 
@@ -34,8 +35,24 @@ def _bounded_argument_message(exc: Exception) -> str:
     return "Invalid CRM arguments"
 
 
-def _safe_error(exc: Exception) -> dict:
+def _is_mutating_operation(operation: str | None) -> bool:
+    entry = CONTRACT["operations"].get(operation) if operation else None
+    return bool(entry and entry["effect"] in {"proposal", "validated_write"})
+
+
+def _is_deterministic_http_rejection(status: int) -> bool:
+    return 400 <= status < 500 and status not in {408, 499}
+
+
+def _safe_error(exc: Exception, *, operation: str | None = None) -> dict:
+    mutation = _is_mutating_operation(operation)
     if isinstance(exc, tools.CRMError):
+        if mutation and not _is_deterministic_http_rejection(exc.status):
+            return {
+                "code": "outcome_unknown",
+                "message": "CRM mutation outcome is unknown",
+                "retryable": False,
+            }
         code = {
             0: "backend_unavailable",
             404: "not_found",
@@ -52,6 +69,12 @@ def _safe_error(exc: Exception) -> dict:
         return {
             "code": "invalid_arguments",
             "message": _bounded_argument_message(exc),
+            "retryable": False,
+        }
+    if mutation:
+        return {
+            "code": "outcome_unknown",
+            "message": "CRM mutation outcome is unknown",
             "retryable": False,
         }
     return {"code": "operation_failed", "message": "CRM operation failed", "retryable": False}
@@ -76,7 +99,13 @@ def main() -> int:
     try:
         result = dispatch(args.operation, json.loads(args.args))
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": _safe_error(exc)}), file=sys.stderr)
+        print(
+            json.dumps({
+                "ok": False,
+                "error": _safe_error(exc, operation=args.operation),
+            }),
+            file=sys.stderr,
+        )
         return 2
     print(json.dumps({"ok": True, "result": result}, default=str))
     return 0

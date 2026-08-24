@@ -21,6 +21,7 @@ const SAFE_CODES = new Set([
   "timeout",
   "result_too_large",
   "operation_failed",
+  "outcome_unknown",
 ]);
 const SAFE_MESSAGES = Object.freeze({
   invalid_arguments: "Invalid CRM arguments",
@@ -31,8 +32,21 @@ const SAFE_MESSAGES = Object.freeze({
   timeout: "CRM operation timed out",
   result_too_large: "CRM operation returned too much data",
   operation_failed: "CRM operation failed",
+  outcome_unknown: "CRM mutation outcome is unknown",
 });
 const SAFE_OPERATION_NAME = /^[a-z][a-z0-9_]{0,127}$/;
+const mutatingOperations = new Set(
+  Object.entries(operations)
+    .filter(([, entry]) => entry.effect === "proposal" || entry.effect === "validated_write")
+    .map(([operation]) => operation),
+);
+const DETERMINISTIC_MUTATION_FAILURES = new Set([
+  "invalid_arguments",
+  "not_found",
+  "ambiguous_match",
+  "schedule_conflict",
+]);
+const PRE_DISPATCH_CHILD_ERRORS = new Set(["EACCES", "ENOENT", "ENOTDIR"]);
 
 
 function isPlainObject(value) {
@@ -104,6 +118,11 @@ function errorReceipt(operation, code, message = SAFE_MESSAGES[code]) {
 }
 
 
+function unknownMutationReceipt(operation) {
+  return errorReceipt(operation, "outcome_unknown");
+}
+
+
 function safeInvalidMessage(error) {
   const message = error instanceof Error ? error.message : "Invalid CRM arguments";
   return message.length <= 256 ? message : SAFE_MESSAGES.invalid_arguments;
@@ -143,6 +162,20 @@ function parseCliError(operation, stderr) {
 
 
 function mapChildError(operation, error) {
+  const cliReceipt = parseCliError(operation, error?.stderr);
+  if (cliReceipt) {
+    if (
+      mutatingOperations.has(operation)
+      && !DETERMINISTIC_MUTATION_FAILURES.has(cliReceipt.error.code)
+    ) return unknownMutationReceipt(operation);
+    return cliReceipt;
+  }
+  if (PRE_DISPATCH_CHILD_ERRORS.has(error?.code)) {
+    return errorReceipt(operation, "operation_failed");
+  }
+  if (mutatingOperations.has(operation)) {
+    return unknownMutationReceipt(operation);
+  }
   if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
     return errorReceipt(operation, "result_too_large");
   }
@@ -152,7 +185,7 @@ function mapChildError(operation, error) {
   ) {
     return errorReceipt(operation, "timeout");
   }
-  return parseCliError(operation, error?.stderr) ?? errorReceipt(operation, "operation_failed");
+  return errorReceipt(operation, "operation_failed");
 }
 
 
@@ -199,25 +232,35 @@ export async function runCrmTool(input, toolContext, runChild = defaultRunChild)
 
   const stdout = completed?.stdout;
   if (typeof stdout !== "string") {
-    return errorReceipt(operation, "operation_failed");
+    return mutatingOperations.has(operation)
+      ? unknownMutationReceipt(operation)
+      : errorReceipt(operation, "operation_failed");
   }
   if (Buffer.byteLength(stdout, "utf8") > MAX_OUTPUT_BYTES) {
-    return errorReceipt(operation, "result_too_large");
+    return mutatingOperations.has(operation)
+      ? unknownMutationReceipt(operation)
+      : errorReceipt(operation, "result_too_large");
   }
 
   let payload;
   try {
     payload = JSON.parse(stdout);
   } catch {
-    return errorReceipt(operation, "operation_failed");
+    return mutatingOperations.has(operation)
+      ? unknownMutationReceipt(operation)
+      : errorReceipt(operation, "operation_failed");
   }
   if (!isPlainObject(payload) || payload.ok !== true || !("result" in payload)) {
-    return errorReceipt(operation, "operation_failed");
+    return mutatingOperations.has(operation)
+      ? unknownMutationReceipt(operation)
+      : errorReceipt(operation, "operation_failed");
   }
   try {
     assertJsonCompatible(payload.result);
   } catch {
-    return errorReceipt(operation, "operation_failed");
+    return mutatingOperations.has(operation)
+      ? unknownMutationReceipt(operation)
+      : errorReceipt(operation, "operation_failed");
   }
   const receipt = {
     ok: true,
@@ -227,5 +270,7 @@ export async function runCrmTool(input, toolContext, runChild = defaultRunChild)
   };
   return Buffer.byteLength(JSON.stringify(receipt), "utf8") <= MAX_OUTPUT_BYTES
     ? receipt
-    : errorReceipt(operation, "result_too_large");
+    : mutatingOperations.has(operation)
+      ? unknownMutationReceipt(operation)
+      : errorReceipt(operation, "result_too_large");
 }

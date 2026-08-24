@@ -167,6 +167,58 @@ def test_cli_safe_errors_are_structured_and_do_not_expose_private_details(except
     assert cli._safe_error(exception(cli.tools)) == expected
 
 
+@pytest.mark.parametrize("operation", ["create_lead", "find_neglected_leads"])
+def test_cli_marks_mutation_transport_failures_as_unknown_and_not_retryable(operation):
+    cli = _load_cli()
+
+    assert cli._safe_error(
+        cli.tools.CRMError(0, "connection dropped after dispatch token=secret"),
+        operation=operation,
+    ) == {
+        "code": "outcome_unknown",
+        "message": "CRM mutation outcome is unknown",
+        "retryable": False,
+    }
+
+
+def test_cli_marks_mutation_server_error_as_unknown_after_dispatch():
+    cli = _load_cli()
+
+    assert cli._safe_error(
+        cli.tools.CRMError(500, "backend crashed after commit"),
+        operation="create_lead",
+    ) == {
+        "code": "outcome_unknown",
+        "message": "CRM mutation outcome is unknown",
+        "retryable": False,
+    }
+
+
+def test_cli_keeps_rejected_mutation_http_response_deterministic():
+    cli = _load_cli()
+
+    assert cli._safe_error(
+        cli.tools.CRMError(403, "private authorization detail"),
+        operation="create_lead",
+    ) == {
+        "code": "operation_failed",
+        "message": "CRM operation failed",
+        "retryable": False,
+    }
+
+
+def test_cli_keeps_read_transport_failure_retryable():
+    cli = _load_cli()
+
+    assert cli._safe_error(
+        cli.tools.CRMError(0, "could not connect"), operation="list_leads"
+    ) == {
+        "code": "backend_unavailable",
+        "message": "CRM backend is unavailable",
+        "retryable": True,
+    }
+
+
 def test_cli_main_writes_only_the_structured_safe_error(monkeypatch, capsys):
     cli = _load_cli()
 
@@ -182,6 +234,28 @@ def test_cli_main_writes_only_the_structured_safe_error(monkeypatch, capsys):
     assert json.loads(captured.err) == {
         "ok": False,
         "error": {"code": "not_found", "message": "CRM record was not found", "retryable": False},
+    }
+
+
+def test_cli_main_preserves_unknown_mutation_outcome(monkeypatch, capsys):
+    cli = _load_cli()
+
+    def fail(_operation, _arguments):
+        raise cli.tools.CRMError(0, "socket closed after request body was sent")
+
+    monkeypatch.setattr(cli, "dispatch", fail)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "create_lead"])
+
+    assert cli.main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "ok": False,
+        "error": {
+            "code": "outcome_unknown",
+            "message": "CRM mutation outcome is unknown",
+            "retryable": False,
+        },
     }
 
 
