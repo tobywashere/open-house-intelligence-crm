@@ -1399,6 +1399,62 @@ def test_case_only_workspace_alias_collision_uses_existing_filesystem_identity(
     assert cli.mutating_calls == []
 
 
+def test_missing_unicode_case_alias_collision_is_rejected_before_mutation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(setup_openclaw.sys, "platform", "darwin")
+    options = SetupOptions(
+        agent_id="custom-crm",
+        workspace=tmp_path / "Straße",
+        crm_api_url="http://localhost:8080/api",
+        bind_discord=None,
+        dry_run=False,
+    )
+    cli = FakeCLI(primary_agent_id=options.agent_id)
+    cli.extra_agents["main"] = {
+        "id": "main",
+        "workspace": str(tmp_path / "STRASSE"),
+    }
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "already belongs to agent main" in result.render().lower()
+    assert cli.mutating_calls == []
+
+
+def test_inaccessible_case_alias_collision_is_rejected_before_mutation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(setup_openclaw.sys, "platform", "darwin")
+    options = make_options(tmp_path, agent_id="custom-crm")
+    case_alias = str(options.workspace.with_name(options.workspace.name.upper()))
+    blocked = {str(options.workspace), case_alias}
+    real_resolve = setup_openclaw.Path.resolve
+    real_samefile = setup_openclaw.os.path.samefile
+
+    def inaccessible_resolve(path, *args, **kwargs):
+        if str(path) in blocked:
+            raise PermissionError("workspace is inaccessible")
+        return real_resolve(path, *args, **kwargs)
+
+    def inaccessible_samefile(left, right):
+        if {str(left), str(right)} == blocked:
+            raise PermissionError("workspace is inaccessible")
+        return real_samefile(left, right)
+
+    monkeypatch.setattr(setup_openclaw.Path, "resolve", inaccessible_resolve)
+    monkeypatch.setattr(setup_openclaw.os.path, "samefile", inaccessible_samefile)
+    cli = FakeCLI(primary_agent_id=options.agent_id)
+    cli.extra_agents["main"] = {"id": "main", "workspace": case_alias}
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "already belongs to agent main" in result.render().lower()
+    assert cli.mutating_calls == []
+
+
 def test_different_agent_with_distinct_workspace_does_not_block_setup(tmp_path):
     options = make_options(tmp_path, agent_id="custom-crm")
     cli = FakeCLI(primary_agent_id=options.agent_id)

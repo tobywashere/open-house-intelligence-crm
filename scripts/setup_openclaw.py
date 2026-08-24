@@ -68,6 +68,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -4142,7 +4143,12 @@ def _canonical_workspace_key(workspace: Any) -> str | None:
         resolved = expanded.resolve(strict=False)
     except (OSError, RuntimeError):
         resolved = Path(os.path.abspath(str(expanded)))
-    return os.path.normcase(os.path.abspath(str(resolved)))
+    normalized = os.path.normcase(
+        os.path.normpath(os.path.abspath(str(resolved)))
+    )
+    if sys.platform == "darwin":
+        return unicodedata.normalize("NFC", normalized).casefold()
+    return normalized
 
 
 def _workspace_paths_same(left: Any, right: Any) -> bool:
