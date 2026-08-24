@@ -215,8 +215,9 @@ python3 scripts/doctor.py --live-agent --live-crm --json
 ```
 
 The first command changes nothing. `--live-agent` sends one harmless chat
-completion. `--live-crm` asks the selected agent for one audited, read-only
-`generate_dashboard_insights` capability call. The CRM check is successful
+completion. `--live-crm` directly invokes the selected agent's native CRM tool
+through OpenClaw for one audited, read-only `generate_dashboard_insights` call.
+The CRM check is successful
 only after the backend sees that new agent-tagged audit record. It does not
 trust the model's text alone.
 
@@ -239,19 +240,33 @@ same application checks. It does not include tokens, environment values, CRM
 records, chat content, model responses, or home-directory paths. Inspect any
 file yourself before sharing it.
 
+After the read-only doctor reports `crm_verified`, you may run the complete
+acceptance check. The extra flag explicitly permits one disposable CRM proposal;
+the runner confirms it was not applied, denies it, and cleans up its test chat:
+
+```bash
+python3 scripts/acceptance_openclaw.py --json
+python3 scripts/acceptance_openclaw.py --json --allow-test-write
+```
+
+The first form remains read-only. The second is the supported full test. It
+does not approve a write and does not ask you to edit OpenClaw configuration
+between checks.
+
 Status meanings:
 
 | Status | Meaning |
 |---|---|
 | `endpoint_enabled` | The gateway and chat endpoint respond, but no completion is proved yet. |
-| `chat_verified` | A real chat completion succeeded. |
-| `crm_verified` | A real chat completion and new audited CRM capability call succeeded. |
-| `degraded` | A verified setup later failed a chat call or used a labeled fallback. |
-| `unauthorized`, `unreachable`, `endpoint_disabled`, `failed` | Setup needs attention. |
+| `chat_verified` | OpenClaw answered, but CRM access has not been proven. |
+| `crm_verified` | The native CRM tool completed and the backend recorded the matching audit. |
+| `degraded` | CRM was previously verified, but the latest chat completion failed. |
+| `failed` | A required live check did not complete. |
+| `unauthorized`, `unreachable`, `endpoint_disabled` | The connection or endpoint needs attention. |
 
 ## Review before applying changes
 
-Natural-language CRM operations do not apply directly. New leads, updates,
+CRM writes wait for review and do not apply directly. New leads, updates,
 notes, reminders, bookings, closes, merges, and deletes enter **Pending approvals**
 first. The operator can edit, approve, or deny each item. Booking
 availability is checked again when approval happens. New-lead preferences are
@@ -261,7 +276,8 @@ the box saves an empty preference list.
 The native CRM tool does not use OpenClaw command execution. The remaining
 daily-brief command allowlist does not bypass this CRM review screen.
 
-This is also true for the optional Discord binding:
+Discord is optional and is tested only after dashboard acceptance. The same
+review rule applies to its writes:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
@@ -271,6 +287,10 @@ Use the `ACCOUNT` identifier OpenClaw documents for your Discord account. The
 dashboard remains the place to review proposed CRM changes.
 
 ## Voice notes
+
+Voice intake has a separate optional prerequisite: an optional transcription
+provider configured in OpenClaw. The CRM does not silently substitute a cloud
+provider. Test the provider itself before relying on voice intake.
 
 The app calls this OpenClaw CLI surface without a shell:
 
@@ -291,7 +311,7 @@ from current CRM rows. An agent may add labeled preparation advice but cannot
 replace those facts. A market summary exists only after a valid, source-backed
 daily payload is stored. Every market item needs a source URL, publication date,
 summary, and geographic area. Missing information stays visibly
-unavailable.
+unavailable. Missing briefing content is never synthesized.
 
 If the AI cannot extract a lead, draft a follow-up, or explain a score, the
 application may use a deterministic fallback. It is visibly labeled and must
@@ -393,6 +413,8 @@ Verify the dashboard, voice intake, and truthful briefing first. Then test
 Discord and external providers in this order:
 
 - [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
+- [ ] Full `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+  report inspected and attached.
 - [ ] 2. Dashboard chat lists real CRM leads.
 - [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.

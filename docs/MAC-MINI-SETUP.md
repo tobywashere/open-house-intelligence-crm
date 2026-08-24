@@ -96,7 +96,17 @@ python3 scripts/doctor.py --live-agent --live-crm --json \
 Inspect the file before sharing it. The report is designed to omit tokens, CRM
 records, chat content, model responses, and your home-directory path.
 
+After the read-only check reports `crm_verified`, run the full acceptance only
+when you are comfortable creating one disposable proposal. It is never
+approved; the runner denies it and cleans up its test chat:
+
+```bash
+python3 scripts/acceptance_openclaw.py --json --allow-test-write
+```
+
 ## 4. Check the visible behavior
+
+CRM writes wait for review. Test that rule in this order:
 
 1. Ask chat to add a disposable lead. It should appear in **Pending approvals**,
    not immediately in **Leads**.
@@ -106,6 +116,7 @@ records, chat content, model responses, and your home-directory path.
    details, then cancel. Confirm no lead was added.
 4. Open **Daily summary**. Appointments and follow-ups must match the CRM. A
    missing market summary must stay unavailable, not turn into sample news.
+   Missing briefing content is never synthesized.
 
 Only **CRM capability: crm_verified** proves that the agent made an audited
 CRM tool call. If the app uses a **deterministic fallback**, it labels the
@@ -114,7 +125,8 @@ summary, and geographic area; incomplete information stays unavailable.
 
 ## 5. Voice notes
 
-Check local transcription before relying on voice input:
+Voice intake has a separate optional prerequisite: an optional transcription
+provider configured in OpenClaw. Check it before relying on voice input:
 
 ```bash
 openclaw infer audio transcribe --file /path/to/a-short-recording.m4a --json
@@ -127,8 +139,9 @@ no cloud transcription fallback.
 
 ## 6. Optional Discord
 
-Dashboard chat is the primary experience. To use the same dedicated agent in
-Discord, run this from the project folder:
+Dashboard chat is the primary experience. Test Discord only after dashboard
+acceptance passes. To use the same dedicated agent, run this from the project
+folder:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
@@ -163,6 +176,8 @@ Do not check these boxes until someone has completed the run on this machine.
 - [ ] Date and operator:
 - [ ] Product revision from the compatibility report:
 - [ ] `--live-agent --live-crm` reports CRM capability verified
+- [ ] Full `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+  report inspected and attached
 - [ ] Dashboard chat proposes a reviewed CRM write
 - [ ] Voice note reaches the review screen
 - [ ] Optional Discord binding, if used, reaches the same agent

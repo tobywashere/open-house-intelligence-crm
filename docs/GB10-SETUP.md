@@ -57,26 +57,37 @@ only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the
 recovery notes in [LOCAL-AI.md](LOCAL-AI.md#recovery). Do not trust a generic
 assistant answer as proof that it can access CRM tools.
 
+After the read-only check succeeds, use the full acceptance runner only when
+you want to authorize one disposable proposal. It is never approved and is
+denied during cleanup:
+
+```bash
+python3 scripts/acceptance_openclaw.py --json --allow-test-write
+```
+
 ## Optional Discord
 
-Dashboard chat is the primary experience. Bind Discord only when you need it:
+Dashboard chat is the primary experience. Discord is optional and should be
+tested only after dashboard acceptance. Bind it only when you need it:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
-It uses the same dedicated agent. Agent-created leads, notes, reminders,
-bookings, and other CRM writes still wait for dashboard approval.
+It uses the same dedicated agent. CRM writes wait for review in dashboard
+**Pending approvals**.
 
 ## What to verify
 
 - A natural-language lead, note, reminder, and booking each appear in
   **Pending approvals** before changing CRM data.
 - A rejected booking or reminder does not make an external calendar call.
-- Voice transcription reaches an editable review screen before any lead write.
+- Voice intake has a separate optional prerequisite: an optional transcription
+  provider configured in OpenClaw. After setup, transcription reaches an
+  editable review screen before any lead write.
 - A deterministic fallback is visibly labeled for review.
 - Daily schedule facts match the CRM and missing market information stays
-  unavailable instead of being fabricated.
+  unavailable and is never synthesized.
 - Market items require a source URL, publication date, summary, and geographic area.
   Incomplete information stays unavailable.
 
@@ -90,6 +101,8 @@ These are intentionally unchecked. Fill them out after an actual GB10 run.
 - [ ] Memory:
 - [ ] Date and operator:
 - [ ] `--live-agent --live-crm` reports CRM capability verified
+- [ ] Full `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+  report inspected and attached
 - [ ] Dashboard chat proposes a reviewed CRM write
 - [ ] Voice note reaches the review screen
 - [ ] Optional Discord binding, if used, reaches the same agent

@@ -177,6 +177,19 @@ def test_deterministic_failure_is_disclosed_without_inventing_item(monkeypatch):
     assert "offline" in failures[0]["body"]
 
 
+def test_beginner_docs_describe_missing_briefing_data_as_unavailable_not_synthesized():
+    for relative_path in (
+        "README.md",
+        "docs/LOCAL-AI.md",
+        "docs/MAC-MINI-SETUP.md",
+        "docs/WINDOWS-WSL-SETUP.md",
+        "docs/GB10-SETUP.md",
+    ):
+        text = " ".join((REPO_ROOT / relative_path).read_text().lower().split())
+        assert "unavailable" in text, relative_path
+        assert "never synthesized" in text, relative_path
+
+
 def test_deterministic_partial_failure_keeps_only_successful_source_items(monkeypatch):
     def item(url, title):
         return {

@@ -162,8 +162,9 @@ python3 scripts/setup_openclaw.py 2>&1 | tee -a openhouse-setup.txt
 ```
 
 Setup links the bundled `openhouse_crm` plugin, verifies that OpenClaw really
-registered the tool, and leaves only the deterministic daily brief on the exec
-allowlist. Do not manually edit the agent's plugin, exec host, mode, security,
+registered the tool, installs the `crm-db-operations` guidance for
+`AGENT_ID=openhouse-crm`, and leaves only the deterministic daily brief on the
+exec allowlist. Do not manually edit the agent's plugin, exec host, mode, security,
 or global `tools.exec` settings between runs. If setup fails, stop here and keep
 `openhouse-setup.txt` for the maintainer.
 
@@ -195,9 +196,17 @@ memory, dependency versions, and application checks. It is designed not to
 include tokens, environment values, CRM rows, chat content, model responses, or
 home-directory paths. Inspect the file yourself before sharing it.
 
+After that read-only check reports `crm_verified`, use the complete acceptance
+runner if you want to authorize one disposable proposal. It never approves the
+proposal; it denies it and removes its test chat:
+
+```bash
+python3 scripts/acceptance_openclaw.py --json --allow-test-write
+```
+
 ## 9. Check the visible behavior
 
-Test in this order:
+CRM writes wait for review in **Pending approvals**. Test in this order:
 
 1. Ask dashboard chat to list the CRM leads. Confirm the answer matches the
    local CRM rather than generic session information.
@@ -205,11 +214,15 @@ Test in this order:
    approvals** and does not appear in **Leads** before approval.
 3. Approve or deny the disposable proposal, then confirm the CRM matches that
    choice.
-4. Record or upload a short voice note. Confirm the transcript and extracted
-   fields appear for editing before any lead is created. Cancel the draft.
+4. Voice intake has a separate optional prerequisite: an optional
+   transcription provider in OpenClaw. After configuring one, record or upload
+   a short voice note. Confirm the transcript and extracted fields appear for
+   editing before any lead is created. Cancel the draft.
 5. Open **Daily summary**. CRM facts must match stored data. Missing market
-   information must stay unavailable instead of becoming plausible sample news.
-6. Optionally bind Discord only after the dashboard tests pass. Confirm Discord
+   information must stay unavailable and is never synthesized. A displayed
+   market item requires a source URL, publication date, summary, and geographic area.
+   A **deterministic fallback** is labeled for review.
+6. Discord is optional. Test it only after dashboard acceptance. Confirm Discord
    reads through the same dedicated agent and sends writes to dashboard Pending
    approvals.
 

@@ -167,7 +167,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `POST /appointments` ⏸ | `{lead_id, start_ts, end_ts, location}` → appt | **409 on conflict**; agent-tagged calls queue, then re-check the slot on approval before setting status `meeting_booked` |
 | `GET /appointments` | → `[appt]` | |
 | `GET /appointments/{id}/ics` | → `.ics` file | additive (documented 2026-07-26); calendar-file download used by the booking card |
-| `POST /chat` | `{message, session_id}` → `{reply, session_id}` | relays to agent driver (mock/openclaw) |
+| `POST /chat` | `{message, session_id}` → `{reply, session_id}` | keeps the existing public shape; OpenClaw mode uses the verified orchestration described in §3 and persists only its verified final reply |
 | `GET /chat/history?session_id=` | → `[message]` | |
 | `GET /chat/sessions` | → `[{session_id, message_count, last_at, preview}]` | additive 2026-07-26 (chat history picker) |
 | `DELETE /chat/history?session_id=` | → `{deleted}` | additive 2026-07-26 (clear conversation) |
@@ -180,7 +180,7 @@ before. See the `pending_changes` table (§1) and §3's tool-catalog note.
 | `GET /metrics` | → dashboard tile numbers | ordinary reads do not audit; an `X-Actor: agent` request audits `generate_dashboard_insights`, including optional `probe_nonce` |
 | `GET /health` | → `{ok, agent_mode, agent_connected, agent_status}` | status is one of `mock`, `endpoint_enabled`, `chat_verified`, `crm_verified`, `degraded`, `endpoint_disabled`, `unauthorized`, `unreachable`, or `failed` |
 | `POST /health/agent-check` | → `agent_status` | sends one harmless completion; success proves chat, not CRM tool access |
-| `POST /health/crm-check` | → `agent_status` | asks the selected OpenClaw agent for read-only `generate_dashboard_insights` with a fresh nonce; only a new agent-tagged `/metrics` audit row with that nonce yields `crm_verified`; mock mode returns 409 |
+| `POST /health/crm-check` | → `agent_status` | directly invokes native `openhouse_crm` through OpenClaw's policy-controlled `/tools/invoke` with read-only `generate_dashboard_insights` and a fresh nonce; only a new matching agent-tagged `/metrics` audit row yields `crm_verified`; it does not trust model prose, and mock mode returns 409 |
 | `POST /demo/advance-time` | `{days}` → `{neglected: [lead]}` | `days: 0` only runs the current neglect check and remains agent-callable; positive backdating is user-only and returns **403** with `X-Actor: agent` |
 | `GET /briefing?date=YYYY-MM-DD` | → canonical CRM briefing JSON | always derives schedule, lead facts, and due actions from current rows; stored agent advice is optional |
 | `POST /briefing` | `{date, generated_at?, meeting_briefs:[{lead_id,prepare,recommendation}]}` → validated advice | factual replacement fields are ignored; unknown lead IDs are rejected |
@@ -226,6 +226,74 @@ OpenClaw registers one native tool named `openhouse_crm`. Its input contains a
 catalog operation and an object of named arguments. The bundled plugin invokes
 the fixed audited wrapper without a shell. The `crm-db-operations` skill is
 model guidance, not a callable tool ID.
+
+### Strict model-facing operation contract
+
+[`skills/crm-db-operations/contract.json`](../skills/crm-db-operations/contract.json)
+is the single model-facing operation contract. Each entry declares its exact
+argument schema and one effect: `read`, `narrative`, `proposal`, or
+`validated_write`. Unknown operations, unknown fields, missing required fields,
+wrong types, invalid enum values, and out-of-range values fail validation before
+the wrapper runs. In particular, model input cannot add undeclared fields to
+`create_lead` or choose a command, executable, URL, token, timeout, environment,
+or working directory.
+
+The same source file generates the native plugin schema and dashboard's
+`openhouse_crm_request` client-function schema. Tests require exact parity with
+the fixed Python dispatcher. This strict schema is a model-facing projection;
+it does not change the REST response shapes or database schema frozen above.
+
+The plugin returns one bounded structured receipt. Success uses:
+
+```json
+{"ok":true,"operation":"create_lead","kind":"proposal","result":{"pending":true,"id":4,"status":"pending","summary":"Create lead Jordan Ellis"}}
+```
+
+Failure uses:
+
+```json
+{"ok":false,"operation":"create_lead","kind":"error","error":{"code":"invalid_arguments","message":"Unsupported argument: source_note","retryable":false}}
+```
+
+Allowed error codes are `invalid_arguments`, `not_found`, `ambiguous_match`,
+`schedule_conflict`, `backend_unavailable`, `timeout`, `result_too_large`, and
+`operation_failed`. Receipt size and messages are bounded; raw stderr, stack
+traces, tokens, environment values, and local paths are not returned.
+
+`list_lead_directory` is the compact read for normal list and count questions.
+It accepts optional `sort`, `status`, `neglected`, `offset`, and `limit` values
+from the strict contract and returns:
+
+```json
+{"total":15,"offset":0,"limit":25,"leads":[{"id":4,"name":"Jordan Ellis","status":"new","score":72,"area":"Kirkland","intent":"buy","is_neglected":0}]}
+```
+
+`total` is computed before pagination. Full lead profiles remain behind
+`get_lead_context`, and `list_leads` remains available for compatibility.
+
+### Verified dashboard orchestration
+
+OpenClaw dashboard turns require one of two request-scoped client functions:
+`openhouse_crm_request` chooses a strict operation, and `finish_crm_response`
+classifies the answer as `answered`, `queued`, `needs_clarification`, or
+`failed` and cites collected call IDs. The backend validates a request, invokes
+the installed `openhouse_crm` tool through OpenClaw's `/tools/invoke`, validates
+the receipt, and returns it to the model. It accepts a finish only when the
+classification matches that evidence.
+
+Counts, lead identities, statuses, appointments, and proposal IDs are rendered
+from verified receipts. A write is reported as queued only when a real proposal
+receipt contains the matching pending ID. A failed write says nothing was
+queued or changed. Model-round and CRM-call limits are fixed, mutating invokes
+are not automatically retried, and only the verified final response is stored
+in `chat_messages`. The public `POST /chat` request and response shape remains
+unchanged.
+
+The dashboard model round carries the synthetic `openhouse-dashboard` channel
+marker. The plugin blocks internal CRM execution on that marker so the model
+cannot perform the same mutation before the backend's verified invoke. Discord
+uses the same strict native tool and a run-scoped delivery guard for reviewed
+write receipts.
 
 **Audit reality (corrected 2026-07-27, refined 2026-07-28 — the previous
 "every tool call MUST write an audit_log row" claim here was false):** every
@@ -302,6 +370,7 @@ keep separate proposals.
 | `merge_leads(primary_id, duplicate_id)` ⏸ | `POST /leads/merge` (additive, recorded 2026-07-27) |
 | `get_lead_context(id)` | `GET /leads/{id}` |
 | `list_leads(sort, status, neglected)` | `GET /leads?sort=&status=&neglected=` (additive, recorded 2026-07-27) |
+| `list_lead_directory(sort?, status?, neglected?, offset=0, limit=25)` | compact projection of `GET /leads` with an exact pre-pagination `total`; model-facing addition recorded 2026-08-22 |
 | `delete_lead(lead_id, reason)` ⏸ | `DELETE /leads/{id}` (additive, recorded 2026-07-27) |
 | `score_lead(id)` | `POST /leads/{id}/process` (returns the candidate score/reason; generated lead-field changes await approval) |
 | `draft_followup(id)` | `POST /leads/{id}/process` (returns the draft; generated lead-field changes await approval) |

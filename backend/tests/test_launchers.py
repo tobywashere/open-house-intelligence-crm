@@ -39,7 +39,22 @@ GUIDE_SETUP_REGIONS = {
         "cd open-intelligence-crm",
         "start in the directory where you cloned the project",
     ),
+    REPO / "docs/WINDOWS-WSL-SETUP.md": (
+        "## 4. Download the CRM",
+        "## 9. Check the visible behavior",
+        "cd ~/open-intelligence-crm",
+        "Open a second WSL terminal",
+    ),
 }
+
+
+BEGINNER_GUIDES = [
+    REPO / "README.md",
+    REPO / "docs/LOCAL-AI.md",
+    REPO / "docs/MAC-MINI-SETUP.md",
+    REPO / "docs/WINDOWS-WSL-SETUP.md",
+    REPO / "docs/GB10-SETUP.md",
+]
 
 
 def _section_between(text: str, start: str, end: str) -> str:
@@ -106,6 +121,77 @@ def test_readme_uses_setup_helper_and_real_capability_check():
     assert "python3 scripts/setup_openclaw.py" in text
     assert "python3 scripts/doctor.py --live-agent --live-crm" in text
     assert "16 GB" in text
+
+
+def test_beginner_guides_share_setup_readiness_and_acceptance_commands():
+    normal_setup = "python3 scripts/setup_openclaw.py"
+    serve = "bash scripts/serve.sh"
+    readiness = "python3 scripts/doctor.py --live-agent --live-crm"
+    acceptance = "python3 scripts/acceptance_openclaw.py --json --allow-test-write"
+
+    for path in BEGINNER_GUIDES:
+        text = path.read_text()
+        assert normal_setup in text, path
+        assert serve in text, path
+        assert readiness in text, path
+        assert acceptance in text, path
+        assert text.index(normal_setup) < text.index(serve) < text.index(readiness), path
+
+
+def test_beginner_guides_explain_reviewed_writes_in_plain_language():
+    for path in BEGINNER_GUIDES:
+        normalized = " ".join(path.read_text().lower().split())
+        assert "writes wait for review" in normalized, path
+        assert "pending approvals" in normalized, path
+
+
+def test_beginner_guides_do_not_prescribe_manual_openclaw_policy_repairs():
+    forbidden_commands = re.compile(
+        r"openclaw\s+(?:config\s+(?:set|patch).*(?:agents\.|tools\.)|"
+        r"plugins?\s+(?:install|enable|disable|remove))",
+        flags=re.IGNORECASE,
+    )
+    forbidden_files = ("agents.list", "openclaw.json", "plugin manifest")
+
+    for path in BEGINNER_GUIDES:
+        text = path.read_text()
+        for block in _bash_blocks(text):
+            assert forbidden_commands.search(block) is None, (path, block)
+        normalized = " ".join(text.lower().split())
+        for name in forbidden_files:
+            assert f"edit {name}" not in normalized, (path, name)
+
+
+def test_beginner_guides_state_supported_hardware_and_optional_features():
+    readme = (REPO / "README.md").read_text()
+    local = (REPO / "docs/LOCAL-AI.md").read_text()
+    mac = (REPO / "docs/MAC-MINI-SETUP.md").read_text()
+    wsl = (REPO / "docs/WINDOWS-WSL-SETUP.md").read_text()
+
+    assert "Apple-silicon" in readme and "16 GB" in readme
+    assert "Linux x86_64 or ARM64" in readme
+    assert "Windows 11" in readme and "WSL2" in readme
+    assert "Native Windows" in readme and "not" in readme
+    assert "16 GB" in mac
+    assert "16 GB" in wsl
+    normalized_local = " ".join(local.lower().split())
+    assert "optional transcription provider" in normalized_local
+    assert "after dashboard acceptance" in normalized_local
+
+
+def test_local_ai_explains_evidence_statuses_without_equating_chat_and_crm():
+    text = " ".join((REPO / "docs/LOCAL-AI.md").read_text().split())
+
+    assert "`chat_verified`" in text
+    assert "CRM access has not been proven" in text
+    assert "`crm_verified`" in text
+    assert "native CRM tool completed" in text
+    assert "matching audit" in text
+    assert "`degraded`" in text
+    assert "previously verified" in text
+    assert "latest chat completion failed" in text
+    assert "`failed`" in text
+    assert "required live check did not complete" in text
 
 
 def test_setup_docs_do_not_make_manual_skill_copy_the_primary_path():

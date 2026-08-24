@@ -1,16 +1,8 @@
 # OpenHouse Intelligence
 
-OpenHouse Intelligence is a local-first CRM for real-estate agents. Add a
-lead, record a voice note, write a note, schedule a follow-up, or book a tour
-in plain language. Before an agent-created CRM change is saved, you review it
-in **Pending approvals**.
-
-It runs in two useful ways:
-
-- **Demo mode** is safe for trying the product and works offline after its
-  first launch installs the project dependencies.
-- **Real local-AI mode** connects the dashboard to your own OpenClaw agent and
-  local CRM tools.
+OpenHouse Intelligence is a local-first CRM for real-estate agents. Use plain
+language to add leads, write notes, schedule follow-ups, and book tours. CRM
+writes wait for review in **Pending approvals** before anything changes.
 
 ## Try the demo
 
@@ -22,23 +14,20 @@ cd open-intelligence-crm
 bash scripts/dev.sh
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Demo mode creates
-clearly labeled sample data only in a new local database. It does not need a
-model, GPU, or account. The first launch may download Python and Node packages;
-after they are installed, demo mode works without internet access.
+Open [http://localhost:5173](http://localhost:5173). Demo mode uses clearly
+labeled sample data and does not need a model, GPU, or account.
 
 ## Set up real local AI
 
-This is the short, guided setup for a single machine. Before starting, install
-OpenClaw and configure a tool-capable model in it. Enable its Chat Completions
-endpoint once:
+Real local AI requires OpenClaw and a tool-capable model. Enable OpenClaw's
+Chat Completions endpoint once:
 
 ```bash
 openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
 openclaw config validate
 ```
 
-Then run the project commands in order:
+Then clone and prepare the CRM:
 
 ```bash
 git clone https://github.com/tobywashere/open-house-intelligence-crm.git open-intelligence-crm
@@ -46,8 +35,8 @@ cd open-intelligence-crm
 cp .env.example .env
 ```
 
-Open `.env` in a text editor and change `AGENT_MODE=mock` to
-`AGENT_MODE=openclaw`. Then continue:
+Open `.env` and change `AGENT_MODE=mock` to `AGENT_MODE=openclaw`. Keep
+`AGENT_ID=openhouse-crm`, then run:
 
 ```bash
 python3 scripts/setup_openclaw.py
@@ -55,164 +44,79 @@ bash scripts/serve.sh
 ```
 
 Keep that Terminal open. In a second Terminal, start in the directory where
-you cloned the project, then run:
+you cloned the project and run the read-only readiness check:
 
 ```bash
 cd open-intelligence-crm
 python3 scripts/doctor.py --live-agent --live-crm
 ```
 
-Open [http://localhost:8080](http://localhost:8080). The last command is the
-important proof: it checks that chat works **and** that the agent actually made
-one safe, read-only CRM tool call.
+Open [http://localhost:8080](http://localhost:8080). Look for
+`crm_verified`. This proves the native `openhouse_crm` tool reached the audited
+CRM, not merely that a generic assistant answered. Setup installs the
+`crm-db-operations` guidance and the restricted CRM tool automatically. Do not
+repair OpenClaw agent, tool, exec, profile, or plugin settings by hand. Rerun
+the same setup command if it reports a partial installation.
 
-The setup helper reads `AGENT_ID` from `.env`, creates that dedicated agent,
-installs the `crm-db-operations` guidance in its workspace, and links the
-bundled `openhouse_crm` tool plugin. The model can use that one typed tool for
-CRM work. `exec` remains available only for the deterministic daily-brief
-runner; general web, browser, and file tools are denied. CRM writes still go to
-**Pending approvals**. The default is `AGENT_ID=openhouse-crm`. If you use
-`--agent-id`, set `AGENT_ID` to the same value in `.env`; setup rejects a
-conflict so the CRM runtime cannot silently target a different agent.
+For a complete opt-in test, including one disposable write that is denied and
+cleaned up, run:
 
-The helper prints the installed OpenClaw version for troubleshooting. Support
-is capability-based, not tied to a guessed version number: setup checks the
-documented commands and prerequisite policy surfaces before it changes
-anything. After configuration, it reads the dedicated agent's tool policy back
-from OpenClaw and reports success only when `openhouse_crm` and `exec` are the
-exact allowed tools, the plugin registers the real CRM tool, and only the daily
-brief remains on the executable allowlist. Dashboard and Discord use this same
-agent path. If a required surface is missing, setup stops and explains what
-capability needs updating.
+```bash
+python3 scripts/acceptance_openclaw.py --json --allow-test-write
+```
 
-The app is designed around a Mac mini, but it is not tied to Apple hardware:
-
-| Computer | Support |
-|---|---|
-| Apple-silicon Mac mini, 16 GB or more | Primary setup path |
-| Linux x86_64 or ARM64, 16 GB or more | Supported |
-| Windows 11 with WSL2, 16 GB or more | Supported through Linux in WSL2 |
-| Native Windows PowerShell | Not currently supported |
-
-Sixteen gigabytes is enough for the CRM plus a modest quantized model. It does
-not mean every model will fit or respond quickly. Choose a model that fits your
-machine, and confirm OpenClaw can answer a simple prompt before setting up the
-CRM. Follow the [Mac mini guide](docs/MAC-MINI-SETUP.md), the
-[Windows/WSL2 guide](docs/WINDOWS-WSL-SETUP.md), or the shared
-[local-AI guide](docs/LOCAL-AI.md). The [GB10 guide](docs/GB10-SETUP.md) is an
-optional hardware-specific variant, not a requirement.
+This command never approves the test proposal. Inspect its JSON before sharing
+it.
 
 ## What the status means
 
-- **Endpoint enabled** means the CRM can reach OpenClaw's chat endpoint.
-- **Chat verified** means OpenClaw returned a real chat completion.
-- **CRM verified** means the selected agent also made an audited, read-only
-  CRM call. This is the status to look for before relying on dashboard chat.
-- **Degraded** means a previously verified setup later had a chat failure or
-  used a labeled deterministic fallback.
+`chat_verified` proves only that OpenClaw answered. `crm_verified` proves the
+native CRM tool completed and the backend recorded its matching audit. The
+[full local-AI guide](docs/LOCAL-AI.md#live-checks-and-status) explains every
+status and the recovery steps.
 
-Use `python3 scripts/doctor.py` for a read-only local check. Use
-`python3 scripts/doctor.py --live-agent --live-crm` while the product is
-running to repeat both live checks.
+## Supported computers
 
-When someone else is helping you test, create one sanitized report instead of
-copying several terminal screenshots:
+| Computer | Support |
+|---|---|
+| Apple-silicon Mac mini, 16 GB or more | Primary path |
+| Linux x86_64 or ARM64, 16 GB or more | Supported |
+| Windows 11 with WSL2, 16 GB or more | Supported inside WSL2 |
+| Native Windows | Not currently supported |
 
-```bash
-python3 scripts/doctor.py --live-agent --live-crm --json
-```
+Sixteen gigabytes is the minimum for the CRM plus a modest quantized model. A
+larger model may need more memory. See the [Mac mini guide](docs/MAC-MINI-SETUP.md),
+[Windows/WSL2 guide](docs/WINDOWS-WSL-SETUP.md), [GB10 guide](docs/GB10-SETUP.md),
+or [full local-AI guide](docs/LOCAL-AI.md).
 
-The report includes platform and dependency versions, memory, and verification
-statuses. It excludes tokens, CRM records, chat content, model responses, and
-local home-directory paths.
+## What happens in the app
 
-## What happens when you ask for a change
-
-Ask naturally, for example:
-
-- “Add Taylor Brooks, looking in Bellevue around $900k.”
-- “Add a note that Taylor wants a yard.”
-- “Remind me Monday at 9 to call Taylor.”
-- “Book Taylor for the 10:00 slot.”
-
-The agent proposes the lead, note, reminder, booking, update, merge, close,
-or deletion. It does not apply that proposal until you approve it. You can
-edit a proposal before approval or deny it. For a new lead, this includes the
-person's preferences; leave that box blank if you want to clear them. If a
-booking slot is no longer free at approval time, it is not booked.
-
-Voice notes follow the same rule: record or upload audio, review the
-transcript and extracted details, then choose whether to add or update a lead.
-Temporary audio is deleted after transcription. Card scans are also review
-first.
-
-When the AI is unavailable for extraction, follow-up drafting, or score
-explanations, the interface marks its deterministic fallback. Treat it as a
-draft and review it. Chat errors never silently become fabricated CRM facts.
-
-## Daily briefing and market information
-
-Your schedule, lead facts, and follow-ups come from the local CRM database.
-The app does not fill missing appointments, client details, market news, or
-recommendations with plausible samples.
-
-Market summaries are optional. A real summary only appears after a workflow
-stores source-backed items with a publication date, a short summary, and a
-geographic area. If that information is missing, the dashboard says it is
-unavailable. Gmail, Google Calendar, the fixed-source daily-brief runner, and
-remote model providers are optional internet services and remain off unless
-you configure them.
+- Natural-language reads use verified CRM results.
+- New leads, notes, reminders, bookings, updates, merges, closes, and deletes
+  wait in **Pending approvals**. You choose whether to approve or deny them.
+- Voice intake is optional. Configure a transcription provider first, then
+  review the transcript and extracted details before creating or updating a
+  lead.
+- A **deterministic fallback** is labeled as a draft for review.
+- Briefing schedule facts come from the CRM. Market items require a source URL,
+  publication date, summary, and geographic area. Missing information is shown
+  as unavailable and is never synthesized.
 
 ## Optional Discord
 
-The dashboard is the primary chat experience. To use the same dedicated agent
-in Discord, bind an account during setup:
+The dashboard is the primary experience. Complete dashboard acceptance first.
+Then, if wanted, bind Discord to the same agent:
 
 ```bash
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
-Replace `ACCOUNT` with the account identifier OpenClaw expects. If setup was
-already completed, use the binding command it prints. Discord uses the same
-agent configuration and the same review-before-apply CRM rules.
+Discord CRM writes wait for review in the dashboard's **Pending approvals**.
 
-## If something goes wrong
+## Help and privacy
 
-- **Endpoint disabled or 404:** rerun the endpoint-enable command above and
-  follow OpenClaw's restart instructions.
-- **OpenClaw gateway unauthorized:** put its matching token in
-  `AGENT_GATEWAY_TOKEN` in `.env`, then restart `bash scripts/serve.sh`.
-- **CRM API unauthorized:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in
-  `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
-  API commands must also send that value in `X-API-Token`.
-- **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
-  It repairs a partial dedicated-agent setup, relinks the bundled CRM plugin,
-  verifies the actual `openhouse_crm` runtime tool, and removes the old CRM
-  shell approval. It does not require changes to global `tools.exec` settings. See
-  [recovery steps](docs/LOCAL-AI.md#recovery).
-- **OpenClaw unreachable:** check that the gateway is running on port 18789
-  and that `AGENT_GATEWAY_URL` in `.env` is correct.
-- **Voice transcription failed:** run the exact command in
-  [the local-AI guide](docs/LOCAL-AI.md#voice-notes).
-- **Gmail or Calendar stopped retrying:** failed jobs try five times, then stop
-  for review. Use the two beginner recovery commands in
-  [the local-AI guide](docs/LOCAL-AI.md#if-gmail-or-calendar-stops-retrying).
-- **No daily market summary:** this is an honest empty state, not an error the
-  CRM should hide with made-up content.
-
-## Privacy, backup, and developer references
-
-SQLite data, local-model inference, local transcription, and the bundled
-knowledge index stay on the host. Data may leave it only when you configure a
-remote model provider, Composio Gmail/Calendar, or the fixed-source daily-brief
-runner. Keep OpenClaw and the CRM on a private interface. Never commit `.env`,
-gateway tokens, client data, recordings, or `backend/data/crm.db`.
-
-To back up, stop the app and copy the database:
-
-```bash
-cp backend/data/crm.db ~/Desktop/openhouse-crm-backup.db
-```
-
-More detail is available in [docs/LOCAL-AI.md](docs/LOCAL-AI.md),
-[docs/CONTRACT.md](docs/CONTRACT.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
+Detailed status meanings, voice setup, recovery, and safe report sharing are in
+[docs/LOCAL-AI.md](docs/LOCAL-AI.md). Keep OpenClaw and the CRM on a private
+interface. Never commit `.env`, tokens, client data, recordings, or
+`backend/data/crm.db`. The REST and database contracts are documented in
+[docs/CONTRACT.md](docs/CONTRACT.md).
