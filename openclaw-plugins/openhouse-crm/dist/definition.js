@@ -126,14 +126,16 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
 
       api.on("reply_payload_sending", (event, context) => {
         const runId = exactRunId(event, context);
-        const agentId = event.usageState?.agentId;
         if (
           !runId
-          || agentId !== crmAgentId
           || (context.channel !== "discord" && context.messageProvider !== "discord")
           || typeof event.payload?.text !== "string"
         ) return;
-        const text = outcomeGuard.rewrite({ runId, agentId, text: event.payload.text });
+        const text = outcomeGuard.rewrite({
+          runId,
+          agentId: crmAgentId,
+          text: event.payload.text,
+        });
         if (text === event.payload.text) return;
         return { payload: { ...event.payload, text } };
       });

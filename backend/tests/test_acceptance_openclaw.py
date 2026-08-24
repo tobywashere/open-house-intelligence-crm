@@ -240,6 +240,91 @@ def test_discord_binding_inspection_loads_agent_id_from_repo_env(
     assert captured == ["portable-crm"]
 
 
+def test_discord_binding_inspection_defaults_only_when_agent_id_is_absent(
+    monkeypatch, tmp_path
+):
+    captured: list[str] = []
+    monkeypatch.delenv("AGENT_ID", raising=False)
+    monkeypatch.setattr(acceptance, "REPO", tmp_path)
+    monkeypatch.setattr(
+        acceptance,
+        "_capture_discord_binding",
+        lambda agent_id: captured.append(agent_id) or False,
+    )
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=None,
+        session_id="accept-agent-default",
+        test_id="agent-default",
+    )
+
+    assert acceptance.exit_code(result) == 0
+    assert captured == ["openhouse-crm"]
+
+
+@pytest.mark.parametrize("agent_id", ["", "   ", "Custom CRM", "main"])
+def test_discord_binding_inspection_rejects_explicit_invalid_environment_agent_id(
+    monkeypatch, agent_id
+):
+    captured: list[str] = []
+    api = FakeAPI()
+    monkeypatch.setenv("AGENT_ID", agent_id)
+    monkeypatch.setattr(
+        acceptance,
+        "_capture_discord_binding",
+        lambda selected: captured.append(selected) or False,
+    )
+
+    result = acceptance.run_acceptance(
+        api,
+        allow_test_write=True,
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=None,
+        session_id="accept-agent-invalid-env",
+        test_id="agent-invalid-env",
+    )
+
+    assert acceptance.exit_code(result) == 1
+    assert captured == []
+    assert by_name(result, "CRM agent configuration")["level"] == "FAIL"
+    assert api.chat_messages == []
+    assert api.pending_get_calls == 0
+    assert api.pending_posts == []
+    assert api.deleted_sessions == []
+
+
+@pytest.mark.parametrize("agent_id", ["", "   ", "Custom CRM", "main"])
+def test_discord_binding_inspection_rejects_explicit_invalid_repo_agent_id(
+    monkeypatch, tmp_path, agent_id
+):
+    captured: list[str] = []
+    monkeypatch.delenv("AGENT_ID", raising=False)
+    monkeypatch.setattr(acceptance, "REPO", tmp_path)
+    (tmp_path / ".env").write_text(f"AGENT_ID={agent_id}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        acceptance,
+        "_capture_discord_binding",
+        lambda selected: captured.append(selected) or False,
+    )
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=None,
+        session_id="accept-agent-invalid-file",
+        test_id="agent-invalid-file",
+    )
+
+    assert acceptance.exit_code(result) == 1
+    assert captured == []
+    assert by_name(result, "CRM agent configuration")["level"] == "FAIL"
+
+
 def by_name(result: dict, name: str) -> dict:
     return next(check for check in result["checks"] if check["name"] == name)
 

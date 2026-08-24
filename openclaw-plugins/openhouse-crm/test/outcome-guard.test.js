@@ -33,18 +33,16 @@ function failedReceipt(overrides = {}) {
 }
 
 
-test("rewrites a pending proposal deterministically and consumes it once", () => {
+test("rewrites every correlated payload until bounded state cleanup", () => {
   const guard = createOutcomeGuard();
   guard.record({ runId: "run-1", agentId: "openhouse-crm", receipt: pendingReceipt });
 
-  assert.equal(
-    guard.rewrite({ runId: "run-1", agentId: "openhouse-crm", text: "Done" }),
-    "Proposal #4 is waiting for your review: Create lead Jordan Ellis.",
-  );
-  assert.equal(
-    guard.rewrite({ runId: "run-1", agentId: "openhouse-crm", text: "Second payload" }),
-    "Second payload",
-  );
+  for (const text of ["Done", "Second payload", "Late unverified success"]) {
+    assert.equal(
+      guard.rewrite({ runId: "run-1", agentId: "openhouse-crm", text }),
+      "Proposal #4 is waiting for your review: Create lead Jordan Ellis.",
+    );
+  }
 });
 
 
@@ -434,9 +432,54 @@ test("renders each validated-write success including both contract operations", 
 
   assert.equal(
     guard.rewrite({ runId: "run-applied", agentId: "openhouse-crm", text: "Done" }),
-    "Verified CRM write completed: find neglected leads.\n"
-      + "Verified CRM write completed: post briefing.",
+    "Verified CRM write completed: find neglected leads (1 lead flagged; ID 7).\n"
+      + "Verified CRM write completed: post briefing (briefing date 2026-08-24).",
   );
+});
+
+
+test("bounds validated-write evidence and never renders arbitrary result fields", () => {
+  const guard = createOutcomeGuard();
+  guard.record({
+    runId: "run-applied-evidence",
+    agentId: "openhouse-crm",
+    receipt: {
+      ok: true,
+      operation: "find_neglected_leads",
+      kind: "validated_write",
+      result: Array.from({ length: 10 }, (_value, index) => ({
+        id: index + 1,
+        name: `private-${"x".repeat(1_000)}`,
+      })),
+    },
+  });
+  guard.record({
+    runId: "run-applied-evidence",
+    agentId: "openhouse-crm",
+    receipt: {
+      ok: true,
+      operation: "post_briefing",
+      kind: "validated_write",
+      result: {
+        date: "2026-09-01",
+        private: `do not render ${"y".repeat(10_000)}`,
+      },
+    },
+  });
+
+  const output = guard.rewrite({
+    runId: "run-applied-evidence",
+    agentId: "openhouse-crm",
+    text: "Invented success",
+  });
+  assert.equal(
+    output,
+    "Verified CRM write completed: find neglected leads "
+      + "(10 leads flagged; IDs 1, 2, 3, 4, 5, 6; 4 more IDs not shown).\n"
+      + "Verified CRM write completed: post briefing (briefing date 2026-09-01).",
+  );
+  assert.doesNotMatch(output, /private|do not render|[xy]{20}/u);
+  assert.ok(output.length < 500);
 });
 
 

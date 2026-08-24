@@ -26,8 +26,18 @@ from backend.app.briefing_contract import inspect_briefing_response
 
 try:
     from scripts import doctor
+    from scripts.setup_openclaw import (
+        SetupConflict,
+        _read_repo_env_values,
+        _validate_requested_agent_id,
+    )
 except ModuleNotFoundError:  # Direct execution puts scripts/, not the repo, on sys.path.
     import doctor  # type: ignore[no-redef]
+    from setup_openclaw import (  # type: ignore[no-redef]
+        SetupConflict,
+        _read_repo_env_values,
+        _validate_requested_agent_id,
+    )
 
 
 MAX_BODY_BYTES = 1024 * 1024
@@ -157,23 +167,10 @@ def _capture_dependencies() -> dict[str, str]:
 def _runtime_agent_id() -> str:
     configured = os.environ.get("AGENT_ID")
     if configured is None:
-        env_file = REPO / ".env"
-        try:
-            lines = env_file.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError):
-            lines = []
-        for raw_line in lines:
-            line = raw_line.rstrip("\r")
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key != "AGENT_ID":
-                continue
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            configured = value
-            break
-    return (configured or "openhouse-crm").strip() or "openhouse-crm"
+        configured = _read_repo_env_values(REPO).get(
+            "AGENT_ID", "openhouse-crm"
+        )
+    return _validate_requested_agent_id(configured)
 
 
 def _capture_discord_binding(agent_id: str) -> bool | None:
@@ -756,13 +753,28 @@ def run_acceptance(
     session_id = session_id or f"openhouse-acceptance-{uuid.uuid4().hex}"
     test_id = test_id or uuid.uuid4().hex[:12]
     briefing_date = briefing_date or "2099-12-31"
+    agent_config_error = False
     if discord_bound is None:
-        discord_bound = _capture_discord_binding(_runtime_agent_id())
+        try:
+            runtime_agent_id = _runtime_agent_id()
+        except (OSError, UnicodeError, SetupConflict):
+            agent_config_error = True
+        else:
+            discord_bound = _capture_discord_binding(runtime_agent_id)
     tracked_api = _SessionTrackingAPI(api)
 
     checks: list[dict] = []
     cleanup: list[dict] = []
     warnings: list[str] = []
+
+    if agent_config_error:
+        checks.append(
+            _entry(
+                "FAIL",
+                "CRM agent configuration",
+                "AGENT_ID is invalid; correct .env and rerun OpenClaw setup",
+            )
+        )
 
     checks.append(
         _entry(
@@ -791,6 +803,38 @@ def run_acceptance(
     )
     if dependencies.get("ollama") in {None, "", "not found"}:
         warnings.append("Ollama was not detected; another configured model provider may be in use.")
+
+    if agent_config_error:
+        checks.extend(
+            [
+                _entry(
+                    "SKIP",
+                    "Invalid write",
+                    "skipped because CRM agent configuration is invalid",
+                ),
+                _entry(
+                    "SKIP",
+                    "Reviewed write",
+                    "skipped because CRM agent configuration is invalid",
+                ),
+                _entry(
+                    "SKIP",
+                    "Discord",
+                    "binding inspection skipped because CRM agent configuration is invalid",
+                    {"bound": None},
+                ),
+            ]
+        )
+        warnings.append(
+            "Acceptance stopped before CRM requests because AGENT_ID is invalid."
+        )
+        return {
+            "schema_version": 1,
+            "revision": revision,
+            "checks": checks,
+            "cleanup": cleanup,
+            "warnings": warnings,
+        }
 
     try:
         _run_read_checks(

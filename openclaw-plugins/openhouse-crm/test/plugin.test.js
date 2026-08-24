@@ -385,7 +385,7 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
     custom: 17,
   };
 
-  const wrongAgent = replyPayloadSending(
+  const contradictoryAgent = replyPayloadSending(
     {
       payload,
       kind: "final",
@@ -394,7 +394,12 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
     },
     { channel: "discord", channelId: "discord-channel", runId: "run-payload" },
   );
-  assert.equal(wrongAgent, undefined);
+  assert.deepEqual(contradictoryAgent, {
+    payload: {
+      ...payload,
+      text: "Proposal #4 is waiting for your review: Create lead Jordan Ellis.",
+    },
+  });
 
   const rewritten = replyPayloadSending(
     {
@@ -416,7 +421,7 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
   assert.strictEqual(rewritten.payload.metadata, metadata);
   assert.equal(payload.text, "Done");
 
-  assert.equal(
+  assert.deepEqual(
     replyPayloadSending(
       {
         payload: { ...payload, text: "Second payload" },
@@ -425,6 +430,130 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
         usageState: { agentId: "openhouse-crm" },
       },
       { channel: "discord", channelId: "discord-channel", runId: "run-payload" },
+    ),
+    {
+      payload: {
+        ...payload,
+        text: "Proposal #4 is waiting for your review: Create lead Jordan Ellis.",
+      },
+    },
+  );
+});
+
+
+test("reply hook uses configured agent state when usage metadata is omitted", () => {
+  const { hooks } = registerPlugin(undefined, { agentId: "custom-crm" });
+  hooks.get("after_tool_call").handler(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-optional-usage",
+      params: {},
+      result: toolResult(pendingReceipt()),
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-optional-usage",
+      agentId: "custom-crm",
+      requester: { channel: "discord" },
+    },
+  );
+
+  assert.deepEqual(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "Unverified model success" },
+        kind: "final",
+        runId: "run-optional-usage",
+      },
+      { channel: "discord", runId: "run-optional-usage" },
+    ),
+    {
+      payload: {
+        text: "Proposal #4 is waiting for your review: Create lead Jordan Ellis.",
+      },
+    },
+  );
+});
+
+
+test("unknown Discord state survives every payload and remains blocked until cleanup", () => {
+  const { hooks } = registerPlugin();
+  const beforeToolCall = hooks.get("before_tool_call").handler;
+  hooks.get("after_tool_call").handler(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-sticky-unknown",
+      params: { operation: "create_lead", arguments: {} },
+      result: toolResult(unknownMutationReceipt()),
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-sticky-unknown",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
+  );
+  const safeText = "The create lead CRM change may have reached the backend, "
+    + "but its result could not be verified.\n"
+    + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.";
+
+  for (const usageState of [undefined, { agentId: "different-agent" }, { agentId: "openhouse-crm" }]) {
+    const event = {
+      payload: { text: "Created successfully" },
+      kind: "final",
+      runId: "run-sticky-unknown",
+    };
+    if (usageState !== undefined) event.usageState = usageState;
+    assert.deepEqual(
+      hooks.get("reply_payload_sending").handler(
+        event,
+        { channel: "discord", runId: "run-sticky-unknown" },
+      ),
+      { payload: { text: safeText } },
+    );
+    assert.equal(
+      beforeToolCall(
+        {
+          toolName: "openhouse_crm",
+          runId: "run-sticky-unknown",
+          params: { operation: "book_appointment", arguments: {} },
+        },
+        {
+          toolName: "openhouse_crm",
+          runId: "run-sticky-unknown",
+          agentId: "openhouse-crm",
+          requester: { channel: "discord" },
+        },
+      )?.block,
+      true,
+    );
+  }
+
+  hooks.get("gateway_stop").handler({ reason: "restart" }, {});
+  assert.equal(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "After cleanup" },
+        kind: "final",
+        runId: "run-sticky-unknown",
+      },
+      { channel: "discord", runId: "run-sticky-unknown" },
+    ),
+    undefined,
+  );
+  assert.equal(
+    beforeToolCall(
+      {
+        toolName: "openhouse_crm",
+        runId: "run-sticky-unknown",
+        params: { operation: "book_appointment", arguments: {} },
+      },
+      {
+        toolName: "openhouse_crm",
+        runId: "run-sticky-unknown",
+        agentId: "openhouse-crm",
+        requester: { channel: "discord" },
+      },
     ),
     undefined,
   );

@@ -641,15 +641,12 @@ def _restore_gateway_env(snapshot: GatewayEnvSnapshot) -> bool:
         return False
 
 
-def _load_repo_env(repo: Path) -> None:
-    """Load simple .env assignments without overriding exported values.
-
-    This deliberately mirrors scripts/load-env.sh: no shell expansion, only
-    valid environment keys, and an existing process value always wins.
-    """
+def _read_repo_env_values(repo: Path) -> dict[str, str]:
+    """Parse the simple dotenv assignments accepted by the launch scripts."""
     env_file = repo / ".env"
     if not env_file.is_file():
-        return
+        return {}
+    values: dict[str, str] = {}
     for raw_line in env_file.read_text(encoding="utf-8").splitlines():
         line = raw_line.rstrip("\r")
         if not line or line.startswith("#") or "=" not in line:
@@ -657,11 +654,23 @@ def _load_repo_env(repo: Path) -> None:
         key, value = line.split("=", 1)
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
             continue
-        if key in os.environ:
+        if key in values:
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
-        os.environ[key] = value
+        values[key] = value
+    return values
+
+
+def _load_repo_env(repo: Path) -> None:
+    """Load simple .env assignments without overriding exported values.
+
+    This deliberately mirrors scripts/load-env.sh: no shell expansion, only
+    valid environment keys, and an existing process value always wins.
+    """
+    for key, value in _read_repo_env_values(repo).items():
+        if key not in os.environ:
+            os.environ[key] = value
 
 
 def _default_crm_api_url() -> str:

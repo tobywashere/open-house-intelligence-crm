@@ -6,6 +6,8 @@ const DEFAULT_MAX_OUTCOMES = 6;
 const MAX_CONFIGURED_OUTCOMES = 32;
 const DEFAULT_TTL_MS = 300_000;
 const MAX_SUMMARY_CHARACTERS = 240;
+const MAX_EVIDENCE_IDS = 6;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DISCORD_SAFE_CHARACTERS = new Map([
   ["@", "＠"],
   ["#", "＃"],
@@ -104,9 +106,33 @@ function validatedWriteOutcome(receipt) {
     || !("result" in receipt)
   ) return undefined;
   return {
+    evidence: validatedWriteEvidence(receipt.operation, receipt.result),
     operation: receipt.operation,
     status: "applied",
   };
+}
+
+
+function validatedWriteEvidence(operation, result) {
+  if (operation === "find_neglected_leads" && Array.isArray(result)) {
+    const ids = result.map((entry) => isPlainObject(entry) ? entry.id : undefined);
+    if (!ids.every((id) => Number.isSafeInteger(id) && id > 0)) return undefined;
+    return {
+      kind: "neglected_leads",
+      count: ids.length,
+      ids: ids.slice(0, MAX_EVIDENCE_IDS),
+      hiddenIds: Math.max(0, ids.length - MAX_EVIDENCE_IDS),
+    };
+  }
+  if (
+    operation === "post_briefing"
+    && isPlainObject(result)
+    && typeof result.date === "string"
+    && ISO_DATE_RE.test(result.date)
+  ) {
+    return { kind: "briefing", date: result.date };
+  }
+  return undefined;
 }
 
 
@@ -153,6 +179,21 @@ function renderOutcome(outcome) {
   }
   const operation = operationLabel(outcome.operation);
   if (outcome.status === "applied") {
+    if (outcome.evidence?.kind === "neglected_leads") {
+      const { count, hiddenIds, ids } = outcome.evidence;
+      const leadNoun = count === 1 ? "lead" : "leads";
+      if (count === 0) {
+        return `Verified CRM write completed: ${operation} (0 leads flagged).`;
+      }
+      const idNoun = ids.length === 1 ? "ID" : "IDs";
+      const hidden = hiddenIds > 0 ? `; ${hiddenIds} more IDs not shown` : "";
+      return `Verified CRM write completed: ${operation} `
+        + `(${count} ${leadNoun} flagged; ${idNoun} ${ids.join(", ")}${hidden}).`;
+    }
+    if (outcome.evidence?.kind === "briefing") {
+      return `Verified CRM write completed: ${operation} `
+        + `(briefing date ${outcome.evidence.date}).`;
+    }
     return `Verified CRM write completed: ${operation}.`;
   }
   if (outcome.status === "unknown") {
@@ -228,7 +269,6 @@ export function createOutcomeGuard({
     const key = scopeKey(runId, agentId);
     const entry = entries.get(key);
     if (!entry) return text;
-    entries.delete(key);
     const lines = entry.outcomes.map(renderOutcome);
     if (entry.truncated > 0) {
       const noun = entry.truncated === 1 ? "outcome was" : "outcomes were";
