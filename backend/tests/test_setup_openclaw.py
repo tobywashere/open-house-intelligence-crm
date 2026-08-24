@@ -3055,6 +3055,101 @@ def test_successful_setup_verifies_private_backup_is_gone(tmp_path, monkeypatch)
     assert not backup_roots[0].exists()
 
 
+def test_snapshot_cleanup_rejects_rmtree_filenotfound_when_root_remains(
+    tmp_path, monkeypatch
+):
+    backup_root = tmp_path / "openhouse-skill-rollback-test"
+    backup_root.mkdir()
+    (backup_root / "retained-secret.txt").write_text("private\n")
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=tmp_path / "workspace",
+        backup_root=backup_root,
+        existing_names=set(),
+        workspace_existed=False,
+        skills_root_existed=False,
+        missing_parent_dirs=[],
+    )
+
+    def fail_delete(_path):
+        raise FileNotFoundError("a child vanished during recursive deletion")
+
+    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", fail_delete)
+
+    assert setup_openclaw._discard_skill_snapshot(snapshot) is False
+    assert (backup_root / "retained-secret.txt").read_text() == "private\n"
+
+
+def test_snapshot_cleanup_rejects_partial_delete_when_root_remains(
+    tmp_path, monkeypatch
+):
+    backup_root = tmp_path / "openhouse-skill-rollback-test"
+    backup_root.mkdir()
+    removed = backup_root / "removed.txt"
+    retained = backup_root / "retained-secret.txt"
+    removed.write_text("remove\n")
+    retained.write_text("private\n")
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=tmp_path / "workspace",
+        backup_root=backup_root,
+        existing_names=set(),
+        workspace_existed=False,
+        skills_root_existed=False,
+        missing_parent_dirs=[],
+    )
+
+    def partial_delete(_path):
+        removed.unlink()
+
+    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", partial_delete)
+
+    assert setup_openclaw._discard_skill_snapshot(snapshot) is False
+    assert retained.read_text() == "private\n"
+
+
+def test_snapshot_cleanup_accepts_final_lstat_filenotfound(tmp_path, monkeypatch):
+    backup_root = tmp_path / "openhouse-skill-rollback-test"
+    backup_root.mkdir()
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=tmp_path / "workspace",
+        backup_root=backup_root,
+        existing_names=set(),
+        workspace_existed=False,
+        skills_root_existed=False,
+        missing_parent_dirs=[],
+    )
+
+    monkeypatch.setattr(
+        setup_openclaw.shutil, "rmtree", lambda path: Path(path).rmdir()
+    )
+
+    assert setup_openclaw._discard_skill_snapshot(snapshot) is True
+
+
+def test_snapshot_cleanup_rejects_final_lstat_oserror(tmp_path, monkeypatch):
+    backup_root = tmp_path / "openhouse-skill-rollback-test"
+    backup_root.mkdir()
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=tmp_path / "workspace",
+        backup_root=backup_root,
+        existing_names=set(),
+        workspace_existed=False,
+        skills_root_existed=False,
+        missing_parent_dirs=[],
+    )
+
+    monkeypatch.setattr(
+        setup_openclaw.shutil, "rmtree", lambda path: Path(path).rmdir()
+    )
+
+    def fail_verification(path):
+        assert Path(path) == backup_root
+        raise PermissionError("could not verify root absence")
+
+    monkeypatch.setattr(setup_openclaw.os, "lstat", fail_verification)
+
+    assert setup_openclaw._discard_skill_snapshot(snapshot) is False
+
+
 def test_sync_skills_preflights_every_source_before_mutating(tmp_path):
     repo = tmp_path / "repo"
     for name in setup_openclaw.SKILL_NAMES[:-1]:

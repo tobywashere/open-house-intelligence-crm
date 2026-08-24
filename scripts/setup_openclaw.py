@@ -1185,11 +1185,15 @@ def _skill_trees_match(left: Path, right: Path) -> bool:
 
 
 def _discard_skill_snapshot(snapshot: SkillRollback) -> bool:
+    deletion_failed = False
     try:
         shutil.rmtree(snapshot.backup_root)
+    except OSError:
+        deletion_failed = True
+    try:
         os.lstat(snapshot.backup_root)
     except FileNotFoundError:
-        return True
+        return not deletion_failed
     except OSError:
         return False
     return False

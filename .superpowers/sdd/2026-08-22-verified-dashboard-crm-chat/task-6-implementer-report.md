@@ -326,3 +326,47 @@ Starlette/FastAPI deprecations.
 Residual concern remains limited to live OpenClaw integration: the repository
 has no real Gateway fixture, so real installations remain fail-closed behind
 their authoritative inventory and bounded loopback probes.
+
+## Fix Round 3
+
+The remaining cleanup review finding was reproduced with four direct boundary
+regressions around `_discard_skill_snapshot`.
+
+### RED
+
+```text
+1 failed, 3 passed
+```
+
+The failing case injected `FileNotFoundError` from `shutil.rmtree` while leaving
+the backup root and a private file in place. The shared deletion/verification
+`try` incorrectly returned success. The other three tests characterized partial
+deletion with a remaining root, successful final `lstat` absence, and a final
+`lstat` permission error.
+
+### GREEN
+
+Deletion status and final no-follow root verification are now independent:
+
+- every `rmtree` exception, including `FileNotFoundError`, records deletion
+  failure;
+- final `os.lstat` always runs independently;
+- only `FileNotFoundError` from that final root check proves absence, and it
+  yields success only when deletion itself did not fail;
+- a remaining root or any other verification error fails closed so the existing
+  recovery-path reporting remains active.
+
+Relevant cleanup/recovery cases:
+
+```text
+8 passed
+```
+
+Complete focused setup/launcher suite:
+
+```text
+PYTHONPATH=.. /Users/johaanmannanal/Documents/GitHub/open-intelligence-crm/.venv/bin/pytest tests/test_setup_openclaw.py tests/test_launchers.py -q
+284 passed, 5 warnings
+```
+
+The five warnings remain the pre-existing Starlette/FastAPI deprecations.
