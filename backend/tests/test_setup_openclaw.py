@@ -3280,7 +3280,7 @@ def test_documented_python_commands_never_create_or_read_repo_bytecode(tmp_path)
         "acceptance_openclaw.py",
     ):
         result = subprocess.run(
-            [sys.executable, f"scripts/{script}", "--help"],
+            [sys.executable, "-I", f"scripts/{script}", "--help"],
             cwd=checkout,
             env=environment,
             text=True,
@@ -3337,10 +3337,11 @@ def _committed_material_checkout(root: Path) -> Path:
 
 def _entrypoint_command(script: str, checkout: Path) -> list[str]:
     if script == "setup_openclaw.py":
-        return [sys.executable, f"scripts/{script}", "--dry-run"]
+        return [sys.executable, "-I", f"scripts/{script}", "--dry-run"]
     if script == "acceptance_openclaw.py":
         return [
             sys.executable,
+            "-I",
             f"scripts/{script}",
             "--base-url",
             "http://127.0.0.1:9/api",
@@ -3350,6 +3351,7 @@ def _entrypoint_command(script: str, checkout: Path) -> list[str]:
         ]
     return [
         sys.executable,
+        "-I",
         f"scripts/{script}",
         "--output",
         str(checkout / "evidence.json"),
@@ -3443,6 +3445,157 @@ def test_documented_entrypoints_ignore_malicious_pythonpath_before_stdlib_import
         "extra non-HEAD file" in result.stderr
         or "repository source validation failed" in result.stderr
     )
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        "setup_openclaw.py",
+        "acceptance_openclaw.py",
+        "capture_setup_evidence.py",
+    ),
+)
+def test_documented_entrypoints_fail_closed_unisolated_before_application_imports(
+    tmp_path, script
+):
+    checkout = _committed_material_checkout(tmp_path)
+    sentinel = checkout / "unisolated-import-executed"
+    (checkout / "scripts" / "argparse.py").write_text(
+        f"open({str(sentinel)!r}, 'w').write('executed')\n"
+        "raise RuntimeError('application import executed')\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    environment["PYTHONNOUSERSITE"] = "1"
+
+    result = subprocess.run(
+        [sys.executable, f"scripts/{script}", "--help"],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not sentinel.exists(), result.stderr
+    assert f"python3 -I scripts/{script}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        "setup_openclaw.py",
+        "acceptance_openclaw.py",
+        "capture_setup_evidence.py",
+    ),
+)
+def test_supported_entrypoints_ignore_pythonpath_sitecustomize_startup_hook(
+    tmp_path, script
+):
+    checkout = _committed_material_checkout(tmp_path)
+    sentinel = checkout / "sitecustomize-executed"
+    malicious = tmp_path / "malicious-pythonpath"
+    malicious.mkdir()
+    (malicious / "sitecustomize.py").write_text(
+        f"open({str(sentinel)!r}, 'w').write('executed')\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(malicious)
+
+    control = subprocess.run(
+        [sys._base_executable, "-c", "pass"],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert control.returncode == 0, control.stderr
+    assert sentinel.exists(), "the controlled startup hook was not active"
+    sentinel.unlink()
+
+    result = subprocess.run(
+        [sys._base_executable, "-I", f"scripts/{script}", "--help"],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        "setup_openclaw.py",
+        "acceptance_openclaw.py",
+        "capture_setup_evidence.py",
+    ),
+)
+def test_supported_entrypoints_ignore_user_site_pth_startup_hook(tmp_path, script):
+    checkout = _committed_material_checkout(tmp_path)
+    sentinel = checkout / "user-site-pth-executed"
+    user_base = tmp_path / "user-base"
+    environment = os.environ.copy()
+    environment.pop("PYTHONNOUSERSITE", None)
+    environment["PYTHONUSERBASE"] = str(user_base)
+    user_site_probe = subprocess.run(
+        [
+            sys._base_executable,
+            "-S",
+            "-c",
+            "import site; print(site.getusersitepackages())",
+        ],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert user_site_probe.returncode == 0, user_site_probe.stderr
+    user_site = Path(user_site_probe.stdout.strip())
+    assert user_site.is_relative_to(user_base)
+    user_site.mkdir(parents=True)
+    (user_site / "openhouse-startup.pth").write_text(
+        f"import builtins; builtins.open({str(sentinel)!r}, 'w').write('executed')\n",
+        encoding="utf-8",
+    )
+    control = subprocess.run(
+        [sys._base_executable, "-c", "pass"],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert control.returncode == 0, control.stderr
+    assert sentinel.exists(), "the controlled user-site .pth hook was not active"
+    sentinel.unlink()
+
+    result = subprocess.run(
+        [sys._base_executable, "-I", f"scripts/{script}", "--help"],
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not sentinel.exists()
 
 
 def test_canonical_contract_digest_rejects_missing_malformed_and_duplicate_keys(

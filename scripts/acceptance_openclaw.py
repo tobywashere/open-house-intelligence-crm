@@ -5,6 +5,14 @@ from __future__ import annotations
 
 import sys as _bootstrap_sys
 
+if __name__ == "__main__" and not _bootstrap_sys.flags.isolated:
+    _bootstrap_sys.stderr.write(
+        "Safe startup requires isolated Python mode. Run exactly:\n"
+        "  python3 -I scripts/acceptance_openclaw.py\n"
+        "Add any options you need after the script name.\n"
+    )
+    raise SystemExit(2)
+
 
 _BOOTSTRAP_ORIGINAL_PATH = _bootstrap_sys.path[:]
 _BOOTSTRAP_VERSION = (
@@ -470,7 +478,7 @@ def _setup_evidence_entry(
         evidence.get("schema_version") != 2
         or not isinstance(evidence_revision, str)
         or REVISION_RE.fullmatch(evidence_revision) is None
-        or command != ["python3", "scripts/setup_openclaw.py"]
+        or command != ["python3", "-I", "scripts/setup_openclaw.py"]
         or not isinstance(runs, list)
         or not isinstance(repository_checks, list)
     ):

@@ -782,9 +782,13 @@ git commit -m "fix: verify CRM chat orchestration capabilities"
 - Modify: `backend/tests/test_doctor.py`
 
 **Interfaces:**
-- Produces: `python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json` for two explicit revision-tied setup runs.
-- Produces: `python3 scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json` for read-only checks.
-- Produces: `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` for disposable reviewed create-lead and booking tests.
+- Invocation boundary: all three documented entrypoints require CPython
+  isolated mode (`-I`) before the script starts. An unisolated command fails
+  before application imports, and the evidence helper launches setup with
+  `-I`; in-script path cleanup remains defense in depth after that boundary.
+- Produces: `python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json` for two explicit revision-tied setup runs.
+- Produces: `python3 -I scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json` for read-only checks.
+- Produces: `python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` for disposable reviewed create-lead and booking tests.
 - Output schema: `{schema_version:1, revision, checks:[{level,name,detail,evidence}], cleanup:[...], warnings:[...]}` with secrets and local home paths removed.
 
 - [ ] **Step 1: Write failing acceptance-runner tests**
@@ -884,10 +888,10 @@ git commit -m "test: add one-command OpenClaw acceptance"
 
 Extend existing launcher/documentation tests to require:
 
-- `python3 scripts/setup_openclaw.py` as the only normal OpenClaw setup command;
+- `python3 -I scripts/setup_openclaw.py` as the only normal OpenClaw setup command;
 - `bash scripts/serve.sh` as the serve command;
 - `python3 scripts/doctor.py --live-agent --live-crm` as the read-only readiness command;
-- `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` as the explicit write-enabled acceptance command;
+- `python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` as the explicit write-enabled acceptance command;
 - plain-language explanation that writes wait for review;
 - no instructions to edit `agents.list`, global tool profiles, exec policy, or plugin files manually;
 - Mac mini 16 GB minimum and WSL/Linux compatibility language;
@@ -970,13 +974,13 @@ Ask the external tester to pull the exact pushed revision and use the evidence
 helper to run setup twice:
 
 ```bash
-python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 Then start the app and run:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write \
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write \
   --setup-evidence openhouse-setup-evidence.json \
   | tee openhouse-acceptance.json
 ```

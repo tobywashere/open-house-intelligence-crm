@@ -55,8 +55,11 @@ cp .env.example .env
 Open `.env` in a text editor. Change `AGENT_MODE=mock` to
 `AGENT_MODE=openclaw`, then continue in Terminal:
 
+Keep the `-I` in these commands. It prevents personal Python startup
+customizations from running before the repository safety checks.
+
 ```bash
-python3 scripts/setup_openclaw.py
+python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
@@ -111,7 +114,7 @@ Sanitized run logs are manual diagnostics only and do not make this pass. The
 report names the structured prerequisite `Setup twice`.
 
 ```bash
-python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 After the read-only check reports `crm_verified`, the automated CRM chat
@@ -122,7 +125,7 @@ denied and cleaned up. It does not automate voice or Discord delivery. Run it
 only when you are comfortable authorizing those disposable proposals:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 ## 4. Check the visible behavior
@@ -168,7 +171,7 @@ Discord is optional and is tested only after dashboard acceptance. To use the
 same dedicated agent, run this from the project folder:
 
 ```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
+python3 -I scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Replace `ACCOUNT` with the account identifier required by OpenClaw. The
@@ -188,7 +191,7 @@ Discord is in scope.
 - **Unauthorized:** add the matching `AGENT_GATEWAY_TOKEN` to `.env`, then
   restart `bash scripts/serve.sh`.
 - **Chat verified, CRM capability failed:** rerun
-  `python3 scripts/setup_openclaw.py`; it repairs a partial dedicated-agent
+  `python3 -I scripts/setup_openclaw.py`; it repairs a partial dedicated-agent
   setup, relinks the bundled CRM plugin, and verifies the real
   `openhouse_crm` tool. Do not change global `tools.exec` settings.
 - **OpenClaw unreachable:** make sure its gateway is listening on port 18789
@@ -210,7 +213,7 @@ Do not check these boxes until someone has completed the run on this machine.
   `openhouse-setup-evidence.json`
 - [ ] `--live-agent --live-crm` reports CRM capability verified
 - [ ] Automated CRM chat acceptance with
-  `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json`
+  `python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json`
   report inspected and attached
 - [ ] Natural-language booking proposal stayed unapplied and was denied
 - [ ] Dashboard chat proposes a reviewed CRM write

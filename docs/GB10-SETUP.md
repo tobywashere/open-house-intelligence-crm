@@ -31,8 +31,11 @@ cp .env.example .env
 
 Open `.env` and change `AGENT_MODE=mock` to `AGENT_MODE=openclaw`. Then run:
 
+Keep the `-I` in these commands. It prevents personal Python startup
+customizations from running before the repository safety checks.
+
 ```bash
-python3 scripts/setup_openclaw.py
+python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
@@ -56,7 +59,7 @@ reads back both the tool policy and live plugin registration before reporting
 success.
 
 The expected live result is **CRM capability: crm_verified**. If the result is
-only chat verified, rerun `python3 scripts/setup_openclaw.py` and use the
+only chat verified, rerun `python3 -I scripts/setup_openclaw.py` and use the
 recovery notes in [LOCAL-AI.md](LOCAL-AI.md#recovery). Do not trust a generic
 assistant answer as proof that it can access CRM tools.
 
@@ -71,7 +74,7 @@ Sanitized run logs are manual diagnostics only and do not make this pass. The
 report names the structured prerequisite `Setup twice`.
 
 ```bash
-python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 After the read-only check succeeds, the automated CRM chat acceptance proves an
@@ -82,7 +85,7 @@ up. It does not automate voice or Discord delivery. Run it only when you want
 to authorize those disposable proposals:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 ## Optional Discord
@@ -91,7 +94,7 @@ Discord is optional and is tested only after dashboard acceptance. Bind it only
 when you need it:
 
 ```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
+python3 -I scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 It uses the same selected dedicated agent. CRM writes wait for review in
@@ -132,7 +135,7 @@ These are intentionally unchecked. Fill them out after an actual GB10 run.
   `openhouse-setup-evidence.json`
 - [ ] `--live-agent --live-crm` reports CRM capability verified
 - [ ] Automated CRM chat acceptance with
-  `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json`
+  `python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json`
   report inspected and attached
 - [ ] Natural-language booking proposal stayed unapplied and was denied
 - [ ] Dashboard chat proposes a reviewed CRM write

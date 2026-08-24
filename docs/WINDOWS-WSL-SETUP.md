@@ -154,8 +154,11 @@ answer a normal prompt before continuing.
 
 For ordinary use, the normal setup command is:
 
+Keep the `-I` in these commands. It prevents personal Python startup
+customizations from running before the repository safety checks.
+
 ```bash
-python3 scripts/setup_openclaw.py
+python3 -I scripts/setup_openclaw.py
 ```
 
 For a formal hardware acceptance, skip that one run and use the two-run evidence
@@ -175,7 +178,7 @@ manual diagnostics only and do not make this pass. That clean revision is the
 tested revision. The later report names the structured prerequisite `Setup twice`.
 
 ```bash
-python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 Setup links the bundled `openhouse_crm` plugin, verifies that OpenClaw really
@@ -222,7 +225,7 @@ only if you want to authorize those disposable proposals:
 
 ```bash
 set -o pipefail
-python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json | tee openhouse-acceptance.json
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json | tee openhouse-acceptance.json
 ```
 
 ## 9. Check the visible behavior
@@ -252,7 +255,7 @@ CRM writes wait for review in **Pending approvals**. Test in this order:
 For Discord setup, run from the repository:
 
 ```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
+python3 -I scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Replace `ACCOUNT` with the account identifier OpenClaw expects.

@@ -40,8 +40,11 @@ Open `.env` and change `AGENT_MODE=mock` to `AGENT_MODE=openclaw`. The default
 agent ID, change that one value in `.env`; setup, the app, the plugin safety
 hooks, and acceptance checks will all use it. Then run:
 
+Keep the `-I` in these commands. It prevents personal Python startup
+customizations from running before the repository safety checks.
+
 ```bash
-python3 scripts/setup_openclaw.py
+python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
@@ -71,7 +74,7 @@ Sanitized run logs are manual diagnostics only. The acceptance report shows the
 structured proof as `Setup twice`:
 
 ```bash
-python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 The automated CRM chat acceptance proves an audited CRM read, exact lead
@@ -81,7 +84,7 @@ proposal is approved. Both are denied and cleaned up. It does not automate
 voice or Discord delivery. To authorize those disposable proposals, run:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 This command never approves the test proposals. Inspect its JSON before sharing
@@ -130,7 +133,7 @@ Discord is optional and is tested only after dashboard acceptance. Then, if
 wanted, bind it to the same agent:
 
 ```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
+python3 -I scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Discord CRM writes wait for review in the dashboard's **Pending approvals**.

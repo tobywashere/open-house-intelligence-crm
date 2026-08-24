@@ -61,8 +61,11 @@ cp .env.example .env
 Open `.env` and change its safe demo setting from `AGENT_MODE=mock` to
 `AGENT_MODE=openclaw`. Then run:
 
+Keep the `-I` in these commands. It prevents personal Python startup
+customizations from running before the repository safety checks.
+
 ```bash
-python3 scripts/setup_openclaw.py
+python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
@@ -257,7 +260,7 @@ Sanitized run logs are manual diagnostics only and do not make this pass. The
 JSON report names the structured prerequisite `Setup twice`.
 
 ```bash
-python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 After the read-only doctor reports `crm_verified`, the automated CRM chat
@@ -267,8 +270,8 @@ booking proposal, and session cleanup. Neither proposal is approved. Both are
 denied and cleaned up. It does not automate voice or Discord delivery.
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json
-python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+python3 -I scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 The first form remains read-only. The second explicitly authorizes the two
@@ -304,7 +307,7 @@ Discord is optional and is tested only after dashboard acceptance. The same
 review rule applies to its writes:
 
 ```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
+python3 -I scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Use the `ACCOUNT` identifier OpenClaw documents for your Discord account. The
@@ -415,8 +418,8 @@ CRM fields can create a new proposal for review.
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart the CRM.
 - **CRM API 401:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in `.env`.
   Include `X-API-Token` in direct API commands, rerun
-  `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
-- **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
+  `python3 -I scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
+- **Chat verified, CRM check fails:** rerun `python3 -I scripts/setup_openclaw.py`.
   It repairs partial dedicated-agent setup, relinks the bundled plugin, verifies
   the `openhouse_crm` runtime tool, and removes the obsolete CRM wrapper
   approval. Do not change global `tools.exec` settings.
@@ -457,7 +460,7 @@ configured:
   tested revision.
 - [ ] 2. `--live-agent --live-crm` reports `CRM verified`.
 - [ ] 3. Automated CRM chat acceptance with
-  `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` has its
+  `python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` has its
   report inspected and attached.
 - [ ] 4. Dashboard chat lists real CRM leads.
 - [ ] 5. Dashboard chat proposes a reviewed CRM write that appears in Pending

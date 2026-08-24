@@ -5,6 +5,14 @@ from __future__ import annotations
 
 import sys as _bootstrap_sys
 
+if __name__ == "__main__" and not _bootstrap_sys.flags.isolated:
+    _bootstrap_sys.stderr.write(
+        "Safe startup requires isolated Python mode. Run exactly:\n"
+        "  python3 -I scripts/capture_setup_evidence.py\n"
+        "Add any options you need after the script name.\n"
+    )
+    raise SystemExit(2)
+
 
 _BOOTSTRAP_ORIGINAL_PATH = _bootstrap_sys.path[:]
 _BOOTSTRAP_VERSION = (
@@ -227,7 +235,7 @@ def _run_setup(_sequence: int) -> tuple[int, str, int, dict | None]:
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONPYCACHEPREFIX"] = str(sys.pycache_prefix)
     result = subprocess.run(
-        [sys.executable, "scripts/setup_openclaw.py"],
+        [sys.executable, "-I", "scripts/setup_openclaw.py"],
         cwd=REPO,
         env=environment,
         text=True,
@@ -481,7 +489,7 @@ def capture_setup_evidence(
     manifest = {
         "schema_version": 2,
         "revision": tested_revision,
-        "setup_command": ["python3", "scripts/setup_openclaw.py"],
+        "setup_command": ["python3", "-I", "scripts/setup_openclaw.py"],
         "repository_checks": repository_checks,
         "runs": records,
     }

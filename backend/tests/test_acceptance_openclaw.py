@@ -449,7 +449,7 @@ def setup_evidence(
     return {
         "schema_version": 2,
         "revision": revision,
-        "setup_command": ["python3", "scripts/setup_openclaw.py"],
+        "setup_command": ["python3", "-I", "scripts/setup_openclaw.py"],
         "repository_checks": repository_checks,
         "runs": [
             {
@@ -1463,12 +1463,18 @@ def test_setup_evidence_subprocess_explicitly_uses_isolated_source_only_bytecode
     observed: dict = {}
 
     def run(*args, **kwargs):
+        observed["args"] = args
         observed.update(kwargs)
         return capture.subprocess.CompletedProcess(args, 1, "", "setup failed")
 
     monkeypatch.setattr(capture.subprocess, "run", run)
 
     assert capture._run_setup(1)[0] == 1
+    assert observed["args"][0] == [
+        capture.sys.executable,
+        "-I",
+        "scripts/setup_openclaw.py",
+    ]
     assert observed["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert observed["env"]["PYTHONPYCACHEPREFIX"] == capture.sys.pycache_prefix
 

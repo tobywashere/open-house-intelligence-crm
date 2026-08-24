@@ -123,7 +123,7 @@ def test_primary_setup_regions_have_a_safe_runnable_sequence():
         setup = next(
             index
             for index, block in enumerate(blocks)
-            if "python3 scripts/setup_openclaw.py" in block
+            if "python3 -I scripts/setup_openclaw.py" in block
             and "--bind-discord" not in block
         )
         serve = next(
@@ -137,7 +137,7 @@ def test_primary_setup_regions_have_a_safe_runnable_sequence():
 
         assert endpoint < setup <= serve < doctor, path
         assert primary.index("AGENT_MODE=openclaw") < primary.index("bash scripts/serve.sh"), path
-        assert primary.index("python3 scripts/setup_openclaw.py") < primary.index("bash scripts/serve.sh"), path
+        assert primary.index("python3 -I scripts/setup_openclaw.py") < primary.index("bash scripts/serve.sh"), path
         assert doctor_cd in blocks[doctor], path
         assert "cp -R skills/" not in primary, path
 
@@ -161,21 +161,21 @@ def test_each_guide_independently_explains_the_agent_and_trust_boundaries():
 def test_readme_uses_setup_helper_and_real_capability_check():
     text = (REPO / "README.md").read_text()
 
-    assert "python3 scripts/setup_openclaw.py" in text
+    assert "python3 -I scripts/setup_openclaw.py" in text
     assert "python3 scripts/doctor.py --live-agent --live-crm" in text
     assert "16 GB" in text
 
 
 def test_beginner_guides_share_setup_readiness_and_acceptance_commands():
-    normal_setup = "python3 scripts/setup_openclaw.py"
+    normal_setup = "python3 -I scripts/setup_openclaw.py"
     serve = "bash scripts/serve.sh"
     readiness = "python3 scripts/doctor.py --live-agent --live-crm"
     setup_evidence = (
-        "python3 scripts/capture_setup_evidence.py "
+        "python3 -I scripts/capture_setup_evidence.py "
         "--output openhouse-setup-evidence.json"
     )
     acceptance = (
-        "python3 scripts/acceptance_openclaw.py --json --allow-test-write "
+        "python3 -I scripts/acceptance_openclaw.py --json --allow-test-write "
         "--setup-evidence openhouse-setup-evidence.json"
     )
 
@@ -187,6 +187,16 @@ def test_beginner_guides_share_setup_readiness_and_acceptance_commands():
         assert setup_evidence in text, path
         assert acceptance in text, path
         assert text.index(normal_setup) < text.index(serve) < text.index(readiness), path
+
+
+def test_beginner_guides_explain_required_isolated_python_flag():
+    explanation = (
+        "Keep the `-I` in these commands. It prevents personal Python startup "
+        "customizations from running before the repository safety checks."
+    )
+
+    for path in BEGINNER_GUIDES:
+        assert explanation in _normalized(path.read_text()), path
 
 
 def test_beginner_guides_explain_reviewed_writes_in_plain_language():
