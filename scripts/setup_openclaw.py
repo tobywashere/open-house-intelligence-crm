@@ -67,12 +67,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __name__ != "__main__":
     sys.path[:] = _BOOTSTRAP_ORIGINAL_PATH
@@ -117,6 +118,13 @@ REQUIRED_PLUGIN_HOOKS = (
     "gateway_stop",
     "reply_payload_sending",
 )
+BEHAVIORAL_RUNTIME_CAPABILITIES = (
+    "configured_agent_guard",
+    "dashboard_channel_tool_block",
+    "full_client_tool_schema",
+    "internal_analysis_channel_tool_block",
+    "internal_analysis_tool_free",
+)
 DASHBOARD_CHANNEL = "openhouse-dashboard"
 SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability"
 SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard"
@@ -125,6 +133,10 @@ SETUP_MARKER_TOOL = "openhouse_setup_marker_probe"
 SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__"
 GATEWAY_PROBE_TIMEOUT_SECONDS = 30
 GATEWAY_PROBE_MAX_BYTES = 256 * 1024
+SETUP_DEADLINE_SECONDS = 15 * 60
+ROLLBACK_DEADLINE_SECONDS = 3 * 60
+SETUP_STATE_FD_ENV = "OPENHOUSE_SETUP_STATE_FD"
+MAX_SETUP_STATE_BYTES = 16 * 1024 * 1024
 CONTRACT_MAX_BYTES = 1024 * 1024
 CONTRACT_RELATIVE_PATH = Path("skills") / "crm-db-operations" / "contract.json"
 CLIENT_TOOLS_RELATIVE_PATH = (
@@ -248,15 +260,66 @@ class ConfigValueSnapshot:
 class SetupResult:
     ok: bool
     messages: list[str]
+    runtime_verification: dict[str, Any] | None = None
 
     def render(self) -> str:
         return _redact_api_token("\n".join(self.messages))
 
 
 class OpenClawCLI:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        setup_timeout_seconds: float = SETUP_DEADLINE_SECONDS,
+        rollback_timeout_seconds: float = ROLLBACK_DEADLINE_SECONDS,
+    ) -> None:
+        if (
+            not isinstance(setup_timeout_seconds, (int, float))
+            or isinstance(setup_timeout_seconds, bool)
+            or not math.isfinite(setup_timeout_seconds)
+            or setup_timeout_seconds <= 0
+            or not isinstance(rollback_timeout_seconds, (int, float))
+            or isinstance(rollback_timeout_seconds, bool)
+            or not math.isfinite(rollback_timeout_seconds)
+            or rollback_timeout_seconds <= 0
+        ):
+            raise ValueError("setup and rollback time limits must be positive seconds")
+        self._clock = clock
+        self._rollback_timeout_seconds = float(rollback_timeout_seconds)
+        self._phase = "setup"
+        self._deadline = self._clock() + float(setup_timeout_seconds)
+
+    def begin_rollback(self) -> None:
+        """Start a fresh bounded window so an expired setup can still recover."""
+        self._phase = "rollback"
+        self._deadline = self._clock() + self._rollback_timeout_seconds
+
+    def _timeout_result(self) -> CommandResult:
+        if self._phase == "rollback":
+            detail = (
+                "OpenClaw rollback time limit expired; automatic recovery could not "
+                "finish. Follow the retained recovery-backup instructions."
+            )
+        else:
+            detail = (
+                "OpenClaw setup time limit expired; automatic rollback will use its "
+                "separate bounded recovery window."
+            )
+        return CommandResult(124, "", detail)
+
+    def _remaining_timeout(self, *, cap: float | None = None) -> float | None:
+        remaining = self._deadline - self._clock()
+        if remaining <= 0:
+            return None
+        return remaining if cap is None else min(remaining, cap)
+
     def run(self, args: list[str], *, mutate: bool = False) -> CommandResult:
         del mutate
         command = args if args and args[0] == "openclaw" else ["openclaw", *args]
+        timeout = self._remaining_timeout()
+        if timeout is None:
+            return self._timeout_result()
         try:
             completed = subprocess.run(
                 command,
@@ -264,7 +327,10 @@ class OpenClawCLI:
                 capture_output=True,
                 check=False,
                 shell=False,
+                timeout=timeout,
             )
+        except subprocess.TimeoutExpired:
+            return self._timeout_result()
         except FileNotFoundError as exc:
             return CommandResult(127, "", str(exc))
         return CommandResult(completed.returncode, completed.stdout, completed.stderr)
@@ -294,9 +360,12 @@ class OpenClawCLI:
             headers=headers,
             method="POST",
         )
+        timeout = self._remaining_timeout(cap=GATEWAY_PROBE_TIMEOUT_SECONDS)
+        if timeout is None:
+            return self._timeout_result()
         try:
             opener = urllib.request.build_opener(_NoRedirectHandler())
-            with opener.open(request, timeout=GATEWAY_PROBE_TIMEOUT_SECONDS) as response:
+            with opener.open(request, timeout=timeout) as response:
                 body = response.read(GATEWAY_PROBE_MAX_BYTES + 1)
                 status_code = int(response.status)
         except urllib.error.HTTPError as exc:
@@ -1406,16 +1475,26 @@ def _restore_installed_skills(snapshot: SkillRollback) -> bool:
 
 
 def _skill_trees_match(left: Path, right: Path) -> bool:
-    def manifest(root: Path) -> dict[str, tuple[str, bytes]]:
-        result: dict[str, tuple[str, bytes]] = {}
+    def manifest(root: Path) -> dict[str, tuple[str, int, bytes]]:
+        result: dict[str, tuple[str, int, bytes]] = {}
         _validate_skill_tree(root, "skill restoration verification tree")
+        root_node = os.lstat(root)
+        result["."] = ("directory", stat.S_IMODE(root_node.st_mode), b"")
         for path in sorted(root.rglob("*")):
             relative = path.relative_to(root).as_posix()
             node = os.lstat(path)
             if stat.S_ISDIR(node.st_mode):
-                result[relative] = ("directory", b"")
+                result[relative] = (
+                    "directory",
+                    stat.S_IMODE(node.st_mode),
+                    b"",
+                )
             elif stat.S_ISREG(node.st_mode):
-                result[relative] = ("file", path.read_bytes())
+                result[relative] = (
+                    "file",
+                    stat.S_IMODE(node.st_mode),
+                    path.read_bytes(),
+                )
             else:
                 raise SetupConflict(
                     f"skill restoration verification found unsupported node: {path}"
@@ -2970,6 +3049,49 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> bool:
     return bool(hook_inventories)
 
 
+def _inventory_runtime_verification(agent_id: str) -> dict[str, Any]:
+    return {
+        "mode": "authoritative_inventory",
+        "agent_id": agent_id,
+        "hooks": sorted(REQUIRED_PLUGIN_HOOKS),
+    }
+
+
+def _behavioral_runtime_verification(agent_id: str) -> dict[str, Any]:
+    return {
+        "mode": "production_behavioral",
+        "agent_id": agent_id,
+        "capabilities": sorted(BEHAVIORAL_RUNTIME_CAPABILITIES),
+    }
+
+
+def _validate_runtime_verification(value: Any, agent_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("agent_id") != agent_id:
+        raise SetupConflict(
+            "unsupported installed-state snapshot: runtime verification identity"
+        )
+    mode = value.get("mode")
+    if mode == "authoritative_inventory":
+        if set(value) != {"mode", "agent_id", "hooks"} or value.get(
+            "hooks"
+        ) != sorted(REQUIRED_PLUGIN_HOOKS):
+            raise SetupConflict(
+                "unsupported installed-state snapshot: runtime hook inventory"
+            )
+    elif mode == "production_behavioral":
+        if set(value) != {"mode", "agent_id", "capabilities"} or value.get(
+            "capabilities"
+        ) != sorted(BEHAVIORAL_RUNTIME_CAPABILITIES):
+            raise SetupConflict(
+                "unsupported installed-state snapshot: runtime behavioral proof"
+            )
+    else:
+        raise SetupConflict(
+            "unsupported installed-state snapshot: runtime verification mode"
+        )
+    return value
+
+
 def _read_config_snapshot(cli: OpenClawCLI, path: str) -> ConfigValueSnapshot:
     result = cli.run(["openclaw", "config", "get", path, "--json"])
     if result.returncode != 0:
@@ -3123,7 +3245,7 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
             "allowlist",
             "config",
             "runtime_tools",
-            "runtime_hooks",
+            "runtime_verification",
         },
         "plugin",
     )
@@ -3145,10 +3267,11 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
         raise SetupConflict("unsupported installed-state snapshot: plugin allowlist")
     plugin_config = _require_exact_keys(plugin["config"], {"agent_id"}, "plugin config")
     _require_canonical_agent_id(plugin_config["agent_id"], "snapshot plugin agent ID")
-    if plugin["runtime_tools"] != [PLUGIN_TOOL] or plugin["runtime_hooks"] != sorted(
-        REQUIRED_PLUGIN_HOOKS
-    ):
-        raise SetupConflict("unsupported installed-state snapshot: plugin runtime inventory")
+    if plugin["runtime_tools"] != [PLUGIN_TOOL]:
+        raise SetupConflict("unsupported installed-state snapshot: plugin runtime tools")
+    runtime_verification = _validate_runtime_verification(
+        plugin["runtime_verification"], plugin_config["agent_id"]
+    )
 
     agent = _require_exact_keys(
         root["agent"],
@@ -3158,6 +3281,10 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
     _require_canonical_agent_id(agent["id"], "snapshot agent ID")
     if agent["id"] != plugin_config["agent_id"] or agent["workspace_matches"] is not True:
         raise SetupConflict("unsupported installed-state snapshot: agent identity")
+    if runtime_verification["agent_id"] != agent["id"]:
+        raise SetupConflict(
+            "unsupported installed-state snapshot: runtime verification identity"
+        )
     if agent["skills"] != list(SKILL_NAMES):
         raise SetupConflict("unsupported installed-state snapshot: agent skills")
     _validate_authoritative_tools(agent["tools"])
@@ -3313,7 +3440,12 @@ def _configured_bindings_snapshot(cli: OpenClawCLI) -> dict[str, Any]:
     }
 
 
-def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str, Any]:
+def capture_installed_state(
+    options: SetupOptions,
+    cli: OpenClawCLI,
+    *,
+    runtime_verification: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Capture the complete, canonical, secret-free state established by setup."""
     _validate_requested_agent_id(options.agent_id)
     repo = Path(__file__).resolve().parents[1]
@@ -3344,10 +3476,24 @@ def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str
         ["openclaw", "plugins", "inspect", PLUGIN_ID, "--runtime", "--json"],
         "openhouse-crm runtime inspection",
     )
-    if not _validate_runtime_plugin(
+    has_hook_inventory = _validate_runtime_plugin(
         _json(runtime, "openhouse-crm runtime inspection"), plugin_source
-    ):
-        raise SetupConflict("OpenClaw runtime hook inventory is unavailable")
+    )
+    if has_hook_inventory:
+        current_runtime_verification = _inventory_runtime_verification(
+            options.agent_id
+        )
+    else:
+        if runtime_verification is None:
+            raise SetupConflict("OpenClaw runtime hook inventory is unavailable")
+        current_runtime_verification = _validate_runtime_verification(
+            runtime_verification, options.agent_id
+        )
+        if current_runtime_verification["mode"] != "production_behavioral":
+            raise SetupConflict(
+                "OpenClaw runtime hook inventory is unavailable and no successful "
+                "production behavioral proof was supplied"
+            )
 
     plugin_allow = _read_plugin_allowlist(cli)
     plugin_config = _read_config_snapshot(cli, PLUGIN_CONFIG_PATH)
@@ -3414,7 +3560,7 @@ def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str
             },
             "config": {"agent_id": options.agent_id},
             "runtime_tools": [PLUGIN_TOOL],
-            "runtime_hooks": sorted(REQUIRED_PLUGIN_HOOKS),
+            "runtime_verification": current_runtime_verification,
         },
         "agent": {
             "id": options.agent_id,
@@ -4923,7 +5069,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             ["openclaw", "plugins", "inspect", PLUGIN_ID, "--runtime", "--json"],
             "final openhouse-crm runtime inspection",
         )
-        _validate_runtime_plugin(
+        final_has_hook_inventory = _validate_runtime_plugin(
             _json(final_runtime_plugin, "final openhouse-crm runtime inspection"),
             plugin_source,
         )
@@ -4950,9 +5096,24 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Optional Discord binding: openclaw agents bind --agent "
                 f"{options.agent_id} --bind discord:ACCOUNT --json"
             )
-        return SetupResult(True, messages)
+        runtime_verification = (
+            _inventory_runtime_verification(options.agent_id)
+            if final_has_hook_inventory
+            else _behavioral_runtime_verification(options.agent_id)
+        )
+        return SetupResult(True, messages, runtime_verification)
     except (SetupConflict, OSError) as exc:
         rollback_failed = skill_snapshot_cleanup_failed
+        begin_rollback = getattr(cli, "begin_rollback", None)
+        if callable(begin_rollback):
+            try:
+                begin_rollback()
+            except Exception:
+                rollback_failed = True
+                messages.append(
+                    "Could not start the bounded automatic rollback window; "
+                    "manual recovery may be required."
+                )
 
         # Reverse the disposable diagnostic state first. Its random ID and exact
         # workspace are both checked before any destructive agent operation.
@@ -5325,15 +5486,74 @@ def _parse_args(
 
 
 def main(argv: list[str] | None = None) -> int:
+    state_descriptor: int | None = None
+    state_descriptor_value = os.environ.pop(SETUP_STATE_FD_ENV, None)
+    if state_descriptor_value is not None:
+        try:
+            state_descriptor = int(state_descriptor_value)
+            node = os.fstat(state_descriptor)
+        except (OSError, TypeError, ValueError):
+            print("setup state handoff was unavailable", file=sys.stderr)
+            return 1
+        if (
+            state_descriptor <= 2
+            or not stat.S_ISREG(node.st_mode)
+            or stat.S_IMODE(node.st_mode) != 0o600
+        ):
+            print("setup state handoff was unavailable", file=sys.stderr)
+            return 1
     options = _parse_args(argv)
+    cli = OpenClawCLI()
     try:
         _material_head_state(Path(__file__).resolve().parents[1])
     except SetupConflict as exc:
         print(_redact_api_token(str(exc)), file=sys.stderr)
         return 1
-    result = configure_openclaw(options, OpenClawCLI())
+    result = configure_openclaw(options, cli)
+    state_capture_failed = False
+    if result.ok and state_descriptor is not None:
+        try:
+            state = capture_installed_state(
+                options,
+                cli,
+                runtime_verification=result.runtime_verification,
+            )
+            envelope = {
+                "schema_version": 1,
+                "state_capture_exit_code": 0,
+                "state": state,
+            }
+        except (OSError, SetupConflict):
+            state_capture_failed = True
+            envelope = {
+                "schema_version": 1,
+                "state_capture_exit_code": 1,
+                "state": None,
+            }
+        try:
+            encoded = json.dumps(
+                envelope, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            if len(encoded) > MAX_SETUP_STATE_BYTES:
+                raise OSError("setup state handoff was too large")
+            view = memoryview(encoded)
+            while view:
+                written = os.write(state_descriptor, view)
+                if written <= 0:
+                    raise OSError("setup state handoff did not make progress")
+                view = view[written:]
+            os.fsync(state_descriptor)
+        except OSError:
+            print("setup state handoff could not be completed", file=sys.stderr)
+            return 1
     stream = sys.stdout if result.ok else sys.stderr
     print(result.render(), file=stream)
+    if state_capture_failed:
+        print(
+            "Setup completed, but its installed state could not be verified for "
+            "setup-twice evidence.",
+            file=sys.stderr,
+        )
     return 0 if result.ok else 1
 
 

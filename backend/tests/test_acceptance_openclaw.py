@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import hashlib
 import json
+import os
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -190,7 +191,7 @@ class FakeAPI:
                         row = dict(pending)
                         self.pending[row["id"]] = row
                     if self.fail_booking_pending_snapshot:
-                        self.pending_get_failures = acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+                        self.pending_get_failures = 1000
                     if self.fail_booking_appointment_snapshot_after_chat:
                         self.fail_booking_appointment_snapshot = True
                     return {
@@ -349,12 +350,16 @@ def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> di
             "allowlist": {"configured": False, "entries": []},
             "config": {"agent_id": agent_id},
             "runtime_tools": ["openhouse_crm"],
-            "runtime_hooks": [
-                "after_tool_call",
-                "before_tool_call",
-                "gateway_stop",
-                "reply_payload_sending",
-            ],
+            "runtime_verification": {
+                "mode": "authoritative_inventory",
+                "agent_id": agent_id,
+                "hooks": [
+                    "after_tool_call",
+                    "before_tool_call",
+                    "gateway_stop",
+                    "reply_payload_sending",
+                ],
+            },
         },
         "agent": {
             "id": agent_id,
@@ -419,6 +424,27 @@ def state_digest(state: dict) -> str:
     return hashlib.sha256(
         json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _stable_live_setup_capture(monkeypatch):
+    def capture(_verification):
+        state = installed_state()
+        return state, state["sources"]["material_tree_sha256"]
+
+    monkeypatch.setattr(acceptance, "_capture_current_setup_state", capture)
+
+
+@pytest.fixture(autouse=True)
+def _fast_acceptance_settling(monkeypatch):
+    now = [0.0]
+
+    monkeypatch.setattr(acceptance, "_SETTLE_CLOCK", lambda: now[0])
+    monkeypatch.setattr(
+        acceptance,
+        "_SETTLE_SLEEP",
+        lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
 
 
 def changed_runtime_state() -> dict:
@@ -1032,7 +1058,7 @@ class LateProposalAPI(FakeAPI):
             if self._settling_polls == 2:
                 row = dict(self._late_row)
                 self.pending[row["id"]] = row
-            if self._settling_polls >= acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS:
+            if self._settling_polls >= 3:
                 self._settling_active = False
         return super().request(method, path, payload)
 
@@ -1055,7 +1081,7 @@ def test_invalid_write_catches_late_unattributed_proposal_without_denial():
     assert by_name(result, "Invalid write")["level"] == "FAIL"
     assert cleanup["level"] == "FAIL"
     assert cleanup["evidence"]["unattributed_ids"] == [29]
-    assert api._settling_polls == acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert api._settling_polls >= 2
     assert 29 in api.pending
     assert 29 not in api.denied
 
@@ -1078,7 +1104,7 @@ def test_reviewed_write_catches_late_unattributed_proposal_without_denial():
     assert by_name(result, "Reviewed write")["level"] == "FAIL"
     assert cleanup["level"] == "FAIL"
     assert cleanup["evidence"]["unattributed_ids"] == [18]
-    assert api._settling_polls == acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert api._settling_polls >= 2
     assert 17 in api.denied
     assert 18 in api.pending
     assert 18 not in api.denied
@@ -1128,6 +1154,134 @@ def test_reviewed_write_remembers_transient_unattributed_proposal():
     assert cleanup["evidence"]["unattributed_ids"] == [18]
     assert 17 in api.denied
     assert 18 not in api.denied
+
+
+class _SettlingClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class _PendingSequenceAPI:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def request(self, method, path, payload=None):
+        assert (method, path, payload) == (
+            "GET",
+            "/pending-changes?status=pending",
+            None,
+        )
+        self.calls += 1
+        response = self.responses.pop(0) if self.responses else []
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _owned_pending(pending_id=17):
+    return {
+        "id": pending_id,
+        "operation": "create_lead",
+        "status": "pending",
+        "payload": {"name": "OHI SETTLE", "source": "note"},
+        "summary": "Create lead OHI SETTLE",
+    }
+
+
+def _unattributed_pending(pending_id=18):
+    return {
+        "id": pending_id,
+        "operation": "update_lead",
+        "status": "pending",
+        "payload": {"lead_id": 1, "area": "customer value"},
+        "summary": "Update lead 1",
+    }
+
+
+def _settle(api, clock, *, settle_timeout=6.0, clean_window=2.0):
+    return acceptance._post_write_owned_proposals(
+        api,
+        set(),
+        "OHI SETTLE",
+        clock=clock,
+        sleeper=clock.sleep,
+        settle_timeout=settle_timeout,
+        clean_window=clean_window,
+        poll_interval=1.0,
+    )
+
+
+def test_elapsed_settling_accumulates_a_proposal_that_appears_late():
+    clock = _SettlingClock()
+    owned = _owned_pending()
+    api = _PendingSequenceAPI([[], [], [owned], [owned], [owned]])
+
+    proposals, unattributed, attempts = _settle(api, clock)
+
+    assert proposals == {17: owned}
+    assert unattributed == []
+    assert attempts == api.calls
+    assert clock.now >= 2.0
+
+
+def test_transient_observation_failure_invalidates_the_partial_clean_window():
+    clock = _SettlingClock()
+    api = _PendingSequenceAPI([[], RuntimeError("transient"), [], []])
+
+    with pytest.raises(acceptance.ProposalOwnershipUnknown):
+        _settle(api, clock, settle_timeout=3.0, clean_window=2.0)
+
+    assert api.calls >= 3
+
+
+def test_settling_restarts_after_a_transient_failure_and_then_succeeds():
+    clock = _SettlingClock()
+    owned = _owned_pending()
+    api = _PendingSequenceAPI(
+        [[], RuntimeError("transient"), [owned], [owned], [owned], [owned]]
+    )
+
+    proposals, unattributed, attempts = _settle(
+        api, clock, settle_timeout=7.0, clean_window=2.0
+    )
+
+    assert proposals == {17: owned}
+    assert unattributed == []
+    assert attempts == api.calls
+    assert clock.now >= 3.0
+
+
+def test_settling_exhaustion_after_observation_gaps_is_ownership_unknown():
+    clock = _SettlingClock()
+    api = _PendingSequenceAPI([RuntimeError("unavailable")] * 8)
+
+    with pytest.raises(acceptance.ProposalOwnershipUnknown) as error:
+        _settle(api, clock, settle_timeout=3.0, clean_window=2.0)
+
+    assert error.value.attempts == api.calls
+    assert clock.now == 3.0
+
+
+def test_final_settling_snapshot_catches_a_last_moment_unattributed_race():
+    clock = _SettlingClock()
+    owned = _owned_pending()
+    unrelated = _unattributed_pending()
+    api = _PendingSequenceAPI(
+        [[owned], [owned], [owned], [owned, unrelated]]
+    )
+
+    proposals, unattributed, attempts = _settle(api, clock)
+
+    assert proposals == {17: owned}
+    assert unattributed == [18]
+    assert attempts == api.calls == 4
 
 
 def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
@@ -1215,11 +1369,9 @@ def test_invalid_write_snapshot_uncertainty_is_explicit_cleanup_failure():
 
     cleanup = cleanup_by_name(result, "Invalid-write proposal cleanup")
     assert cleanup["level"] == "FAIL"
-    assert cleanup["evidence"] == {
-        "ownership": "unknown",
-        "snapshot_attempts": acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS,
-    }
-    assert api.pending_get_calls == 1 + acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert cleanup["evidence"]["ownership"] == "unknown"
+    assert cleanup["evidence"]["snapshot_attempts"] >= 2
+    assert api.pending_get_calls == 1 + cleanup["evidence"]["snapshot_attempts"]
     assert api.denied == []
     assert "no proposal" not in cleanup["detail"].lower()
     assert by_name(result, "Invalid write")["evidence"] == {
@@ -1233,19 +1385,15 @@ def test_invalid_write_snapshot_uncertainty_is_explicit_cleanup_failure():
 
 def test_reviewed_write_snapshot_uncertainty_is_explicit_cleanup_failure():
     api = FakeAPI()
-    api.pending_fail_from_call = (
-        acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS + 3
-    )
+    api.pending_fail_from_call = 10
 
     result = run(api, allow_test_write=True)
 
     cleanup = cleanup_by_name(result, "Deny disposable proposal")
     assert cleanup["level"] == "FAIL"
-    assert cleanup["evidence"] == {
-        "ownership": "unknown",
-        "snapshot_attempts": acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS,
-    }
-    assert api.pending_get_calls == 2 + 2 * acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert cleanup["evidence"]["ownership"] == "unknown"
+    assert cleanup["evidence"]["snapshot_attempts"] >= 2
+    assert api.pending_get_calls > cleanup["evidence"]["snapshot_attempts"]
     assert api.denied == []
     assert 17 in api.pending
     assert "no proposal" not in cleanup["detail"].lower()
@@ -1379,6 +1527,8 @@ def test_two_successful_setup_runs_are_a_required_machine_verified_prerequisite(
             "both_succeeded": True,
             "idempotent": True,
             "revision_matches": True,
+            "current_state_matches": True,
+            "current_material_matches": True,
         },
     }
 
@@ -1551,6 +1701,71 @@ def test_setup_evidence_rejects_state_not_tied_to_checkpoint_material_tree():
     )
 
 
+def test_setup_evidence_rejects_self_consistent_stale_installed_state():
+    captured = installed_state()
+    current = changed_runtime_state()
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc1234",
+        dependencies=DEPENDENCIES,
+        discord_bound=False,
+        setup_evidence=setup_evidence(states=(captured, captured)),
+        worktree_clean=True,
+        setup_state_capture=lambda _verification: (
+            current,
+            current["sources"]["material_tree_sha256"],
+        ),
+    )
+
+    check = by_name(result, "Setup twice")
+    assert check["level"] == "FAIL"
+    assert check["detail"] == "current installed state drifted after evidence capture"
+    assert check["evidence"]["current_state_matches"] is False
+
+
+def test_setup_evidence_rejects_current_material_drift_after_live_state_capture():
+    state = installed_state()
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc1234",
+        dependencies=DEPENDENCIES,
+        discord_bound=False,
+        setup_evidence=setup_evidence(states=(state, state)),
+        worktree_clean=True,
+        setup_state_capture=lambda _verification: (state, "b" * 64),
+    )
+
+    check = by_name(result, "Setup twice")
+    assert check["level"] == "FAIL"
+    assert check["detail"] == "current setup material drifted after evidence capture"
+    assert check["evidence"]["current_material_matches"] is False
+
+
+def test_setup_evidence_reports_live_state_capture_failure_without_private_detail():
+    secret = "private-live-capture-secret"
+
+    def fail(_verification):
+        raise RuntimeError(secret)
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc1234",
+        dependencies=DEPENDENCIES,
+        discord_bound=False,
+        setup_evidence=setup_evidence(),
+        worktree_clean=True,
+        setup_state_capture=fail,
+    )
+    rendered = acceptance.render_report(result, as_json=True)
+
+    check = by_name(result, "Setup twice")
+    assert check["level"] == "FAIL"
+    assert check["detail"] == "current installed state could not be verified"
+    assert secret not in rendered
+
+
 def test_setup_evidence_is_strict_and_never_echoes_paths_urls_or_secrets(monkeypatch):
     secret = "setup-secret-token"
     monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", secret)
@@ -1652,6 +1867,68 @@ def test_setup_evidence_subprocess_explicitly_uses_isolated_source_only_bytecode
     ]
     assert observed["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert observed["env"]["PYTHONPYCACHEPREFIX"] == capture.sys.pycache_prefix
+
+
+def test_setup_evidence_receives_the_successful_childs_canonical_state(monkeypatch):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    state = installed_state()
+
+    def run(*args, **kwargs):
+        descriptor = int(kwargs["env"][capture.SETUP_STATE_FD_ENV])
+        envelope = {
+            "schema_version": 1,
+            "state_capture_exit_code": 0,
+            "state": state,
+        }
+        os.write(
+            descriptor,
+            json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode(),
+        )
+        return capture.subprocess.CompletedProcess(args, 0, "setup complete", "")
+
+    monkeypatch.setattr(capture.subprocess, "run", run)
+
+    assert capture._run_setup(1)[2:] == (0, state)
+
+
+def test_setup_evidence_child_uses_only_the_monotonic_remaining_time(monkeypatch):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    observed: dict = {}
+
+    def run(*args, **kwargs):
+        observed["args"] = args
+        observed.update(kwargs)
+        return capture.subprocess.CompletedProcess(args, 1, "", "setup failed")
+
+    monkeypatch.setattr(capture.subprocess, "run", run)
+
+    assert capture._run_setup(1, deadline=115.0, clock=lambda: 100.0)[0] == 1
+    assert observed["timeout"] == 15.0
+
+
+def test_setup_evidence_whole_capture_deadline_stops_before_a_second_run(tmp_path):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    now = [10.0]
+    calls: list[int] = []
+    state = installed_state()
+    material = state["sources"]["material_tree_sha256"]
+
+    def runner(sequence):
+        calls.append(sequence)
+        now[0] += 6.0
+        return (0, "", 0, state)
+
+    with pytest.raises(RuntimeError, match="time limit"):
+        capture.capture_setup_evidence(
+            tmp_path / "openhouse-setup-evidence.json",
+            revision="a" * 40,
+            runner=runner,
+            repository_state=lambda: ("a" * 40, True, material),
+            clock=lambda: now[0],
+            deadline_seconds=5.0,
+        )
+
+    assert calls == [1]
 
 
 def test_setup_evidence_structured_state_detects_material_differences(tmp_path):

@@ -1594,9 +1594,11 @@ def test_installed_state_snapshot_is_complete_structured_and_read_only(tmp_path)
     )
     assert state["plugin"]["registered"] is True
     assert state["plugin"]["runtime_tools"] == ["openhouse_crm"]
-    assert state["plugin"]["runtime_hooks"] == sorted(
-        setup_openclaw.REQUIRED_PLUGIN_HOOKS
-    )
+    assert state["plugin"]["runtime_verification"] == {
+        "mode": "authoritative_inventory",
+        "agent_id": options.agent_id,
+        "hooks": sorted(setup_openclaw.REQUIRED_PLUGIN_HOOKS),
+    }
     assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
     assert state["agent"]["skills"] == list(setup_openclaw.SKILL_NAMES)
     assert state["approvals"]["patterns"] == ["daily-brief"]
@@ -1958,6 +1960,47 @@ def test_runtime_without_authoritative_hook_inventory_uses_bounded_chat_path_pro
         "openhouse-dashboard",
         "openhouse-analysis",
     ]
+
+
+def test_behavioral_hook_fallback_is_carried_into_custom_agent_state(tmp_path):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = FakeCLI(
+        primary_agent_id="custom-crm",
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+            },
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        },
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert result.runtime_verification == {
+        "mode": "production_behavioral",
+        "agent_id": "custom-crm",
+        "capabilities": [
+            "configured_agent_guard",
+            "dashboard_channel_tool_block",
+            "full_client_tool_schema",
+            "internal_analysis_channel_tool_block",
+            "internal_analysis_tool_free",
+        ],
+    }
+    state = setup_openclaw.capture_installed_state(
+        options,
+        cli,
+        runtime_verification=result.runtime_verification,
+    )
+    assert state["plugin"]["runtime_verification"] == result.runtime_verification
+    assert state["plugin"]["config"] == {"agent_id": "custom-crm"}
+    assert state["agent"]["id"] == "custom-crm"
+    assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
+    assert state["agent"]["sandbox"] == setup_openclaw.DESIRED_SANDBOX
 
 
 @pytest.mark.parametrize(
@@ -3486,6 +3529,56 @@ def test_documented_entrypoints_fail_closed_unisolated_before_application_import
 
 
 @pytest.mark.parametrize(
+    "script", ("acceptance_openclaw.py", "capture_setup_evidence.py")
+)
+@pytest.mark.parametrize(
+    ("initializer", "tracked"),
+    (
+        (Path("backend/app/__init__.py"), True),
+        (Path("backend/__init__.py"), False),
+    ),
+)
+def test_evidence_entrypoints_never_execute_dirty_package_initializers(
+    tmp_path, script, initializer, tracked
+):
+    checkout = _committed_material_checkout(tmp_path)
+    sentinel = checkout / f"{initializer.parent.name}-initializer-executed"
+    payload = (
+        f"open({str(sentinel)!r}, 'w').write('executed')\n"
+        "raise RuntimeError('dirty package initializer executed')\n"
+    )
+    target = checkout / initializer
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(payload, encoding="utf-8")
+    if tracked:
+        assert subprocess.run(
+            ["git", "diff", "--quiet", "--", initializer.as_posix()],
+            cwd=checkout,
+            check=False,
+        ).returncode == 1
+    else:
+        assert subprocess.run(
+            ["git", "ls-files", "--error-unmatch", initializer.as_posix()],
+            cwd=checkout,
+            capture_output=True,
+            check=False,
+        ).returncode != 0
+
+    result = subprocess.run(
+        [sys.executable, "-I", f"scripts/{script}", "--help"],
+        cwd=checkout,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not sentinel.exists(), result.stderr
+
+
+@pytest.mark.parametrize(
     "script",
     (
         "setup_openclaw.py",
@@ -4079,6 +4172,59 @@ def test_snapshot_cleanup_rejects_final_lstat_oserror(tmp_path, monkeypatch):
     assert setup_openclaw._discard_skill_snapshot(snapshot) is False
 
 
+@pytest.mark.parametrize("node_kind", ("file", "directory"))
+def test_skill_tree_equality_rejects_permission_mode_drift(tmp_path, node_kind):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (left, right):
+        nested = root / "nested"
+        nested.mkdir(parents=True)
+        (nested / "entrypoint.py").write_bytes(b"same bytes\n")
+        nested.chmod(0o750)
+        (nested / "entrypoint.py").chmod(0o750)
+
+    changed = right / "nested"
+    if node_kind == "file":
+        changed = changed / "entrypoint.py"
+    changed.chmod(0o700)
+
+    assert setup_openclaw._skill_trees_match(left, right) is False
+
+
+def test_rollback_retains_recovery_backup_when_restored_executable_mode_drifts(
+    tmp_path, monkeypatch
+):
+    options = make_options(tmp_path)
+    for name in setup_openclaw.SKILL_NAMES:
+        target = options.workspace / "skills" / name
+        target.mkdir(parents=True)
+        entrypoint = target / "original.sh"
+        entrypoint.write_text(f"original {name}\n")
+        entrypoint.chmod(0o750)
+    real_copytree = setup_openclaw.shutil.copytree
+
+    def drift_after_restore(source, target, *args, **kwargs):
+        result = real_copytree(source, target, *args, **kwargs)
+        source_path = Path(source)
+        if "openhouse-skill-rollback-" in source_path.as_posix():
+            (Path(target) / "original.sh").chmod(0o640)
+        return result
+
+    monkeypatch.setattr(setup_openclaw.shutil, "copytree", drift_after_restore)
+    cli = FakeCLI(client_tool_probe=CommandResult(503, "", "provider unavailable"))
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    match = re.search(r"Recovery backup retained at ([^\n]+)", result.render())
+    assert match is not None
+    backup = Path(match.group(1).rstrip("."))
+    assert backup.is_dir()
+    assert (
+        backup / "crm-db-operations" / "original.sh"
+    ).stat().st_mode & 0o777 == 0o750
+
+
 def test_sync_skills_preflights_every_source_before_mutating(tmp_path):
     repo = tmp_path / "repo"
     for name in setup_openclaw.SKILL_NAMES[:-1]:
@@ -4329,6 +4475,84 @@ def test_setup_configures_and_behaviorally_proves_the_custom_runtime_agent(tmp_p
         ["openclaw", "plugins", "enable", "openhouse-crm"]
     )
     assert config_set_index < enable_index
+
+
+def test_openclaw_cli_uses_remaining_setup_time_and_a_fresh_rollback_window(
+    monkeypatch,
+):
+    now = [100.0]
+    observed_timeouts: list[float] = []
+
+    def run(*_args, **kwargs):
+        observed_timeouts.append(kwargs["timeout"])
+        return setup_openclaw.subprocess.CompletedProcess([], 0, "{}", "")
+
+    monkeypatch.setattr(setup_openclaw.subprocess, "run", run)
+    cli = OpenClawCLI(
+        clock=lambda: now[0],
+        setup_timeout_seconds=30.0,
+        rollback_timeout_seconds=12.0,
+    )
+
+    assert cli.run(["openclaw", "config", "validate", "--json"]).returncode == 0
+    assert observed_timeouts == [30.0]
+    now[0] = 131.0
+    expired = cli.run(["openclaw", "plugins", "list", "--json"])
+    assert expired.returncode == 124
+    assert "setup time limit" in expired.stderr.lower()
+    assert observed_timeouts == [30.0]
+
+    cli.begin_rollback()
+    rollback = cli.run(["openclaw", "gateway", "restart"], mutate=True)
+    assert rollback.returncode == 0
+    assert observed_timeouts == [30.0, 12.0]
+
+
+def test_setup_failure_switches_to_the_separate_rollback_deadline(tmp_path):
+    class RollbackDeadlineCLI(FakeCLI):
+        def __init__(self):
+            super().__init__(
+                client_tool_probe=CommandResult(503, "", "provider unavailable")
+            )
+            self.rollback_windows = 0
+
+        def begin_rollback(self):
+            self.rollback_windows += 1
+
+    cli = RollbackDeadlineCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.rollback_windows == 1
+
+
+def test_setup_main_starts_its_deadline_before_material_validation(
+    tmp_path, monkeypatch
+):
+    events: list[str] = []
+    options = make_options(tmp_path)
+
+    class DeadlineCLI:
+        def __init__(self):
+            events.append("deadline")
+
+    monkeypatch.delenv(setup_openclaw.SETUP_STATE_FD_ENV, raising=False)
+    monkeypatch.setattr(setup_openclaw, "_parse_args", lambda _argv: options)
+    monkeypatch.setattr(
+        setup_openclaw,
+        "_material_head_state",
+        lambda _repo: events.append("material") or {},
+    )
+    monkeypatch.setattr(setup_openclaw, "OpenClawCLI", DeadlineCLI)
+    monkeypatch.setattr(
+        setup_openclaw,
+        "configure_openclaw",
+        lambda _options, _cli: setup_openclaw.SetupResult(True, ["ok"]),
+    )
+
+    assert setup_openclaw.main([]) == 0
+    assert events == ["deadline", "material"]
 
 
 def test_setup_fails_closed_when_plugin_agent_config_readback_is_wrong(tmp_path):

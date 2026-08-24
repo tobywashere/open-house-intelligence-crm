@@ -56,7 +56,6 @@ _bootstrap_sys.pycache_prefix = _BOOTSTRAP_STDLIB + "/.openhouse-disabled-pycach
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import platform
@@ -66,15 +65,21 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
-if __name__ != "__main__":
+_VERIFIED_HEAD_ENTRYPOINT = __name__ == "__main__" or __name__.startswith(
+    "_openhouse_validated_"
+)
+
+if not _VERIFIED_HEAD_ENTRYPOINT:
     sys.path[:] = _BOOTSTRAP_ORIGINAL_PATH
 
 _SOURCE_ONLY_PYCACHE = tempfile.TemporaryDirectory(prefix="openhouse-source-only-")
@@ -84,7 +89,88 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 os.environ["PYTHONPYCACHEPREFIX"] = _SOURCE_ONLY_PYCACHE.name
 
 
-def _validated_material_repo() -> Path:
+def _load_verified_head_module(
+    repo: Path, relative: str, module_name: str
+) -> types.ModuleType:
+    """Execute only bytes proven to be the named regular file in HEAD."""
+    source = repo / relative
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeError("repository source validation failed")
+    try:
+        path_node = os.lstat(source)
+    except OSError as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    if stat.S_ISLNK(path_node.st_mode) or not stat.S_ISREG(path_node.st_mode):
+        raise RuntimeError("repository source validation failed")
+    tree_result = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "HEAD", "--", relative],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    try:
+        metadata, tracked_path = tree_result.stdout.rstrip(b"\n").split(b"\t", 1)
+        mode, kind, object_id = metadata.decode("ascii").split(" ")
+        tracked_relative = tracked_path.decode("utf-8", "strict")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    blob_result = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "blob", object_id],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(source, os.O_RDONLY | nofollow)
+        before = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    actual_mode = "100755" if before.st_mode & 0o111 else "100644"
+    contents = b"".join(chunks)
+    if (
+        tree_result.returncode != 0
+        or blob_result.returncode != 0
+        or tracked_relative != relative
+        or kind != "blob"
+        or mode != actual_mode
+        or not stat.S_ISREG(before.st_mode)
+        or (before.st_dev, before.st_ino)
+        != (path_node.st_dev, path_node.st_ino)
+        or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        or len(contents) != before.st_size
+        or contents != blob_result.stdout
+    ):
+        raise RuntimeError("repository source validation failed")
+    module = types.ModuleType(module_name)
+    module.__file__ = str(source)
+    module.__package__ = ""
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        exec(compile(contents, str(source), "exec"), module.__dict__)
+    except Exception:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
+    return module
+
+
+def _validated_material_repo() -> tuple[Path, types.ModuleType]:
     """Load the HEAD setup scanner without exposing the repository on sys.path."""
     script = Path(__file__)
     if script.is_symlink():
@@ -102,107 +188,68 @@ def _validated_material_repo() -> Path:
         or Path(root_result.stdout.strip()).resolve() != repo
     ):
         raise RuntimeError("repository source validation failed")
-    relative = "scripts/setup_openclaw.py"
-    source = repo / relative
     try:
-        node = os.lstat(source)
-    except OSError as exc:
-        raise RuntimeError("repository source validation failed") from exc
-    if stat.S_ISLNK(node.st_mode) or not stat.S_ISREG(node.st_mode):
-        raise RuntimeError("repository source validation failed")
-    tree_result = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "HEAD", "--", relative],
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    try:
-        metadata, tracked_path = tree_result.stdout.rstrip(b"\n").split(b"\t", 1)
-        mode, kind, object_id = metadata.decode("ascii").split(" ")
-        tracked_relative = tracked_path.decode("utf-8", "strict")
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise RuntimeError("repository source validation failed") from exc
-    actual_mode = "100755" if node.st_mode & 0o111 else "100644"
-    if (
-        tree_result.returncode != 0
-        or tracked_relative != relative
-        or kind != "blob"
-        or mode != actual_mode
-    ):
-        raise RuntimeError("repository source validation failed")
-    blob_result = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "blob", object_id],
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    try:
-        contents = source.read_bytes()
-    except OSError as exc:
-        raise RuntimeError("repository source validation failed") from exc
-    if blob_result.returncode != 0 or contents != blob_result.stdout:
-        raise RuntimeError("repository source validation failed")
-    spec = importlib.util.spec_from_file_location(
-        "_openhouse_validated_setup", source
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("repository source validation failed")
-    module = importlib.util.module_from_spec(spec)
-    previous = sys.modules.get(spec.name)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
+        module = _load_verified_head_module(
+            repo,
+            "scripts/setup_openclaw.py",
+            "_openhouse_validated_acceptance_setup",
+        )
         module._material_head_state(repo)
     except Exception as exc:
         raise RuntimeError("repository source validation failed") from exc
-    finally:
-        if previous is None:
-            sys.modules.pop(spec.name, None)
-        else:
-            sys.modules[spec.name] = previous
-    return repo
+    return repo, module
 
 
-if __name__ == "__main__":
+if _VERIFIED_HEAD_ENTRYPOINT:
     try:
-        REPO = _validated_material_repo()
+        REPO, _setup_module = _validated_material_repo()
+        _briefing_module = _load_verified_head_module(
+            REPO,
+            "backend/app/briefing_contract.py",
+            "_openhouse_validated_briefing_contract",
+        )
+        doctor = _load_verified_head_module(
+            REPO, "scripts/doctor.py", "_openhouse_validated_doctor"
+        )
     except RuntimeError:
         print("repository source validation failed", file=sys.stderr)
         raise SystemExit(1) from None
+    inspect_briefing_response = _briefing_module.inspect_briefing_response
+    SetupConflict = _setup_module.SetupConflict
+    OpenClawCLI = _setup_module.OpenClawCLI
+    _parse_args = _setup_module._parse_args
+    _redact_api_token = _setup_module._redact_api_token
+    _read_repo_env_values = _setup_module._read_repo_env_values
+    _material_head_state = _setup_module._material_head_state
+    _validate_requested_agent_id = _setup_module._validate_requested_agent_id
+    canonical_installed_state_digest = _setup_module.canonical_installed_state_digest
+    capture_installed_state = _setup_module.capture_installed_state
+    validate_installed_state_snapshot = _setup_module.validate_installed_state_snapshot
 else:
     REPO = Path(__file__).resolve().parent.parent
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
-
-from backend.app.briefing_contract import inspect_briefing_response
-
-try:
+    from backend.app.briefing_contract import inspect_briefing_response
     from scripts import doctor
     from scripts.setup_openclaw import (
+        OpenClawCLI,
         SetupConflict,
+        _parse_args,
         _redact_api_token,
         _read_repo_env_values,
         _material_head_state,
         _validate_requested_agent_id,
         canonical_installed_state_digest,
-        validate_installed_state_snapshot,
-    )
-except ModuleNotFoundError:  # Direct execution puts scripts/, not the repo, on sys.path.
-    import doctor  # type: ignore[no-redef]
-    from setup_openclaw import (  # type: ignore[no-redef]
-        SetupConflict,
-        _redact_api_token,
-        _read_repo_env_values,
-        _material_head_state,
-        _validate_requested_agent_id,
-        canonical_installed_state_digest,
+        capture_installed_state,
         validate_installed_state_snapshot,
     )
 
 
 MAX_BODY_BYTES = 1024 * 1024
 MAX_TEXT = 500
-POST_WRITE_SNAPSHOT_ATTEMPTS = 3
+POST_WRITE_SETTLE_TIMEOUT_SECONDS = 4.0
+POST_WRITE_CLEAN_WINDOW_SECONDS = 1.0
+POST_WRITE_POLL_INTERVAL_SECONDS = 0.2
+_SETTLE_CLOCK = time.monotonic
+_SETTLE_SLEEP = time.sleep
 MAX_UNATTRIBUTED_PROPOSAL_IDS = 10
 PENDING_RE = re.compile(r"\bQueued Pending approval #(\d+)\b")
 DIRECTORY_RE = re.compile(r"^\s*(\d+) leads total\.", re.IGNORECASE)
@@ -450,13 +497,18 @@ def _parse_evidence_time(value: object) -> datetime:
 
 
 def _setup_evidence_entry(
-    evidence: object, revision: str, worktree_clean: bool
+    evidence: object,
+    revision: str,
+    worktree_clean: bool,
+    setup_state_capture: Callable[[dict[str, Any]], tuple[dict, str]],
 ) -> dict:
     base_evidence = {
         "runs": 0,
         "both_succeeded": False,
         "idempotent": False,
         "revision_matches": False,
+        "current_state_matches": False,
+        "current_material_matches": False,
     }
     if evidence is None:
         return _entry(
@@ -662,12 +714,66 @@ def _setup_evidence_entry(
             "setup reruns were not idempotent",
             base_evidence,
         )
+    try:
+        current_state_value, current_material = setup_state_capture(
+            states[0]["plugin"]["runtime_verification"]
+        )
+        current_state = validate_installed_state_snapshot(current_state_value)
+        canonical_installed_state_digest(current_state)
+    except Exception:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "current installed state could not be verified",
+            base_evidence,
+        )
+    expected_materials = {
+        *material_digests,
+        *(state["sources"]["material_tree_sha256"] for state in states),
+    }
+    current_material_matches = (
+        isinstance(current_material, str)
+        and SHA256_RE.fullmatch(current_material) is not None
+        and expected_materials == {current_material}
+        and current_state["sources"]["material_tree_sha256"] == current_material
+    )
+    base_evidence["current_material_matches"] = current_material_matches
+    if not current_material_matches:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "current setup material drifted after evidence capture",
+            base_evidence,
+        )
+    current_state_matches = all(current_state == state for state in states)
+    base_evidence["current_state_matches"] = current_state_matches
+    if not current_state_matches:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "current installed state drifted after evidence capture",
+            base_evidence,
+        )
     return _entry(
         "PASS",
         "Setup twice",
         "two setup runs succeeded at the tested revision",
         base_evidence,
     )
+
+
+def _capture_current_setup_state(
+    runtime_verification: dict[str, Any],
+) -> tuple[dict, str]:
+    """Recapture installed state, then independently rescan current HEAD material."""
+    options = _parse_args([], repo=REPO)
+    state = capture_installed_state(
+        options,
+        OpenClawCLI(),
+        runtime_verification=runtime_verification,
+    )
+    material = _material_head_state(REPO)
+    return state, material["material_tree_sha256"]
 
 
 def _runtime_agent_id() -> str:
@@ -796,18 +902,62 @@ def _post_write_owned_proposals(
     api: ApiBoundary,
     baseline_ids: set[int],
     expected_name: str,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    settle_timeout: float = POST_WRITE_SETTLE_TIMEOUT_SECONDS,
+    clean_window: float = POST_WRITE_CLEAN_WINDOW_SECONDS,
+    poll_interval: float = POST_WRITE_POLL_INTERVAL_SECONDS,
 ) -> tuple[dict[int, dict], list[int], int]:
-    """Settle, then partition new proposals by strong acceptance ownership."""
+    return _settle_pending_ownership(
+        api,
+        baseline_ids,
+        lambda snapshot: _owned_proposals(
+            snapshot, baseline_ids, expected_name
+        ),
+        clock=clock,
+        sleeper=sleeper,
+        settle_timeout=settle_timeout,
+        clean_window=clean_window,
+        poll_interval=poll_interval,
+    )
+
+
+def _settle_pending_ownership(
+    api: ApiBoundary,
+    baseline_ids: set[int],
+    select_owned: Callable[[dict[int, dict]], dict[int, dict]],
+    *,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    settle_timeout: float = POST_WRITE_SETTLE_TIMEOUT_SECONDS,
+    clean_window: float = POST_WRITE_CLEAN_WINDOW_SECONDS,
+    poll_interval: float = POST_WRITE_POLL_INTERVAL_SECONDS,
+) -> tuple[dict[int, dict], list[int], int]:
+    """Observe one spaced clean window and retain every post-baseline ID seen."""
+    if (
+        settle_timeout <= 0
+        or clean_window <= 0
+        or poll_interval <= 0
+        or clean_window > settle_timeout
+    ):
+        raise ValueError("proposal settling limits must be positive and bounded")
+    monotonic = clock or _SETTLE_CLOCK
+    sleep = sleeper or _SETTLE_SLEEP
+    deadline = monotonic() + settle_timeout
+    clean_started: float | None = None
+    attempts = 0
     observed_owned: dict[int, dict] = {}
     observed_unattributed: set[int] = set()
-    for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
+
+    def observe() -> bool:
+        nonlocal attempts
+        attempts += 1
         try:
             snapshot = _pending_snapshot(api)
         except Exception:
-            if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
-                raise ProposalOwnershipUnknown(attempt) from None
-            continue
-        owned = _owned_proposals(snapshot, baseline_ids, expected_name)
+            return False
+        owned = select_owned(snapshot)
         new_ids = set(snapshot) - baseline_ids
         observed_unattributed.update(new_ids - set(owned))
         observed_owned.update(
@@ -817,13 +967,34 @@ def _post_write_owned_proposals(
         )
         for pending_id in observed_unattributed:
             observed_owned.pop(pending_id, None)
-        if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
-            return (
-                observed_owned,
-                sorted(observed_unattributed),
-                attempt,
-            )
-    raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
+        return True
+
+    while True:
+        if monotonic() >= deadline:
+            raise ProposalOwnershipUnknown(attempts)
+        if observe():
+            now = monotonic()
+            if clean_started is None:
+                clean_started = now
+            if now - clean_started >= clean_window:
+                # This separate successful read is the observation immediately
+                # before the caller can decide PASS.
+                if monotonic() >= deadline or not observe():
+                    clean_started = None
+                else:
+                    return (
+                        observed_owned,
+                        sorted(observed_unattributed),
+                        attempts,
+                    )
+        else:
+            # A failed read creates an observation gap. Only a new complete
+            # successful window can establish ownership after that gap.
+            clean_started = None
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise ProposalOwnershipUnknown(attempts)
+        sleep(min(poll_interval, remaining))
 
 
 def _appointment_snapshot(api: ApiBoundary) -> dict[int, dict]:
@@ -885,35 +1056,25 @@ def _post_write_owned_booking_proposals(
     api: ApiBoundary,
     baseline_ids: set[int],
     expected_payload: dict,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    settle_timeout: float = POST_WRITE_SETTLE_TIMEOUT_SECONDS,
+    clean_window: float = POST_WRITE_CLEAN_WINDOW_SECONDS,
+    poll_interval: float = POST_WRITE_POLL_INTERVAL_SECONDS,
 ) -> tuple[dict[int, dict], list[int], int]:
-    observed_owned: dict[int, dict] = {}
-    observed_unattributed: set[int] = set()
-    for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
-        try:
-            snapshot = _pending_snapshot(api)
-        except Exception:
-            if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
-                raise ProposalOwnershipUnknown(attempt) from None
-            continue
-        owned = _owned_booking_proposals(
+    return _settle_pending_ownership(
+        api,
+        baseline_ids,
+        lambda snapshot: _owned_booking_proposals(
             snapshot, baseline_ids, expected_payload
-        )
-        new_ids = set(snapshot) - baseline_ids
-        observed_unattributed.update(new_ids - set(owned))
-        observed_owned.update(
-            (pending_id, row)
-            for pending_id, row in owned.items()
-            if pending_id not in observed_unattributed
-        )
-        for pending_id in observed_unattributed:
-            observed_owned.pop(pending_id, None)
-        if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
-            return (
-                observed_owned,
-                sorted(observed_unattributed),
-                attempt,
-            )
-    raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
+        ),
+        clock=clock,
+        sleeper=sleeper,
+        settle_timeout=settle_timeout,
+        clean_window=clean_window,
+        poll_interval=poll_interval,
+    )
 
 
 def _booking_applied(
@@ -1797,6 +1958,7 @@ def run_acceptance(
     briefing_date: str | None = None,
     setup_evidence: object | None = None,
     worktree_clean: bool | None = None,
+    setup_state_capture: Callable[[dict[str, Any]], tuple[dict, str]] | None = None,
 ) -> dict:
     revision = revision or _capture_revision()
     worktree_clean = (
@@ -1837,7 +1999,14 @@ def run_acceptance(
             {"revision": revision},
         )
     )
-    checks.append(_setup_evidence_entry(setup_evidence, revision, worktree_clean))
+    checks.append(
+        _setup_evidence_entry(
+            setup_evidence,
+            revision,
+            worktree_clean,
+            setup_state_capture or _capture_current_setup_state,
+        )
+    )
     required_missing = [
         name
         for name in ("python", "node", "npm", "openclaw")
