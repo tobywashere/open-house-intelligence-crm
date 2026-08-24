@@ -161,6 +161,9 @@ customizations from running before the repository safety checks.
 python3 -I scripts/setup_openclaw.py
 ```
 
+Keep the private recovery-backup folder that setup reports until dashboard chat
+passes the live check. Then remove that exact old folder; never share it.
+
 For a formal hardware acceptance, skip that one run and use the two-run evidence
 helper in the next section instead.
 

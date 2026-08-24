@@ -63,6 +63,9 @@ python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
+Keep the private recovery-backup folder that setup reports until dashboard chat
+passes the live check. Then remove that exact old folder; never share it.
+
 Keep that Terminal open. Open a second Terminal and run:
 
 ```bash

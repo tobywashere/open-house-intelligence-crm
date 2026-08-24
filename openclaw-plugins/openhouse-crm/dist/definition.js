@@ -123,6 +123,26 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       const setupProbe = configuredSetupProbe(api.pluginConfig);
       const setupProbeState = new Map();
       const productionProbeState = new Map();
+      const markProductionProbeExecuted = (params, context) => {
+        if (
+          context?.agentId !== crmAgentId
+          || !TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
+          || params?.operation !== PRODUCTION_PROBE_READ_OPERATION
+        ) return;
+        const args = params?.arguments;
+        const nonce = args?.probe_nonce;
+        if (
+          args === null
+          || typeof args !== "object"
+          || Array.isArray(args)
+          || Object.keys(args).length !== 1
+          || typeof nonce !== "string"
+          || !SETUP_NONCE_PATTERN.test(nonce)
+        ) return;
+        const key = `${context.requester.channel}:${nonce}`;
+        const record = productionProbeState.get(key);
+        if (record) productionProbeState.set(key, { ...record, executed: true });
+      };
       api.on(
         "before_tool_call",
         (event, context) => {
@@ -275,20 +295,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
             && TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
             && event.params?.operation === PRODUCTION_PROBE_READ_OPERATION
           ) {
-            const args = event.params?.arguments;
-            const nonce = args?.probe_nonce;
-            if (
-              args !== null
-              && typeof args === "object"
-              && !Array.isArray(args)
-              && Object.keys(args).length === 1
-              && typeof nonce === "string"
-              && SETUP_NONCE_PATTERN.test(nonce)
-            ) {
-              const key = `${context.requester.channel}:${nonce}`;
-              const record = productionProbeState.get(key);
-              if (record) productionProbeState.set(key, { ...record, executed: true });
-            }
+            markProductionProbeExecuted(event.params, context);
             return;
           }
           if (
@@ -334,6 +341,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
             + "Use the named operation and an object of named arguments. Never invent CRM facts.",
           parameters: toolParameters,
           async execute(_callId, params) {
+            markProductionProbeExecuted(params, toolContext);
             const details = await executeCrm(params, toolContext);
             return {
               content: [{ type: "text", text: JSON.stringify(details) }],

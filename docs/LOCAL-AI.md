@@ -69,6 +69,9 @@ python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
+Keep the private recovery-backup folder that setup reports until dashboard chat
+passes the live check. Then remove that exact old folder; never share it.
+
 On a new OpenClaw install, it is normal for the config to contain agent
 defaults but no explicit agent roster yet. Setup creates the dedicated CRM
 agent, then safely detects whether that OpenClaw version uses current keyed

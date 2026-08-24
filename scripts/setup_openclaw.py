@@ -538,104 +538,508 @@ class SetupConflict(RuntimeError):
 
 
 LocalOperationRunner = Callable[[str, dict[str, Any], float], bool]
+LocalQueryRunner = Callable[[str, dict[str, Any], float], dict[str, Any] | None]
+MAX_LOCAL_WORKER_HEADER_BYTES = 1024 * 1024
+MAX_LOCAL_WORKER_REQUEST_BYTES = MAX_SETUP_STATE_BYTES + (4 * 1024 * 1024)
+MAX_LOCAL_WORKER_RESULT_BYTES = 8 * 1024 * 1024
 
 
 _LOCAL_OPERATION_SOURCE = r"""
-import base64, json, os, shutil, stat
+import hashlib, json, os, re, shutil, stat, sys
 from pathlib import Path
 
-def decode(value):
-    if isinstance(value, dict) and set(value) == {"__bytes__"}:
-        return base64.b64decode(value["__bytes__"], validate=True)
+MAX_HEADER = 1024 * 1024
+MAX_REQUEST = 20 * 1024 * 1024
+MAX_RESULT = 8 * 1024 * 1024
+MAX_ENTRIES = 2048
+MAX_FILE = 16 * 1024 * 1024
+
+def read_exact(stream, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            raise OSError("truncated worker request")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+def decode(value, blobs):
+    if isinstance(value, dict) and set(value) == {"__blob__"}:
+        index = value["__blob__"]
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(blobs):
+            raise ValueError("invalid worker blob reference")
+        return blobs[index]
     if isinstance(value, dict):
-        return {key: decode(item) for key, item in value.items()}
+        return {key: decode(item, blobs) for key, item in value.items()}
     if isinstance(value, list):
-        return [decode(item) for item in value]
+        return [decode(item, blobs) for item in value]
     return value
 
-payload = decode(json.loads(os.environ.pop("OPENHOUSE_LOCAL_PAYLOAD")))
-operation = payload.pop("operation")
-if operation == "copytree":
-    source = Path(payload["source"])
-    target = Path(payload["target"])
-    ignore_kind = payload.get("ignore")
-    def ignored(directory, names):
-        result = ["__pycache__"] if "__pycache__" in names else []
-        if ignore_kind == "inert_and_contract" and Path(directory) == source and "contract.json" in names:
-            result.append("contract.json")
-        return result
-    shutil.copytree(source, target, ignore=ignored if ignore_kind else None)
-elif operation == "rmtree":
-    shutil.rmtree(Path(payload["path"]))
-elif operation == "unlink":
-    Path(payload["path"]).unlink()
-elif operation == "verify_file":
-    path = Path(payload["path"])
+def request():
+    raw_length = read_exact(sys.stdin.buffer, 8)
+    header_length = int.from_bytes(raw_length, "big")
+    if not 0 < header_length <= MAX_HEADER:
+        raise ValueError("invalid worker header size")
+    header_bytes = read_exact(sys.stdin.buffer, header_length)
+    header = json.loads(header_bytes)
+    if not isinstance(header, dict) or set(header) != {"version", "payload", "blobs"} or header["version"] != 1:
+        raise ValueError("invalid worker header")
+    descriptors = header["blobs"]
+    if not isinstance(descriptors, list):
+        raise ValueError("invalid worker blobs")
+    total = 8 + header_length
+    blobs = []
+    for item in descriptors:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"size", "sha256"}
+            or not isinstance(item["size"], int)
+            or isinstance(item["size"], bool)
+            or item["size"] < 0
+            or not isinstance(item["sha256"], str)
+            or len(item["sha256"]) != 64
+        ):
+            raise ValueError("invalid worker blob descriptor")
+        total += item["size"]
+        if total > MAX_REQUEST:
+            raise ValueError("worker request too large")
+        contents = read_exact(sys.stdin.buffer, item["size"])
+        if hashlib.sha256(contents).hexdigest() != item["sha256"]:
+            raise ValueError("worker blob digest mismatch")
+        blobs.append(contents)
+    if sys.stdin.buffer.read(1):
+        raise ValueError("trailing worker request bytes")
+    return decode(header["payload"], blobs)
+
+def emit(result):
+    body = json.dumps({"ok": True, "result": result}, separators=(",", ":")).encode()
+    if len(body) > MAX_RESULT:
+        raise ValueError("worker result too large")
+    header = json.dumps(
+        {"size": len(body), "sha256": hashlib.sha256(body).hexdigest()},
+        separators=(",", ":"),
+    ).encode()
+    sys.stdout.buffer.write(len(header).to_bytes(8, "big"))
+    sys.stdout.buffer.write(header)
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+def read_file(path):
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         node = os.fstat(descriptor)
-        identity = payload.get("identity")
-        if not stat.S_ISREG(node.st_mode) or stat.S_IMODE(node.st_mode) != int(payload["mode"]):
-            raise OSError("file metadata mismatch")
-        if identity is not None and [node.st_dev, node.st_ino] != identity:
-            raise OSError("file identity changed")
+        if not stat.S_ISREG(node.st_mode):
+            raise OSError("not a regular file")
         chunks = []
+        total = 0
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
             if not chunk:
                 break
+            total += len(chunk)
+            if total > MAX_FILE:
+                raise OSError("file exceeds worker bound")
             chunks.append(chunk)
-        if b"".join(chunks) != payload["contents"]:
-            raise OSError("file contents mismatch")
+        after = os.fstat(descriptor)
+        if (node.st_dev, node.st_ino, node.st_size, node.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise OSError("file changed while read")
+        return node, b"".join(chunks)
     finally:
         os.close(descriptor)
-elif operation in {"write_exclusive", "rewrite_existing"}:
-    path = Path(payload["path"])
-    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
-    flags |= os.O_CREAT | os.O_EXCL if operation == "write_exclusive" else os.O_TRUNC
-    descriptor = os.open(path, flags, int(payload["mode"]))
-    try:
-        node = os.fstat(descriptor)
+
+def normalized_mode(mode):
+    return "100755" if mode & 0o111 else "100644"
+
+def scan_tree(base, roots, *, include_directories=False, ignore_inert_pycache=False):
+    base = Path(base)
+    entries = []
+    for raw_root in roots:
+        relative_root = Path(raw_root)
+        if relative_root.is_absolute() or ".." in relative_root.parts:
+            raise OSError("invalid tree root")
+        root = base if relative_root == Path(".") else base / relative_root
+        root_node = os.lstat(root)
+        if stat.S_ISLNK(root_node.st_mode):
+            raise OSError("tree contains symlink")
+        if stat.S_ISREG(root_node.st_mode):
+            node, contents = read_file(root)
+            entries.append({"path": relative_root.as_posix(), "kind": "file", "mode": normalized_mode(node.st_mode), "size": len(contents), "sha256": hashlib.sha256(contents).hexdigest()})
+            continue
+        if not stat.S_ISDIR(root_node.st_mode):
+            raise OSError("unsupported tree root")
+        if include_directories:
+            entries.append({"path": relative_root.as_posix(), "kind": "directory", "mode": stat.S_IMODE(root_node.st_mode)})
+        for current, directory_names, file_names in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            directory_names.sort()
+            file_names.sort()
+            for name in list(directory_names):
+                child = current_path / name
+                child_node = os.lstat(child)
+                if stat.S_ISLNK(child_node.st_mode) or not stat.S_ISDIR(child_node.st_mode):
+                    raise OSError("tree contains unsupported directory")
+                if name == "__pycache__" and ignore_inert_pycache:
+                    cache_entries = list(child.iterdir())
+                    if len(cache_entries) > MAX_ENTRIES:
+                        raise OSError("cache too large")
+                    for cache_entry in cache_entries:
+                        cache_node = os.lstat(cache_entry)
+                        if not stat.S_ISREG(cache_node.st_mode) or re.fullmatch(r"[A-Za-z0-9_.-]{1,255}\.pyc", cache_entry.name) is None:
+                            raise OSError("unsupported cache entry")
+                    directory_names.remove(name)
+                    continue
+                if include_directories:
+                    entries.append({"path": child.relative_to(base).as_posix(), "kind": "directory", "mode": stat.S_IMODE(child_node.st_mode)})
+            for name in file_names:
+                child = current_path / name
+                node, contents = read_file(child)
+                entry = {"path": child.relative_to(base).as_posix(), "kind": "file", "mode": normalized_mode(node.st_mode), "size": len(contents), "sha256": hashlib.sha256(contents).hexdigest()}
+                if include_directories:
+                    entry["permission"] = stat.S_IMODE(node.st_mode)
+                entries.append(entry)
+                if len(entries) > MAX_ENTRIES:
+                    raise OSError("tree contains too many entries")
+    entries.sort(key=lambda item: item["path"])
+    return entries
+
+def full_manifest(path):
+    root = Path(path)
+    entries = scan_tree(root, ["."], include_directories=True)
+    return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+def execute(payload):
+    operation = payload.pop("operation")
+    if operation == "copytree":
+        source = Path(payload["source"])
+        target = Path(payload["target"])
+        ignore_kind = payload.get("ignore")
+        def ignored(directory, names):
+            result = ["__pycache__"] if "__pycache__" in names else []
+            if ignore_kind == "inert_and_contract" and Path(directory) == source and "contract.json" in names:
+                result.append("contract.json")
+            return result
+        shutil.copytree(source, target, ignore=ignored if ignore_kind else None)
+        return True
+    if operation == "rmtree":
+        shutil.rmtree(Path(payload["path"]))
+        return True
+    if operation == "unlink":
+        Path(payload["path"]).unlink()
+        return True
+    if operation == "verify_file":
+        node, contents = read_file(Path(payload["path"]))
         identity = payload.get("identity")
-        if not stat.S_ISREG(node.st_mode):
-            raise OSError("target is not regular")
+        if stat.S_IMODE(node.st_mode) != int(payload["mode"]):
+            raise OSError("file metadata mismatch")
         if identity is not None and [node.st_dev, node.st_ino] != identity:
-            raise OSError("target identity changed")
-        os.fchmod(descriptor, int(payload["mode"]))
-        view = memoryview(payload["contents"])
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise OSError("write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    if os.name != "nt":
-        parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            raise OSError("file identity changed")
+        if contents != payload["contents"]:
+            raise OSError("file contents mismatch")
+        return True
+    if operation in {"write_exclusive", "rewrite_existing"}:
+        path = Path(payload["path"])
+        flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= os.O_CREAT | os.O_EXCL if operation == "write_exclusive" else os.O_TRUNC
+        descriptor = os.open(path, flags, int(payload["mode"]))
         try:
-            os.fsync(parent_fd)
+            node = os.fstat(descriptor)
+            identity = payload.get("identity")
+            if not stat.S_ISREG(node.st_mode):
+                raise OSError("target is not regular")
+            if identity is not None and [node.st_dev, node.st_ino] != identity:
+                raise OSError("target identity changed")
+            os.fchmod(descriptor, int(payload["mode"]))
+            view = memoryview(payload["contents"])
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
         finally:
-            os.close(parent_fd)
-else:
+            os.close(descriptor)
+        if os.name != "nt":
+            parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+        return True
+    if operation == "tree_manifest":
+        return {"entries": scan_tree(payload["base"], payload["roots"], ignore_inert_pycache=bool(payload.get("ignore_inert_pycache")))}
+    if operation == "trees_match":
+        return {"match": full_manifest(payload["left"]) == full_manifest(payload["right"])}
+    if operation == "gateway_env_matches":
+        path = Path(payload["path"])
+        if not payload["existed"]:
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                return {"match": True}
+            return {"match": False}
+        node, contents = read_file(path)
+        return {"match": stat.S_IMODE(node.st_mode) == int(payload["mode"]) and contents == payload["contents"]}
+    if operation == "gateway_env_snapshot":
+        path = Path(payload["path"])
+        try:
+            node, contents = read_file(path)
+        except FileNotFoundError:
+            return {"existed": False, "mode": None, "size": 0, "sha256": hashlib.sha256(b"").hexdigest(), "contents_hex": ""}
+        return {"existed": True, "mode": stat.S_IMODE(node.st_mode), "size": len(contents), "sha256": hashlib.sha256(contents).hexdigest(), "contents_hex": contents.hex()}
+    if operation == "recovery_backup_status":
+        root = Path(payload["path"])
+        root_node = os.lstat(root)
+        if not stat.S_ISDIR(root_node.st_mode) or stat.S_IMODE(root_node.st_mode) & 0o077:
+            return {"complete": False}
+        manifest_node, manifest_contents = read_file(root / "transaction-state.json")
+        if stat.S_IMODE(manifest_node.st_mode) != 0o600:
+            return {"complete": False}
+        manifest = json.loads(manifest_contents)
+        names = payload["existing_names"]
+        if manifest.get("skills", {}).get("existingNames") != names or manifest.get("skills", {}).get("workspace") != payload["workspace"]:
+            return {"complete": False}
+        children = sorted(item.name for item in root.iterdir() if item.name != "transaction-state.json")
+        if children != names:
+            return {"complete": False}
+        digests = [full_manifest(root / name) for name in names]
+        digest = hashlib.sha256(json.dumps({"manifest": hashlib.sha256(manifest_contents).hexdigest(), "skills": digests}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return {"complete": True, "sha256": digest}
     raise ValueError("unsupported operation")
+
+try:
+    emit(execute(request()))
+except Exception:
+    try:
+        body = json.dumps({"ok": False, "result": None}, separators=(",", ":")).encode()
+        header = json.dumps({"size": len(body), "sha256": hashlib.sha256(body).hexdigest()}, separators=(",", ":")).encode()
+        sys.stdout.buffer.write(len(header).to_bytes(8, "big") + header + body)
+        sys.stdout.buffer.flush()
+    except Exception:
+        pass
+    raise
 """
 
 
-def _local_wire_value(value: Any) -> Any:
+_STATE_HANDOFF_SOURCE = r"""
+import hashlib, json, os, sys
+
+MAX_HEADER = 1024 * 1024
+MAX_REQUEST = 20 * 1024 * 1024
+
+def read_exact(size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sys.stdin.buffer.read(remaining)
+        if not chunk:
+            raise OSError("truncated handoff request")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+header_size = int.from_bytes(read_exact(8), "big")
+if not 0 < header_size <= MAX_HEADER:
+    raise ValueError("invalid handoff header")
+header = json.loads(read_exact(header_size))
+if (
+    not isinstance(header, dict)
+    or set(header) != {"version", "payload", "blobs"}
+    or header["version"] != 1
+    or header["payload"] != {"operation": "write_handoff", "contents": {"__blob__": 0}}
+    or not isinstance(header["blobs"], list)
+    or len(header["blobs"]) != 1
+):
+    raise ValueError("invalid handoff request")
+blob = header["blobs"][0]
+if (
+    not isinstance(blob, dict)
+    or set(blob) != {"size", "sha256"}
+    or not isinstance(blob["size"], int)
+    or isinstance(blob["size"], bool)
+    or not 0 <= blob["size"] <= MAX_REQUEST
+    or not isinstance(blob["sha256"], str)
+    or len(blob["sha256"]) != 64
+):
+    raise ValueError("invalid handoff payload")
+contents = read_exact(blob["size"])
+if hashlib.sha256(contents).hexdigest() != blob["sha256"] or sys.stdin.buffer.read(1):
+    raise ValueError("handoff payload integrity failure")
+os.lseek(1, 0, os.SEEK_SET)
+os.ftruncate(1, 0)
+view = memoryview(contents)
+while view:
+    written = os.write(1, view)
+    if written <= 0:
+        raise OSError("handoff write made no progress")
+    view = view[written:]
+os.fsync(1)
+"""
+
+
+def _local_wire_value(value: Any, blobs: list[bytes]) -> Any:
     if isinstance(value, bytes):
-        return {"__bytes__": base64.b64encode(value).decode("ascii")}
+        blobs.append(value)
+        return {"__blob__": len(blobs) - 1}
     if isinstance(value, dict):
-        return {key: _local_wire_value(item) for key, item in value.items()}
+        return {key: _local_wire_value(item, blobs) for key, item in value.items()}
     if isinstance(value, list):
-        return [_local_wire_value(item) for item in value]
+        return [_local_wire_value(item, blobs) for item in value]
     return value
+
+
+def _encode_local_worker_request(operation: str, payload: dict[str, Any]) -> bytes:
+    blobs: list[bytes] = []
+    wire_payload = _local_wire_value({"operation": operation, **payload}, blobs)
+    header = json.dumps(
+        {
+            "version": 1,
+            "payload": wire_payload,
+            "blobs": [
+                {"size": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+                for blob in blobs
+            ],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(header) > MAX_LOCAL_WORKER_HEADER_BYTES:
+        raise ValueError("local worker header is too large")
+    request = len(header).to_bytes(8, "big") + header + b"".join(blobs)
+    if len(request) > MAX_LOCAL_WORKER_REQUEST_BYTES:
+        raise ValueError("local worker request is too large")
+    return request
+
+
+def _decode_local_worker_result(raw: bytes) -> Any:
+    if len(raw) < 8 or len(raw) > MAX_LOCAL_WORKER_RESULT_BYTES:
+        raise ValueError("local worker result has invalid size")
+    header_size = int.from_bytes(raw[:8], "big")
+    if not 0 < header_size <= MAX_LOCAL_WORKER_HEADER_BYTES:
+        raise ValueError("local worker result header has invalid size")
+    body_offset = 8 + header_size
+    if body_offset > len(raw):
+        raise ValueError("local worker result is truncated")
+    header = json.loads(raw[8:body_offset])
+    body = raw[body_offset:]
+    if (
+        not isinstance(header, dict)
+        or set(header) != {"size", "sha256"}
+        or header["size"] != len(body)
+        or not isinstance(header["sha256"], str)
+        or SHA256_RE.fullmatch(header["sha256"]) is None
+        or hashlib.sha256(body).hexdigest() != header["sha256"]
+    ):
+        raise ValueError("local worker result integrity check failed")
+    envelope = json.loads(body)
+    if not isinstance(envelope, dict) or set(envelope) != {"ok", "result"}:
+        raise ValueError("local worker result is malformed")
+    if envelope["ok"] is not True:
+        raise ValueError("local worker operation failed")
+    return envelope["result"]
+
+
+def _terminate_local_worker(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _close_local_worker_pipes(process: subprocess.Popen[bytes]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None and not stream.closed:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def _run_bounded_local_worker(
+    operation: str, payload: dict[str, Any], timeout: float
+) -> Any | None:
+    """Supervise one isolated filesystem worker over private anonymous pipes."""
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        return None
+    deadline = time.monotonic() + float(timeout)
+    try:
+        request = _encode_local_worker_request(operation, payload)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.casefold() in {"systemroot", "windir", "path"}
+    }
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-c", _LOCAL_OPERATION_SOURCE],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+        )
+        stdout, _ = process.communicate(
+            input=request,
+            timeout=max(0.001, deadline - time.monotonic()),
+        )
+        _close_local_worker_pipes(process)
+        if process.returncode != 0 or time.monotonic() > deadline:
+            return None
+        return _decode_local_worker_result(stdout)
+    except subprocess.TimeoutExpired:
+        _terminate_local_worker(process)
+        _close_local_worker_pipes(process)
+        return None
+    except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError):
+        if "process" in locals():
+            _close_local_worker_pipes(process)
+        return None
 
 
 def _run_bounded_local_operation(
     operation: str, payload: dict[str, Any], timeout: float
 ) -> bool:
-    """Supervise a killable filesystem worker; never use an unkillable thread."""
+    return _run_bounded_local_worker(operation, payload, timeout) is True
+
+
+def _run_bounded_local_query(
+    operation: str, payload: dict[str, Any], timeout: float
+) -> dict[str, Any] | None:
+    result = _run_bounded_local_worker(operation, payload, timeout)
+    if not isinstance(result, dict):
+        return None
+    return result
+
+
+def _write_setup_state_handoff(
+    descriptor: int,
+    contents: bytes,
+    *,
+    deadline_check: Callable[[], float],
+) -> bool:
+    if len(contents) > MAX_SETUP_STATE_BYTES:
+        return False
+    try:
+        timeout = deadline_check()
+        request = _encode_local_worker_request(
+            "write_handoff", {"contents": contents}
+        )
+    except (SetupConflict, TypeError, ValueError, OverflowError):
+        return False
     if (
         not isinstance(timeout, (int, float))
         or isinstance(timeout, bool)
@@ -644,40 +1048,36 @@ def _run_bounded_local_operation(
     ):
         return False
     deadline = time.monotonic() + float(timeout)
-    encoded_payload = json.dumps(
-        _local_wire_value({"operation": operation, **payload}),
-        separators=(",", ":"),
-    )
-    if len(encoded_payload.encode("utf-8")) > 24 * 1024:
-        return False
     environment = {
         key: value
         for key, value in os.environ.items()
         if key.casefold() in {"systemroot", "windir", "path"}
     }
-    environment["OPENHOUSE_LOCAL_PAYLOAD"] = encoded_payload
     try:
         process = subprocess.Popen(
-            [sys.executable, "-I", "-c", _LOCAL_OPERATION_SOURCE],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
+            [sys.executable, "-I", "-c", _STATE_HANDOFF_SOURCE],
+            stdin=subprocess.PIPE,
+            stdout=descriptor,
             stderr=subprocess.DEVNULL,
             env=environment,
         )
-        process.wait(timeout=max(0.001, deadline - time.monotonic()))
-        return process.returncode == 0 and time.monotonic() <= deadline
+        process.communicate(
+            input=request,
+            timeout=max(0.001, deadline - time.monotonic()),
+        )
+        _close_local_worker_pipes(process)
+        return (
+            process.returncode == 0
+            and time.monotonic() <= deadline
+            and os.fstat(descriptor).st_size == len(contents)
+        )
     except subprocess.TimeoutExpired:
-        process.terminate()
-        try:
-            process.wait(timeout=0.25)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            try:
-                process.wait(timeout=0.25)
-            except subprocess.TimeoutExpired:
-                return False
+        _terminate_local_worker(process)
+        _close_local_worker_pipes(process)
         return False
     except (OSError, RuntimeError, ValueError, TypeError):
+        if "process" in locals():
+            _close_local_worker_pipes(process)
         return False
 
 
@@ -696,6 +1096,21 @@ def _run_local_if_bounded(
     except SetupConflict:
         return False
     return (local_runner or _run_bounded_local_operation)(
+        operation, payload, timeout
+    )
+
+
+def _run_local_query_if_bounded(
+    operation: str,
+    payload: dict[str, Any],
+    *,
+    deadline_check: Callable[[], float] | None,
+    local_query_runner: LocalQueryRunner | None,
+) -> dict[str, Any] | None:
+    if deadline_check is None and local_query_runner is None:
+        return None
+    timeout = deadline_check() if deadline_check is not None else 30.0
+    return (local_query_runner or _run_bounded_local_query)(
         operation, payload, timeout
     )
 
@@ -984,7 +1399,19 @@ def _upsert_gateway_env(
 ) -> None:
     _validate_api_token(token)
     _create_directory_chain(env_path.parent, "OpenClaw state directory")
-    existing = _read_gateway_env_no_follow(env_path)
+    if deadline_check is not None:
+        existing_snapshot = _snapshot_gateway_env(
+            env_path,
+            deadline_check=deadline_check,
+        )
+        try:
+            existing = existing_snapshot.contents.decode("utf-8")
+        except UnicodeError as exc:
+            raise SetupConflict(
+                "OpenClaw gateway environment is not valid UTF-8"
+            ) from exc
+    else:
+        existing = _read_gateway_env_no_follow(env_path)
     updated = _updated_gateway_env(existing, token)
     if updated != existing:
         descriptor, temporary_name = tempfile.mkstemp(
@@ -1043,13 +1470,84 @@ def _upsert_gateway_env(
                 os.close(descriptor)
             if temporary.exists():
                 temporary.unlink()
-    _verify_gateway_env_no_follow(env_path, token)
+    if deadline_check is not None:
+        verified = _snapshot_gateway_env(
+            env_path,
+            deadline_check=deadline_check,
+        )
+        try:
+            persisted = verified.contents.decode("utf-8")
+        except UnicodeError as exc:
+            raise SetupConflict(
+                "OpenClaw gateway environment is not valid UTF-8"
+            ) from exc
+        if not verified.existed or _read_gateway_env_token(persisted) != token:
+            raise SetupConflict(
+                "OpenClaw gateway environment token verification failed"
+            )
+    else:
+        _verify_gateway_env_no_follow(env_path, token)
 
 
-def _snapshot_gateway_env(env_path: Path) -> GatewayEnvSnapshot:
+def _snapshot_gateway_env(
+    env_path: Path,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
+) -> GatewayEnvSnapshot:
     absolute = _validate_no_symlink_components(
         env_path, "OpenClaw gateway environment", leaf_directory=False
     )
+    if deadline_check is not None or local_query_runner is not None:
+        result = _run_local_query_if_bounded(
+            "gateway_env_snapshot",
+            {"path": str(absolute)},
+            deadline_check=deadline_check or (lambda: 30.0),
+            local_query_runner=local_query_runner,
+        )
+        if (
+            not isinstance(result, dict)
+            or set(result)
+            != {"existed", "mode", "size", "sha256", "contents_hex"}
+            or not isinstance(result["existed"], bool)
+            or not isinstance(result["size"], int)
+            or isinstance(result["size"], bool)
+            or result["size"] < 0
+            or not isinstance(result["sha256"], str)
+            or SHA256_RE.fullmatch(result["sha256"]) is None
+            or not isinstance(result["contents_hex"], str)
+        ):
+            raise SetupConflict(
+                "bounded OpenClaw gateway environment snapshot did not complete"
+            )
+        try:
+            contents = bytes.fromhex(result["contents_hex"])
+        except ValueError as exc:
+            raise SetupConflict(
+                "bounded OpenClaw gateway environment snapshot was malformed"
+            ) from exc
+        if (
+            len(contents) != result["size"]
+            or hashlib.sha256(contents).hexdigest() != result["sha256"]
+            or (
+                result["existed"]
+                and (
+                    not isinstance(result["mode"], int)
+                    or isinstance(result["mode"], bool)
+                    or not 0 <= result["mode"] <= 0o777
+                )
+            )
+            or (not result["existed"] and (result["mode"] is not None or contents))
+        ):
+            raise SetupConflict(
+                "bounded OpenClaw gateway environment snapshot was malformed"
+            )
+        return GatewayEnvSnapshot(
+            absolute,
+            result["existed"],
+            contents,
+            result["mode"],
+        )
     try:
         node = os.lstat(absolute)
     except FileNotFoundError:
@@ -1088,6 +1586,7 @@ def _restore_gateway_env(
     *,
     deadline_check: Callable[[], float] | None = None,
     local_runner: LocalOperationRunner | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> bool:
     try:
         _validate_no_symlink_components(
@@ -1161,11 +1660,10 @@ def _restore_gateway_env(
                 os.close(descriptor)
             if temporary.exists():
                 temporary.unlink()
-        restored = _snapshot_gateway_env(snapshot.path)
-        return (
-            restored.existed
-            and restored.contents == snapshot.contents
-            and restored.mode == snapshot.mode
+        return _gateway_env_snapshot_matches(
+            snapshot,
+            deadline_check=deadline_check or (lambda: 30.0),
+            local_query_runner=local_query_runner,
         )
     except (OSError, SetupConflict):
         return False
@@ -1297,12 +1795,27 @@ def build_setup_actions(options: SetupOptions, agents: list[dict]) -> list[Actio
     return actions
 
 
-def _validate_skill_tree(path: Path, label: str) -> None:
+def _validate_skill_tree(
+    path: Path,
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
+) -> None:
     if path.is_symlink():
         raise SetupConflict(f"{label} must not be a symlink: {path}")
     if path.exists() and not path.is_dir():
         raise SetupConflict(f"{label} must be a directory: {path}")
     if not path.exists():
+        return
+    if deadline_check is not None or local_query_runner is not None:
+        _bounded_tree_file_entries(
+            path,
+            (Path("."),),
+            label,
+            deadline_check=deadline_check or (lambda: 30.0),
+            local_query_runner=local_query_runner,
+        )
         return
     for entry in path.rglob("*"):
         if entry.is_symlink():
@@ -1777,7 +2290,11 @@ def _snapshot_installed_skills(
         skills_root, "OpenClaw skills directory", leaf_directory=True
     )
     for name in SKILL_NAMES:
-        _validate_skill_tree(skills_root / name, "installed skill directory")
+        _validate_skill_tree(
+            skills_root / name,
+            "installed skill directory",
+            deadline_check=deadline_check,
+        )
     backup_root = Path(
         tempfile.mkdtemp(prefix="openhouse-skill-rollback-")
     ).resolve(strict=True)
@@ -1800,7 +2317,8 @@ def _snapshot_installed_skills(
                 elif not bounded:
                     raise SetupConflict(
                         "could not complete the bounded installed-skill snapshot; "
-                        f"partial private recovery backup retained at {backup_root}"
+                        f"incomplete private data remains at {backup_root} and must "
+                        "not be treated as a recovery backup"
                     )
                 existing_names.add(name)
     except SetupConflict:
@@ -1862,7 +2380,11 @@ def _restore_installed_skills(
                         return False
                     if deadline_check is not None:
                         deadline_check()
-                    _validate_skill_tree(staged, "staged restored skill directory")
+                    _validate_skill_tree(
+                        staged,
+                        "staged restored skill directory",
+                        deadline_check=deadline_check,
+                    )
                     _validate_no_symlink_components(
                         target, "installed skill directory", leaf_directory=True
                     )
@@ -1883,6 +2405,11 @@ def _restore_installed_skills(
                     snapshot.backup_root / name,
                     target,
                     deadline_check=deadline_check,
+                    local_query_runner=(
+                        _run_bounded_local_query
+                        if deadline_check is not None
+                        else None
+                    ),
                 ):
                     return False
             elif target.exists() or target.is_symlink():
@@ -1923,7 +2450,25 @@ def _skill_trees_match(
     right: Path,
     *,
     deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> bool:
+    if deadline_check is not None or local_query_runner is not None:
+        try:
+            result = _run_local_query_if_bounded(
+                "trees_match",
+                {"left": str(left), "right": str(right)},
+                deadline_check=deadline_check,
+                local_query_runner=local_query_runner,
+            )
+        except SetupConflict:
+            return False
+        return (
+            isinstance(result, dict)
+            and set(result) == {"match"}
+            and isinstance(result["match"], bool)
+            and result["match"]
+        )
+
     def manifest(root: Path) -> dict[str, tuple[str, int, bytes]]:
         result: dict[str, tuple[str, int, bytes]] = {}
         if deadline_check is not None:
@@ -1960,33 +2505,60 @@ def _skill_trees_match(
         return False
 
 
-def _discard_skill_snapshot(
+def _gateway_env_snapshot_matches(
+    snapshot: GatewayEnvSnapshot,
+    *,
+    deadline_check: Callable[[], float],
+    local_query_runner: LocalQueryRunner | None = None,
+) -> bool:
+    try:
+        result = _run_local_query_if_bounded(
+            "gateway_env_matches",
+            {
+                "path": str(snapshot.path),
+                "existed": snapshot.existed,
+                "contents": snapshot.contents,
+                "mode": snapshot.mode,
+            },
+            deadline_check=deadline_check,
+            local_query_runner=local_query_runner,
+        )
+    except SetupConflict:
+        return False
+    return (
+        isinstance(result, dict)
+        and set(result) == {"match"}
+        and isinstance(result["match"], bool)
+        and result["match"]
+    )
+
+
+def _recovery_snapshot_is_complete(
     snapshot: SkillRollback,
     *,
     deadline_check: Callable[[], float] | None = None,
-    local_runner: LocalOperationRunner | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> bool:
-    deletion_failed = False
     try:
-        bounded = _run_local_if_bounded(
-            "rmtree",
-            {"path": str(snapshot.backup_root)},
-            deadline_check=deadline_check,
-            local_runner=local_runner,
+        result = _run_local_query_if_bounded(
+            "recovery_backup_status",
+            {
+                "path": str(snapshot.backup_root),
+                "workspace": str(snapshot.workspace),
+                "existing_names": sorted(snapshot.existing_names),
+            },
+            deadline_check=deadline_check or (lambda: 30.0),
+            local_query_runner=local_query_runner,
         )
-        if bounded is None:
-            shutil.rmtree(snapshot.backup_root)
-        elif not bounded:
-            return False
-    except (OSError, SetupConflict):
-        deletion_failed = True
-    try:
-        os.lstat(snapshot.backup_root)
-    except FileNotFoundError:
-        return not deletion_failed
-    except OSError:
+    except SetupConflict:
         return False
-    return False
+    return (
+        isinstance(result, dict)
+        and set(result) == {"complete", "sha256"}
+        and result["complete"] is True
+        and isinstance(result["sha256"], str)
+        and SHA256_RE.fullmatch(result["sha256"]) is not None
+    )
 
 
 def _write_recovery_manifest(
@@ -2256,6 +2828,56 @@ def _ignore_inert_pycache(directory: str, names: list[str]) -> list[str]:
     return ["__pycache__"]
 
 
+def _bounded_tree_file_entries(
+    base: Path,
+    roots: tuple[Path, ...],
+    label: str,
+    *,
+    deadline_check: Callable[[], float],
+    local_query_runner: LocalQueryRunner | None = None,
+) -> dict[str, dict[str, Any]]:
+    result = _run_local_query_if_bounded(
+        "tree_manifest",
+        {
+            "base": str(base),
+            "roots": [root.as_posix() for root in roots],
+            "ignore_inert_pycache": True,
+        },
+        deadline_check=deadline_check,
+        local_query_runner=local_query_runner,
+    )
+    if not isinstance(result, dict) or set(result) != {"entries"}:
+        raise SetupConflict(f"bounded {label} tree inspection did not complete")
+    raw_entries = result["entries"]
+    if not isinstance(raw_entries, list) or len(raw_entries) > MAX_MATERIAL_ENTRIES:
+        raise SetupConflict(f"bounded {label} tree inspection was malformed")
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in raw_entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"path", "kind", "mode", "size", "sha256"}
+            or entry["kind"] != "file"
+            or not isinstance(entry["path"], str)
+            or not entry["path"]
+            or Path(entry["path"]).is_absolute()
+            or ".." in Path(entry["path"]).parts
+            or entry["path"] in entries
+            or entry["mode"] not in {"100644", "100755"}
+            or not isinstance(entry["size"], int)
+            or isinstance(entry["size"], bool)
+            or entry["size"] < 0
+            or not isinstance(entry["sha256"], str)
+            or SHA256_RE.fullmatch(entry["sha256"]) is None
+        ):
+            raise SetupConflict(f"bounded {label} tree inspection was malformed")
+        entries[entry["path"]] = {
+            "mode": entry["mode"],
+            "size": entry["size"],
+            "sha256": entry["sha256"],
+        }
+    return entries
+
+
 def _tracked_head_manifest(
     repo: Path,
     roots: tuple[Path, ...],
@@ -2263,6 +2885,7 @@ def _tracked_head_manifest(
     *,
     paths_relative_to: Path | None = None,
     deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> dict[str, Any]:
     """Return a HEAD-authoritative manifest and reject every non-HEAD filesystem entry."""
     pathspecs = [root.as_posix() for root in roots]
@@ -2287,11 +2910,22 @@ def _tracked_head_manifest(
         tracked[relative] = (mode, object_id)
     if not tracked or len(tracked) > MAX_MATERIAL_ENTRIES:
         raise SetupConflict(f"{label} did not resolve to a bounded tracked tree")
-    filesystem = _filesystem_material_files(
-        repo, roots, label, deadline_check=deadline_check
-    )
-    extras = sorted(set(filesystem) - set(tracked))
-    missing = sorted(set(tracked) - set(filesystem))
+    bounded_files: dict[str, dict[str, Any]] | None = None
+    if deadline_check is not None or local_query_runner is not None:
+        bounded_files = _bounded_tree_file_entries(
+            repo,
+            roots,
+            label,
+            deadline_check=deadline_check or (lambda: 30.0),
+            local_query_runner=local_query_runner,
+        )
+        filesystem_paths = set(bounded_files)
+        filesystem: dict[str, Path] = {}
+    else:
+        filesystem = _filesystem_material_files(repo, roots, label)
+        filesystem_paths = set(filesystem)
+    extras = sorted(filesystem_paths - set(tracked))
+    missing = sorted(set(tracked) - filesystem_paths)
     if extras:
         raise SetupConflict(f"{label} contains an extra non-HEAD file")
     if missing:
@@ -2301,9 +2935,17 @@ def _tracked_head_manifest(
         if deadline_check is not None:
             deadline_check()
         expected_mode, object_id = tracked[relative]
-        path = filesystem[relative]
-        node = os.lstat(path)
-        actual_mode = _normalized_git_mode(node.st_mode)
+        path = filesystem.get(relative)
+        if bounded_files is not None:
+            bounded_entry = bounded_files[relative]
+            actual_mode = bounded_entry["mode"]
+            size = bounded_entry["size"]
+            digest = bounded_entry["sha256"]
+        else:
+            assert path is not None
+            node = os.lstat(path)
+            actual_mode = _normalized_git_mode(node.st_mode)
+            size, digest = _read_regular_file_digest(path, label)
         if actual_mode != expected_mode:
             raise SetupConflict(f"{label} file mode does not match HEAD")
         contents = _git_bytes(
@@ -2311,9 +2953,6 @@ def _tracked_head_manifest(
             ["cat-file", "blob", object_id],
             label,
             deadline_check=deadline_check,
-        )
-        size, digest = _read_regular_file_digest(
-            path, label, deadline_check=deadline_check
         )
         if size != len(contents) or digest != hashlib.sha256(contents).hexdigest():
             raise SetupConflict(f"{label} contents do not match HEAD")
@@ -2338,6 +2977,7 @@ def _tracked_head_tree(
     label: str,
     *,
     deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> dict[str, Any]:
     return _tracked_head_manifest(
         repo,
@@ -2345,11 +2985,15 @@ def _tracked_head_tree(
         label,
         paths_relative_to=relative_root,
         deadline_check=deadline_check,
+        local_query_runner=local_query_runner,
     )
 
 
 def _material_head_state(
-    repo: Path, *, deadline_check: Callable[[], float] | None = None
+    repo: Path,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> dict[str, Any]:
     if deadline_check is not None:
         deadline_check()
@@ -2359,6 +3003,7 @@ def _material_head_state(
             Path("skills") / name,
             f"shipped {name} skill",
             deadline_check=deadline_check,
+            local_query_runner=local_query_runner,
         )
         for name in SKILL_NAMES
     }
@@ -2367,12 +3012,14 @@ def _material_head_state(
         Path("openclaw-plugins") / PLUGIN_ID,
         "bundled OpenClaw CRM plugin",
         deadline_check=deadline_check,
+        local_query_runner=local_query_runner,
     )
     shared = _tracked_head_manifest(
         repo,
         MATERIAL_SHARED_PATHS,
         "shared setup sources",
         deadline_check=deadline_check,
+        local_query_runner=local_query_runner,
     )
     material = {"skills": skills, "plugin": plugin, "shared": shared}
     return {
@@ -2384,21 +3031,46 @@ def _material_head_state(
 
 
 def _installed_tree_manifest(
-    root: Path, expected: dict[str, Any], label: str
+    root: Path,
+    expected: dict[str, Any],
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> dict[str, Any]:
     validated = _validate_tree_manifest(expected, label)
-    files = _filesystem_material_files(root.parent, (Path(root.name),), label)
-    actual_paths = {Path(path).relative_to(root.name).as_posix(): value for path, value in files.items()}
+    bounded_files: dict[str, dict[str, Any]] | None = None
+    if deadline_check is not None or local_query_runner is not None:
+        bounded_files = _bounded_tree_file_entries(
+            root,
+            (Path("."),),
+            label,
+            deadline_check=deadline_check or (lambda: 30.0),
+            local_query_runner=local_query_runner,
+        )
+        actual_paths: dict[str, Any] = bounded_files
+    else:
+        files = _filesystem_material_files(root.parent, (Path(root.name),), label)
+        actual_paths = {
+            Path(path).relative_to(root.name).as_posix(): value
+            for path, value in files.items()
+        }
     expected_by_path = {entry["path"]: entry for entry in validated["entries"]}
     if set(actual_paths) != set(expected_by_path):
         raise SetupConflict(f"{label} has files outside the shipped HEAD tree")
     entries: list[dict[str, Any]] = []
     for relative in sorted(expected_by_path):
-        path = actual_paths[relative]
         expected_entry = expected_by_path[relative]
-        node = os.lstat(path)
-        mode = _normalized_git_mode(node.st_mode)
-        size, digest = _read_regular_file_digest(path, label)
+        if bounded_files is not None:
+            actual = bounded_files[relative]
+            mode = actual["mode"]
+            size = actual["size"]
+            digest = actual["sha256"]
+        else:
+            path = actual_paths[relative]
+            node = os.lstat(path)
+            mode = _normalized_git_mode(node.st_mode)
+            size, digest = _read_regular_file_digest(path, label)
         entry = {"path": relative, "mode": mode, "size": size, "sha256": digest}
         if entry != expected_entry:
             field = "mode" if mode != expected_entry["mode"] else "content"
@@ -2424,7 +3096,11 @@ def sync_skills(
         for source in sources:
             if not source.exists():
                 raise SetupConflict(f"shipped skill directory is missing: {source}")
-            _validate_skill_tree(source, "shipped skill directory")
+            _validate_skill_tree(
+                source,
+                "shipped skill directory",
+                deadline_check=deadline_check,
+            )
         _validate_no_symlink_components(
             workspace, "OpenClaw workspace", leaf_directory=True
         )
@@ -2432,7 +3108,11 @@ def sync_skills(
             skills_root, "OpenClaw skills directory", leaf_directory=True
         )
         for target in targets:
-            _validate_skill_tree(target, "installed skill directory")
+            _validate_skill_tree(
+                target,
+                "installed skill directory",
+                deadline_check=deadline_check,
+            )
         if dry_run:
             return targets
 
@@ -4062,6 +4742,7 @@ def capture_installed_state(
             options.workspace / "skills" / name,
             source_skills[name],
             f"installed {name} skill",
+            deadline_check=getattr(cli, "require_time", None),
         )
         for name in SKILL_NAMES
     }
@@ -4140,7 +4821,10 @@ def capture_installed_state(
     token = _read_config_snapshot(cli, TOKEN_CONFIG_PATH)
     if token.existed and token.value not in (TOKEN_SECRETREF, TOKEN_SECRETREF_REDACTED):
         raise SetupConflict("installed-state CRM API token reference is unsupported")
-    gateway_env_snapshot = _snapshot_gateway_env(_gateway_env_path())
+    gateway_env_snapshot = _snapshot_gateway_env(
+        _gateway_env_path(),
+        deadline_check=getattr(cli, "require_time", None),
+    )
     try:
         gateway_env_contents = gateway_env_snapshot.contents.decode("utf-8")
     except UnicodeError as exc:
@@ -4424,7 +5108,11 @@ def _remove_diagnostic_workspace(
         _validate_no_symlink_components(
             root, "setup diagnostic workspace", leaf_directory=True
         )
-        _validate_skill_tree(root, "setup diagnostic workspace")
+        _validate_skill_tree(
+            root,
+            "setup diagnostic workspace",
+            deadline_check=deadline_check,
+        )
         bounded = _run_local_if_bounded(
             "rmtree",
             {"path": str(root)},
@@ -4858,6 +5546,8 @@ def _rollback_state_matches(
     plugin_enabled: bool,
     skill_snapshot: SkillRollback,
     gateway_env_snapshot: GatewayEnvSnapshot | None,
+    deadline_check: Callable[[], float],
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> bool:
     try:
         listed = _run_required(
@@ -4941,14 +5631,22 @@ def _rollback_state_matches(
         for name in SKILL_NAMES:
             target = skills_root / name
             if name in skill_snapshot.existing_names:
-                if not _skill_trees_match(skill_snapshot.backup_root / name, target):
+                if not _skill_trees_match(
+                    skill_snapshot.backup_root / name,
+                    target,
+                    deadline_check=deadline_check,
+                    local_query_runner=local_query_runner,
+                ):
                     return False
             elif target.exists() or target.is_symlink():
                 return False
 
         if gateway_env_snapshot is not None:
-            current_env = _snapshot_gateway_env(gateway_env_snapshot.path)
-            if current_env != gateway_env_snapshot:
+            if not _gateway_env_snapshot_matches(
+                gateway_env_snapshot,
+                deadline_check=deadline_check,
+                local_query_runner=local_query_runner,
+            ):
                 return False
         return True
     except (OSError, SetupConflict):
@@ -4984,7 +5682,6 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     diagnostic_root: Path | None = None
     diagnostic_agent_creation_attempted = False
     gateway_restart_attempted = False
-    skill_snapshot_cleanup_failed = False
     try:
         _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
@@ -5203,7 +5900,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             config_snapshots[LEGACY_TOKEN_CONFIG_PATH] = _read_config_snapshot(
                 cli, LEGACY_TOKEN_CONFIG_PATH
             )
-            gateway_env_snapshot = _snapshot_gateway_env(gateway_env_path)
+            gateway_env_snapshot = _snapshot_gateway_env(
+                gateway_env_path,
+                deadline_check=local_deadline_check,
+            )
         binding_snapshot = _read_config_snapshot(cli, "bindings")
         diagnostic_agent_id = _new_diagnostic_agent_id(
             {
@@ -5764,14 +6464,19 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         )
         if skill_rollback is not None:
-            if not _discard_skill_snapshot(
+            if not _recovery_snapshot_is_complete(
                 skill_rollback, deadline_check=local_deadline_check
             ):
-                skill_snapshot_cleanup_failed = True
                 raise SetupConflict(
-                    "Could not securely remove and verify deletion of the private setup "
-                    "recovery backup"
+                    "The private recovery backup could not be revalidated as complete"
                 )
+            messages.append(
+                f"Recovery backup retained at {skill_rollback.backup_root}"
+            )
+            messages.append(
+                "This private backup was revalidated as complete. Keep it until you "
+                "confirm dashboard chat works, then securely remove that exact directory."
+            )
             skill_rollback = None
         rollback = None
         messages.append(
@@ -5789,12 +6494,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         return SetupResult(True, messages, runtime_verification)
     except (SetupConflict, OSError) as exc:
-        rollback_failed = skill_snapshot_cleanup_failed
-        retain_recovery_backup = (
-            skill_snapshot_cleanup_failed
-            or "bounded" in str(exc).casefold()
-            or "time limit" in str(exc).casefold()
-        )
+        rollback_failed = False
         begin_rollback = getattr(cli, "begin_rollback", None)
         if callable(begin_rollback):
             try:
@@ -6090,6 +6790,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     plugin_enabled=plugin_previously_enabled,
                     skill_snapshot=skill_rollback,
                     gateway_env_snapshot=gateway_env_snapshot,
+                    deadline_check=(
+                        getattr(cli, "require_time", None)
+                        or (lambda: ROLLBACK_DEADLINE_SECONDS)
+                    ),
                 )
             ):
                 rollback_failed = True
@@ -6098,35 +6802,31 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 )
 
         if skill_rollback is not None:
-            if rollback_failed or retain_recovery_backup:
+            recovery_deadline = (
+                getattr(cli, "require_time", None)
+                or (lambda: ROLLBACK_DEADLINE_SECONDS)
+            )
+            if _recovery_snapshot_is_complete(
+                skill_rollback,
+                deadline_check=recovery_deadline,
+            ):
                 messages.append(
                     f"Recovery backup retained at {skill_rollback.backup_root}"
                 )
                 messages.append(
-                    "Restore only after removing symlinks and verifying the target workspace."
+                    "This private backup was revalidated as complete. Restore only after "
+                    "removing symlinks and verifying the target workspace."
                 )
                 messages.append(
-                    "After recovery, securely remove that exact private backup directory."
+                    "Keep it until recovery is confirmed, then securely remove that exact "
+                    "private backup directory."
                 )
             else:
-                if not _discard_skill_snapshot(
-                    skill_rollback,
-                    deadline_check=getattr(cli, "require_time", None),
-                ):
-                    rollback_failed = True
-                    messages.append(
-                        "Could not securely remove and verify deletion of the private "
-                        "setup recovery backup."
-                    )
-                    messages.append(
-                        f"Recovery backup retained at {skill_rollback.backup_root}"
-                    )
-                    messages.append(
-                        "Restore only after removing symlinks and verifying the target workspace."
-                    )
-                    messages.append(
-                        "After recovery, securely remove that exact private backup directory."
-                    )
+                rollback_failed = True
+                messages.append(
+                    f"Recovery backup at {skill_rollback.backup_root} could not be "
+                    "revalidated as complete; do not rely on it for automatic recovery."
+                )
             skill_rollback = None
         messages.append(str(exc))
         return SetupResult(False, messages)
@@ -6237,13 +6937,12 @@ def main(argv: list[str] | None = None) -> int:
             ).encode("utf-8")
             if len(encoded) > MAX_SETUP_STATE_BYTES:
                 raise OSError("setup state handoff was too large")
-            view = memoryview(encoded)
-            while view:
-                written = os.write(state_descriptor, view)
-                if written <= 0:
-                    raise OSError("setup state handoff did not make progress")
-                view = view[written:]
-            os.fsync(state_descriptor)
+            if not _write_setup_state_handoff(
+                state_descriptor,
+                encoded,
+                deadline_check=cli.require_time,
+            ):
+                raise OSError("bounded setup state handoff did not complete")
         except OSError:
             print("setup state handoff could not be completed", file=sys.stderr)
             return 1

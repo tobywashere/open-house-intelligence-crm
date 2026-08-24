@@ -48,6 +48,11 @@ python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
 
+Setup prints the location of a private recovery backup. Keep that exact folder
+until the dashboard chat has passed the live check below. After the live check
+works, you can remove that old backup; do not share it because it may contain
+your previous local CRM setup.
+
 Keep that Terminal open. In a second Terminal, start in the directory where
 you cloned the project and run the read-only readiness check:
 

@@ -261,6 +261,56 @@ test("production channel proof fails if the canonical probe executor ran", () =>
 });
 
 
+test("production channel proof fails as soon as the registered executor begins", async () => {
+  let finishExecution;
+  const executionStarted = new Promise((resolve) => {
+    finishExecution = resolve;
+  });
+  const { hooks, registrations } = registerPlugin(
+    () => executionStarted.then(() => ({
+      ok: true,
+      operation: "generate_dashboard_insights",
+      kind: "read",
+      result: {},
+    })),
+    { agentId: "portable-crm" },
+  );
+  const nonce = "abcdef0123456789abcdef0123456789";
+  const params = {
+    operation: "generate_dashboard_insights",
+    arguments: { probe_nonce: nonce },
+  };
+  const toolContext = {
+    agentId: "portable-crm",
+    requester: { channel: "openhouse-dashboard" },
+  };
+  hooks.get("before_tool_call").handler(
+    { toolName: "openhouse_crm", params },
+    toolContext,
+  );
+
+  const tool = registrations[0][0](toolContext);
+  const execution = tool.execute("call-id", params);
+  const status = hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_crm",
+      params: {
+        operation: "__openhouse_behavior_probe_status__",
+        arguments: { channel: "openhouse-dashboard", nonce },
+      },
+    },
+    {
+      agentId: "portable-crm",
+      requester: { channel: "openhouse-setup-capability" },
+    },
+  );
+  assert.match(status.blockReason, /not proven/i);
+
+  finishExecution();
+  await execution;
+});
+
+
 test("production channel proof retains only a bounded set of fresh records", () => {
   const { hooks } = registerPlugin(undefined, { agentId: "portable-crm" });
   const beforeToolCall = hooks.get("before_tool_call").handler;

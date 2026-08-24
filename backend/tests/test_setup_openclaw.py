@@ -4104,84 +4104,9 @@ def test_partial_skill_restore_retains_private_backup_and_reports_recovery_path(
     assert "Restore only after removing symlinks" in result.render()
 
 
-def test_success_fails_closed_and_retains_private_backup_when_cleanup_raises(
+def test_successful_setup_retains_verified_private_backup_for_manual_lifecycle(
     tmp_path, monkeypatch
 ):
-    token = "cleanup-secret"
-    monkeypatch.setenv("OHI_API_TOKEN", token)
-    real_rmtree = setup_openclaw.shutil.rmtree
-    cleanup_targets = []
-
-    def fail_backup_cleanup(path, *args, **kwargs):
-        target = Path(path)
-        if target.name.startswith("openhouse-skill-rollback-"):
-            cleanup_targets.append(target)
-            if kwargs.get("ignore_errors"):
-                return None
-            raise OSError("simulated backup cleanup failure")
-        return real_rmtree(path, *args, **kwargs)
-
-    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", fail_backup_cleanup)
-
-    result = configure_openclaw(
-        make_options(tmp_path), cli=FakeCLI(config_path=tmp_path / "openclaw.json")
-    )
-    rendered = result.render()
-
-    assert not result.ok
-    assert cleanup_targets
-    assert cleanup_targets[0].is_dir()
-    assert f"Recovery backup retained at {cleanup_targets[0]}" in rendered
-    assert "Restore only after removing symlinks" in rendered
-    assert "securely remove that exact private backup" in rendered
-    assert token not in rendered
-
-
-def test_success_fails_closed_and_reports_partial_backup_cleanup(
-    tmp_path, monkeypatch
-):
-    token = "partial-cleanup-secret"
-    monkeypatch.setenv("OHI_API_TOKEN", token)
-    options = make_options(tmp_path)
-    for name in setup_openclaw.SKILL_NAMES:
-        target = options.workspace / "skills" / name
-        target.mkdir(parents=True)
-        (target / "original.txt").write_text(f"original {name}\n")
-    real_rmtree = setup_openclaw.shutil.rmtree
-    cleanup_targets = []
-
-    def partially_delete_backup(path, *args, **kwargs):
-        target = Path(path)
-        if target.name.startswith("openhouse-skill-rollback-"):
-            cleanup_targets.append(target)
-            child = next(
-                entry for entry in sorted(target.iterdir()) if entry.is_dir()
-            )
-            real_rmtree(child)
-            if kwargs.get("ignore_errors"):
-                return None
-            raise OSError("simulated partial backup cleanup")
-        return real_rmtree(path, *args, **kwargs)
-
-    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", partially_delete_backup)
-
-    result = configure_openclaw(
-        options, cli=FakeCLI(config_path=tmp_path / "openclaw.json")
-    )
-    rendered = result.render()
-
-    assert not result.ok
-    assert cleanup_targets
-    retained = cleanup_targets[0]
-    assert retained.is_dir()
-    assert any(retained.iterdir())
-    assert f"Recovery backup retained at {retained}" in rendered
-    assert "Restore only after removing symlinks" in rendered
-    assert "securely remove that exact private backup" in rendered
-    assert token not in rendered
-
-
-def test_successful_setup_verifies_private_backup_is_gone(tmp_path, monkeypatch):
     real_mkdtemp = setup_openclaw.tempfile.mkdtemp
     backup_roots = []
 
@@ -4197,102 +4122,68 @@ def test_successful_setup_verifies_private_backup_is_gone(tmp_path, monkeypatch)
 
     assert result.ok, result.render()
     assert len(backup_roots) == 1
-    assert not backup_roots[0].exists()
+    assert backup_roots[0].is_dir()
+    assert f"Recovery backup retained at {backup_roots[0].resolve()}" in result.render()
+    assert "revalidated as complete" in result.render()
+    assert "confirm dashboard chat works" in result.render()
 
 
-def test_snapshot_cleanup_rejects_rmtree_filenotfound_when_root_remains(
+def test_success_never_requests_recursive_deletion_of_the_sole_recovery_backup(
     tmp_path, monkeypatch
 ):
-    backup_root = tmp_path / "openhouse-skill-rollback-test"
-    backup_root.mkdir()
-    (backup_root / "retained-secret.txt").write_text("private\n")
-    snapshot = setup_openclaw.SkillRollback(
-        workspace=tmp_path / "workspace",
-        backup_root=backup_root,
-        existing_names=set(),
-        workspace_existed=False,
-        skills_root_existed=False,
-        missing_parent_dirs=[],
+    backup_roots = []
+    calls = []
+    real_mkdtemp = setup_openclaw.tempfile.mkdtemp
+    real_runner = setup_openclaw._run_bounded_local_operation
+
+    def record_mkdtemp(*args, **kwargs):
+        path = Path(real_mkdtemp(*args, **kwargs))
+        if kwargs.get("prefix") == "openhouse-skill-rollback-":
+            backup_roots.append(path)
+        return str(path)
+
+    def record_runner(operation, payload, timeout):
+        calls.append((operation, payload))
+        return real_runner(operation, payload, timeout)
+
+    monkeypatch.setattr(setup_openclaw.tempfile, "mkdtemp", record_mkdtemp)
+    monkeypatch.setattr(setup_openclaw, "_run_bounded_local_operation", record_runner)
+
+    result = configure_openclaw(make_options(tmp_path), cli=FakeCLI())
+
+    assert result.ok, result.render()
+    assert len(backup_roots) == 1
+    assert all(
+        not (
+            operation == "rmtree"
+            and Path(payload["path"]) == backup_roots[0]
+        )
+        for operation, payload in calls
     )
-
-    def fail_delete(_path):
-        raise FileNotFoundError("a child vanished during recursive deletion")
-
-    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", fail_delete)
-
-    assert setup_openclaw._discard_skill_snapshot(snapshot) is False
-    assert (backup_root / "retained-secret.txt").read_text() == "private\n"
+    assert backup_roots[0].is_dir()
 
 
-def test_snapshot_cleanup_rejects_partial_delete_when_root_remains(
+def test_setup_never_claims_an_unverified_recovery_backup_is_retained(
     tmp_path, monkeypatch
 ):
-    backup_root = tmp_path / "openhouse-skill-rollback-test"
-    backup_root.mkdir()
-    removed = backup_root / "removed.txt"
-    retained = backup_root / "retained-secret.txt"
-    removed.write_text("remove\n")
-    retained.write_text("private\n")
-    snapshot = setup_openclaw.SkillRollback(
-        workspace=tmp_path / "workspace",
-        backup_root=backup_root,
-        existing_names=set(),
-        workspace_existed=False,
-        skills_root_existed=False,
-        missing_parent_dirs=[],
-    )
+    real_query = setup_openclaw._run_bounded_local_query
 
-    def partial_delete(_path):
-        removed.unlink()
-
-    monkeypatch.setattr(setup_openclaw.shutil, "rmtree", partial_delete)
-
-    assert setup_openclaw._discard_skill_snapshot(snapshot) is False
-    assert retained.read_text() == "private\n"
-
-
-def test_snapshot_cleanup_accepts_final_lstat_filenotfound(tmp_path, monkeypatch):
-    backup_root = tmp_path / "openhouse-skill-rollback-test"
-    backup_root.mkdir()
-    snapshot = setup_openclaw.SkillRollback(
-        workspace=tmp_path / "workspace",
-        backup_root=backup_root,
-        existing_names=set(),
-        workspace_existed=False,
-        skills_root_existed=False,
-        missing_parent_dirs=[],
-    )
+    def reject_recovery_status(operation, payload, timeout):
+        if operation == "recovery_backup_status":
+            return None
+        return real_query(operation, payload, timeout)
 
     monkeypatch.setattr(
-        setup_openclaw.shutil, "rmtree", lambda path: Path(path).rmdir()
+        setup_openclaw,
+        "_run_bounded_local_query",
+        reject_recovery_status,
     )
 
-    assert setup_openclaw._discard_skill_snapshot(snapshot) is True
+    result = configure_openclaw(make_options(tmp_path), cli=FakeCLI())
 
-
-def test_snapshot_cleanup_rejects_final_lstat_oserror(tmp_path, monkeypatch):
-    backup_root = tmp_path / "openhouse-skill-rollback-test"
-    backup_root.mkdir()
-    snapshot = setup_openclaw.SkillRollback(
-        workspace=tmp_path / "workspace",
-        backup_root=backup_root,
-        existing_names=set(),
-        workspace_existed=False,
-        skills_root_existed=False,
-        missing_parent_dirs=[],
-    )
-
-    monkeypatch.setattr(
-        setup_openclaw.shutil, "rmtree", lambda path: Path(path).rmdir()
-    )
-
-    def fail_verification(path):
-        assert Path(path) == backup_root
-        raise PermissionError("could not verify root absence")
-
-    monkeypatch.setattr(setup_openclaw.os, "lstat", fail_verification)
-
-    assert setup_openclaw._discard_skill_snapshot(snapshot) is False
+    assert not result.ok
+    assert "recovery backup could not be revalidated" in result.render().lower()
+    assert "Recovery backup retained at" not in result.render()
 
 
 @pytest.mark.parametrize("node_kind", ("file", "directory"))
@@ -4660,12 +4551,15 @@ def test_setup_main_starts_its_deadline_before_material_validation(
         def __init__(self):
             events.append("deadline")
 
+        def require_time(self):
+            return 1.0
+
     monkeypatch.delenv(setup_openclaw.SETUP_STATE_FD_ENV, raising=False)
     monkeypatch.setattr(setup_openclaw, "_parse_args", lambda _argv: options)
     monkeypatch.setattr(
         setup_openclaw,
         "_material_head_state",
-        lambda _repo: events.append("material") or {},
+        lambda _repo, **_kwargs: events.append("material") or {},
     )
     monkeypatch.setattr(setup_openclaw, "OpenClawCLI", DeadlineCLI)
     monkeypatch.setattr(
@@ -4761,7 +4655,7 @@ def test_killable_skill_restore_timeout_retains_backup_and_current_tree(tmp_path
     assert (installed / "current.txt").read_text() == "current\n"
 
 
-def test_backup_deletion_checks_budget_before_start_and_retains_only_backup(tmp_path):
+def test_backup_revalidation_checks_budget_before_start_and_never_deletes(tmp_path):
     backup = tmp_path / "private-backup"
     backup.mkdir()
     (backup / "recovery.txt").write_text("retain\n")
@@ -4775,18 +4669,18 @@ def test_backup_deletion_checks_budget_before_start_and_retains_only_backup(tmp_
     )
     runner_called = False
 
-    def runner(*_args):
+    def query(*_args):
         nonlocal runner_called
         runner_called = True
-        return True
+        return {"complete": True, "sha256": "0" * 64}
 
     def expired():
         raise SetupConflict("OpenClaw rollback time limit expired")
 
-    assert setup_openclaw._discard_skill_snapshot(
+    assert setup_openclaw._recovery_snapshot_is_complete(
         snapshot,
         deadline_check=expired,
-        local_runner=runner,
+        local_query_runner=query,
     ) is False
     assert runner_called is False
     assert (backup / "recovery.txt").read_text() == "retain\n"
@@ -4846,7 +4740,149 @@ def test_supervised_local_writer_round_trips_mode_and_bytes(tmp_path):
     assert target.stat().st_mode & 0o777 == 0o600
 
 
-def test_setup_retains_recovery_backup_after_bounded_manifest_timeout(
+def test_supervised_pipe_transport_supports_recovery_payload_above_24k(tmp_path):
+    target = tmp_path / "large-recovery.json"
+    contents = b'{"private":"' + (b"x" * (32 * 1024)) + b'"}\n'
+
+    setup_openclaw._write_bytes_exclusive(
+        target,
+        contents,
+        0o600,
+        deadline_check=lambda: 5.0,
+    )
+
+    assert target.read_bytes() == contents
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_supervised_worker_transport_keeps_private_payload_out_of_argv_and_env(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "private.json"
+    secret = b"private-worker-secret-4f98d4"
+    observed = {}
+    real_popen = setup_openclaw.subprocess.Popen
+
+    def inspect_popen(args, *popen_args, **kwargs):
+        observed["args"] = args
+        observed["env"] = kwargs.get("env", {})
+        return real_popen(args, *popen_args, **kwargs)
+
+    monkeypatch.setattr(setup_openclaw.subprocess, "Popen", inspect_popen)
+
+    setup_openclaw._write_bytes_exclusive(
+        target,
+        secret,
+        0o600,
+        deadline_check=lambda: 5.0,
+    )
+
+    rendered_boundary = json.dumps(
+        {"args": observed["args"], "env": observed["env"]},
+        sort_keys=True,
+    )
+    assert secret.decode() not in rendered_boundary
+    assert not any("PAYLOAD" in key for key in observed["env"])
+    assert target.read_bytes() == secret
+
+
+def test_skill_tree_match_uses_one_bounded_worker_query(tmp_path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    calls = []
+
+    def query(operation, payload, timeout):
+        calls.append((operation, payload, timeout))
+        return {"match": True}
+
+    assert setup_openclaw._skill_trees_match(
+        left,
+        right,
+        deadline_check=lambda: 2.5,
+        local_query_runner=query,
+    ) is True
+    assert calls == [
+        (
+            "trees_match",
+            {"left": str(left), "right": str(right)},
+            2.5,
+        )
+    ]
+
+
+def test_gateway_environment_rollback_verification_uses_bounded_worker_query(
+    tmp_path,
+):
+    path = tmp_path / "openclaw.env"
+    snapshot = setup_openclaw.GatewayEnvSnapshot(
+        path=path,
+        existed=True,
+        contents=b"OPENHOUSE=value\n",
+        mode=0o600,
+    )
+    calls = []
+
+    def query(operation, payload, timeout):
+        calls.append((operation, payload, timeout))
+        return {"match": True}
+
+    assert setup_openclaw._gateway_env_snapshot_matches(
+        snapshot,
+        deadline_check=lambda: 1.75,
+        local_query_runner=query,
+    ) is True
+    assert calls == [
+        (
+            "gateway_env_matches",
+            {
+                "path": str(path),
+                "existed": True,
+                "contents": b"OPENHOUSE=value\n",
+                "mode": 0o600,
+            },
+            1.75,
+        )
+    ]
+
+
+def test_material_state_uses_supervised_tree_queries(tmp_path, monkeypatch):
+    repo = _committed_material_checkout(tmp_path)
+    calls = []
+    real_query = setup_openclaw._run_bounded_local_query
+
+    def query(operation, payload, timeout):
+        calls.append((operation, timeout))
+        return real_query(operation, payload, timeout)
+
+    state = setup_openclaw._material_head_state(
+        repo,
+        deadline_check=lambda: 5.0,
+        local_query_runner=query,
+    )
+
+    assert state["material_tree_sha256"]
+    assert calls
+    assert {operation for operation, _timeout in calls} == {"tree_manifest"}
+    assert all(timeout == 5.0 for _operation, timeout in calls)
+
+
+def test_setup_state_handoff_write_and_fsync_are_supervised(tmp_path):
+    handoff = tmp_path / "handoff.json"
+    handoff.touch(mode=0o600)
+    payload = b'{"state":"' + (b"y" * (32 * 1024)) + b'"}'
+    with handoff.open("r+b", buffering=0) as stream:
+        assert setup_openclaw._write_setup_state_handoff(
+            stream.fileno(),
+            payload,
+            deadline_check=lambda: 5.0,
+        ) is True
+
+    assert handoff.read_bytes() == payload
+
+
+def test_setup_does_not_claim_incomplete_backup_after_bounded_manifest_timeout(
     monkeypatch, tmp_path
 ):
     class DeadlineCLI(FakeCLI):
@@ -4862,12 +4898,8 @@ def test_setup_retains_recovery_backup_after_bounded_manifest_timeout(
     result = configure_openclaw(make_options(tmp_path), cli=DeadlineCLI())
 
     assert not result.ok
-    retained = next(
-        line.split(" at ", 1)[1]
-        for line in result.messages
-        if line.startswith("Recovery backup retained at ")
-    )
-    assert Path(retained).is_dir()
+    assert "Recovery backup retained at" not in result.render()
+    assert "could not be revalidated as complete" in result.render()
     assert "bounded private file write did not complete" in result.render()
 
 
