@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 
 from app.agent.crm_chat import (
@@ -16,7 +17,7 @@ from app.agent.crm_chat import (
     render_verified_reply,
     run_verified_crm_chat,
 )
-from app.agent.openclaw_gateway import OpenClawGatewayError
+from app.agent.openclaw_gateway import OpenClawGateway, OpenClawGatewayError
 from app.db import get_conn
 from app.routers import chat as chat_router
 
@@ -99,6 +100,30 @@ class ScriptedGateway:
         return response
 
 
+class NativeEnvelopeClient:
+    """HTTP fake that keeps the real OpenClaw gateway decode boundary in play."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.posts = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url, **kwargs):
+        self.posts.append({"url": url, **kwargs})
+        if not self.responses:
+            raise AssertionError("unexpected HTTP request")
+        status, payload = self.responses.pop(0)
+        return httpx.Response(
+            status,
+            request=httpx.Request("POST", url),
+            json=payload,
+        )
+
 def run(gateway, message="question", session_id="dashboard", **kwargs):
     return asyncio.run(run_verified_crm_chat(
         gateway, message, session_id, "openhouse-crm", **kwargs
@@ -124,6 +149,15 @@ def proposal_receipt(operation, pending_id, summary):
     }
 
 
+def validated_write_receipt(operation, result):
+    return {
+        "ok": True,
+        "operation": operation,
+        "kind": "validated_write",
+        "result": result,
+    }
+
+
 def error_receipt(operation, code, message, retryable=False):
     return {
         "ok": False,
@@ -131,6 +165,267 @@ def error_receipt(operation, code, message, retryable=False):
         "kind": "error",
         "error": {"code": code, "message": message, "retryable": retryable},
     }
+
+
+def native_tool_envelope(receipt):
+    return {
+        "ok": True,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps(receipt)}],
+            "details": receipt,
+        },
+    }
+
+
+def native_gateway(*responses):
+    client = NativeEnvelopeClient(responses)
+    return OpenClawGateway(
+        client_factory=lambda **_: client,
+        gateway_url="http://gateway.test",
+    ), client
+
+
+def test_literal_native_envelope_drives_dashboard_read_end_to_end():
+    gateway, client = native_gateway(
+        (200, request_call("read", "list_leads", {})),
+        (200, native_tool_envelope(read_receipt(
+            "list_leads", [{"id": 4, "name": "Jordan", "status": "new"}]
+        ))),
+        (200, finish_call("answered", "One lead.", ["read"])),
+    )
+
+    reply = run(gateway)
+
+    assert reply == "1 leads found: Jordan (ID 4, new)."
+    assert [post["url"].rsplit("/", 2)[-2:] for post in client.posts] == [
+        ["chat", "completions"],
+        ["tools", "invoke"],
+        ["chat", "completions"],
+    ]
+
+
+def test_literal_native_envelope_drives_dashboard_mutation_end_to_end():
+    gateway, _client = native_gateway(
+        (200, request_call("write", "create_lead", {"name": "Jordan"})),
+        (200, native_tool_envelope(proposal_receipt(
+            "create_lead", 71, "Create lead Jordan"
+        ))),
+        (200, finish_call("queued", "Created.", ["write"], 71)),
+    )
+
+    assert run(gateway) == (
+        "Queued Pending approval #71: Create lead Jordan. Status: pending; "
+        "the change has not been applied."
+    )
+
+
+def test_definite_gateway_rejection_of_mutation_is_not_reported_as_unknown():
+    gateway, _client = native_gateway(
+        (200, request_call("write", "create_lead", {"name": "Jordan"})),
+        (403, {"private": "gateway body"}),
+        (200, finish_call("failed", "Failed.", ["write"])),
+    )
+
+    reply = run(gateway)
+
+    assert reply == (
+        "Nothing was queued or changed. [operation_failed] CRM operation failed."
+    )
+    assert "unknown" not in reply.casefold()
+
+
+def test_finish_omitting_applied_mutation_evidence_is_rejected():
+    gateway = ScriptedGateway(
+        [
+            request_call("write", "find_neglected_leads", {}),
+            request_call("read", "list_leads", {}),
+            finish_call(
+                "answered", "Nothing changed.", ["read"], call_id="bad-finish"
+            ),
+            finish_call("answered", "Done.", ["write", "read"]),
+        ],
+        [
+            validated_write_receipt("find_neglected_leads", []),
+            read_receipt("list_leads", []),
+        ],
+    )
+
+    reply = run(gateway)
+
+    assert reply == (
+        "Applied find_neglected_leads: [].\n"
+        "0 leads found."
+    )
+    correction = next(
+        message
+        for message in gateway.chat_calls[3]["payload"]["messages"]
+        if message.get("tool_call_id") == "bad-finish"
+    )
+    assert "mutation" in json.loads(correction["content"])["error"].casefold()
+
+
+def test_applied_mutation_survives_a_later_structured_error_in_order():
+    gateway = ScriptedGateway(
+        [
+            request_call("write", "find_neglected_leads", {}),
+            request_call("later", "list_leads", {}),
+            finish_call("failed", "Nothing changed.", ["write", "later"]),
+        ],
+        [
+            validated_write_receipt("find_neglected_leads", []),
+            error_receipt(
+                "list_leads",
+                "operation_failed",
+                "CRM operation failed",
+            ),
+        ],
+    )
+
+    reply = run(gateway)
+
+    assert reply == (
+        "Applied find_neglected_leads: [].\n"
+        "Failed list_leads: [operation_failed] CRM operation failed."
+    )
+    assert "nothing was queued or changed" not in reply.casefold()
+
+
+def test_failed_mutation_does_not_hide_cited_read_evidence():
+    gateway = ScriptedGateway(
+        [
+            request_call("read", "list_leads", {}),
+            request_call("failed", "create_lead", {"name": "Jordan"}),
+            finish_call("answered", "One lead.", ["read", "failed"]),
+        ],
+        [
+            read_receipt(
+                "list_leads",
+                [{"id": 4, "name": "Alex", "status": "new"}],
+            ),
+            error_receipt(
+                "create_lead",
+                "operation_failed",
+                "CRM operation failed",
+            ),
+        ],
+    )
+
+    assert run(gateway) == (
+        "1 leads found: Alex (ID 4, new).\n"
+        "Failed create_lead: [operation_failed] CRM operation failed."
+    )
+
+
+@pytest.mark.parametrize(
+    "later_response",
+    [OpenClawGatewayError("gateway request failed"), TimeoutError()],
+    ids=["later_error", "later_timeout"],
+)
+def test_applied_mutation_survives_later_model_failure(later_response):
+    gateway = ScriptedGateway(
+        [
+            request_call("write", "find_neglected_leads", {}),
+            later_response,
+        ],
+        [validated_write_receipt("find_neglected_leads", [])],
+    )
+
+    reply = run(gateway)
+
+    assert reply == "Applied find_neglected_leads: []."
+    assert "nothing" not in reply.casefold()
+
+
+def test_applied_mutation_survives_round_limit():
+    malformed = _completion(tool_call("bad", CRM_REQUEST_TOOL, "{", raw=True))
+    gateway = ScriptedGateway(
+        [
+            request_call("write", "find_neglected_leads", {}),
+            *([malformed] * (MAX_MODEL_ROUNDS - 1)),
+        ],
+        [validated_write_receipt("find_neglected_leads", [])],
+    )
+
+    assert run(gateway) == "Applied find_neglected_leads: []."
+
+
+def test_applied_mutation_survives_call_limit():
+    calls = [request_call("write", "find_neglected_leads", {})]
+    calls.extend(
+        request_call(f"read-{index}", "list_leads", {})
+        for index in range(MAX_CRM_CALLS)
+    )
+    responses = [validated_write_receipt("find_neglected_leads", [])]
+    responses.extend(
+        read_receipt("list_leads", []) for _ in range(MAX_CRM_CALLS - 1)
+    )
+    gateway = ScriptedGateway(calls, responses)
+
+    reply = run(gateway)
+
+    assert reply == "Applied find_neglected_leads: []."
+    assert len(gateway.invoke_calls) == MAX_CRM_CALLS
+
+
+def test_mixed_mutation_states_render_in_receipt_order():
+    gateway = ScriptedGateway(
+        [
+            request_call("applied", "find_neglected_leads", {}),
+            request_call("pending", "create_lead", {"name": "Jordan"}),
+            request_call("failed", "create_lead", {"name": "Alex"}),
+            request_call("unknown", "post_briefing", {
+                "payload": {"date": "2026-08-24", "meeting_briefs": []},
+            }),
+        ],
+        [
+            validated_write_receipt("find_neglected_leads", []),
+            proposal_receipt("create_lead", 81, "Create lead Jordan"),
+            OpenClawGatewayError("gateway request failed"),
+        ],
+    )
+
+    reply = run(gateway)
+
+    applied_at = reply.index("Applied find_neglected_leads")
+    pending_at = reply.index("Pending approval #81")
+    failed_at = reply.index("Failed create_lead")
+    unknown_at = reply.index("Outcome unknown for post_briefing")
+    assert applied_at < pending_at < failed_at < unknown_at
+    assert "nothing was queued or changed" not in reply.casefold()
+
+
+def test_chat_route_persists_applied_receipt_after_later_fallback(
+    client, monkeypatch
+):
+    gateway = ScriptedGateway(
+        [
+            request_call("write", "find_neglected_leads", {}),
+            OpenClawGatewayError("gateway request failed"),
+        ],
+        [validated_write_receipt("find_neglected_leads", [])],
+    )
+
+    class Driver:
+        name = "openclaw"
+
+        async def chat(self, message, session_id):
+            return await run_verified_crm_chat(
+                gateway, message, session_id, "openhouse-crm"
+            )
+
+    monkeypatch.setattr(chat_router, "get_driver", lambda: Driver())
+
+    response = client.post(
+        "/api/chat", json={"message": "Refresh neglect", "session_id": "sticky"}
+    )
+
+    assert response.json()["reply"] == "Applied find_neglected_leads: []."
+    with get_conn() as conn:
+        persisted = conn.execute(
+            "SELECT content FROM chat_messages WHERE session_id = ? AND role = 'agent'",
+            ("sticky",),
+        ).fetchone()["content"]
+    assert persisted == "Applied find_neglected_leads: []."
 
 
 def test_lead_directory_call_renders_exact_total_and_current_page():
@@ -723,7 +1018,7 @@ def test_failed_finish_after_proposal_cannot_hide_pending_item():
             request_call("proposal", "create_lead", {"name": "Jordan"}),
             request_call("rejected-write", "create_lead", {"name": "Alex"}),
             finish_call("failed", "Nothing happened.", ["rejected-write"], call_id="bad-finish"),
-            finish_call("queued", "Queued.", ["proposal"], 51),
+            finish_call("queued", "Queued.", ["proposal", "rejected-write"], 51),
         ],
         [proposal_receipt("create_lead", 51, "Create lead Jordan")],
     )

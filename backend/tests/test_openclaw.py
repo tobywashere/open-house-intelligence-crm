@@ -167,7 +167,19 @@ def test_gateway_invokes_direct_tool_with_exact_request_envelope():
     from app.agent.openclaw_gateway import OpenClawGateway
 
     nonce = "a" * 32
-    fake = GatewayClient(gateway_response(payload={"ok": True, "result": {}}))
+    receipt = {
+        "ok": True,
+        "operation": "generate_dashboard_insights",
+        "kind": "read",
+        "result": {"active_leads": 0},
+    }
+    fake = GatewayClient(gateway_response(payload={
+        "ok": True,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps(receipt)}],
+            "details": receipt,
+        },
+    }))
     gateway = OpenClawGateway(
         client_factory=lambda **_: fake,
         gateway_url="http://gateway.test/",
@@ -184,7 +196,7 @@ def test_gateway_invokes_direct_tool_with_exact_request_envelope():
         idempotency_key=f"crm-check-{nonce}",
     ))
 
-    assert result == {"ok": True, "result": {}}
+    assert result == receipt
     assert fake.posts[0]["url"] == "http://gateway.test/tools/invoke"
     assert fake.posts[0]["json"] == {
         "tool": "openhouse_crm",
@@ -199,20 +211,22 @@ def test_gateway_invokes_direct_tool_with_exact_request_envelope():
 
 
 @pytest.mark.parametrize(
-    ("response", "error", "expected"),
+    ("response", "error", "expected", "definite_pre_dispatch"),
     [
-        (gateway_response(payload=[]), None, "invalid gateway response"),
-        (gateway_response(400, {"private": "body"}), None, "gateway rejected tool input"),
-        (gateway_response(401), None, "gateway authentication failed"),
-        (gateway_response(403), None, "gateway authentication failed"),
-        (gateway_response(404), None, "gateway tool is unavailable"),
-        (gateway_response(429), None, "gateway authentication is throttled"),
-        (None, httpx.ReadTimeout("http://gateway.test/secret"), "gateway timeout"),
+        (gateway_response(payload=[]), None, "invalid gateway response", False),
+        (gateway_response(400, {"private": "body"}), None, "gateway rejected tool input", True),
+        (gateway_response(401), None, "gateway authentication failed", True),
+        (gateway_response(403), None, "gateway authentication failed", True),
+        (gateway_response(404), None, "gateway tool is unavailable", True),
+        (gateway_response(429), None, "gateway authentication is throttled", True),
+        (None, httpx.ReadTimeout("http://gateway.test/secret"), "gateway timeout", False),
         (gateway_response(500, {"token": "secret-gateway-token", "body": "private"}), None,
-         "gateway request failed"),
+         "gateway request failed", False),
     ],
 )
-def test_gateway_errors_are_fixed_and_sanitized(response, error, expected):
+def test_gateway_errors_are_fixed_sanitized_and_classified(
+    response, error, expected, definite_pre_dispatch
+):
     from app.agent.openclaw_gateway import OpenClawGateway, OpenClawGatewayError
 
     gateway = OpenClawGateway(
@@ -229,9 +243,68 @@ def test_gateway_errors_are_fixed_and_sanitized(response, error, expected):
 
     detail = str(caught.value)
     assert detail == expected
+    assert caught.value.definite_pre_dispatch is definite_pre_dispatch
     assert "secret-gateway-token" not in detail
     assert "private" not in detail
     assert "gateway.test" not in detail
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "ok": True,
+            "operation": "list_leads",
+            "kind": "read",
+            "result": [],
+        },
+        {"ok": True, "result": {"details": {}}},
+        {"ok": True, "result": {"content": [], "details": []}},
+        {"ok": False, "result": {"content": [], "details": {}}},
+        {"ok": True, "result": {"content": [], "details": {}, "extra": True}},
+        {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": "not json"}],
+                "details": {"ok": True},
+            },
+        },
+        {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": "{}"}],
+                "details": {"ok": True},
+            },
+        },
+        {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": "{}"}],
+                "details": {},
+            },
+        },
+    ],
+)
+def test_gateway_rejects_noncanonical_tool_invoke_envelopes(payload):
+    from app.agent.openclaw_gateway import OpenClawGateway, OpenClawGatewayError
+
+    gateway = OpenClawGateway(
+        client_factory=lambda **_: GatewayClient(
+            gateway_response(payload=payload)
+        ),
+        gateway_url="http://gateway.test",
+    )
+
+    with pytest.raises(OpenClawGatewayError, match="invalid gateway response") as caught:
+        asyncio.run(gateway.invoke_tool(
+            "openhouse_crm",
+            {"operation": "list_leads", "arguments": {}},
+            agent_id="openhouse-crm",
+            session_key="dashboard:test",
+            idempotency_key="request",
+        ))
+
+    assert caught.value.definite_pre_dispatch is False
 
 
 def client_factory(*, option_status=405, post_status=200, post_json=None):
@@ -572,6 +645,77 @@ def test_crm_check_requires_new_matching_audit(client, monkeypatch):
     assert body["status"] == "crm_verified"
     assert body["crm_verified"] is True
     assert body["agent_id"] == "openhouse-crm"
+
+
+def test_crm_health_unwraps_literal_native_tool_envelope_end_to_end(
+    client, monkeypatch
+):
+    from app.agent.openclaw_gateway import OpenClawGateway
+
+    metrics = {
+        "active_leads": 0,
+        "high_priority": 0,
+        "followups_due": 0,
+        "appointments_booked": 0,
+        "avg_response_minutes": None,
+        "agent_mode": "openclaw",
+        "cloud_llm_requests": 0,
+    }
+    receipt = {
+        "ok": True,
+        "operation": "generate_dashboard_insights",
+        "kind": "read",
+        "result": metrics,
+    }
+
+    class AuditingNativeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def options(self, url, **kwargs):
+            return httpx.Response(405, request=httpx.Request("OPTIONS", url))
+
+        async def post(self, url, **kwargs):
+            probe_nonce = kwargs["json"]["args"]["arguments"]["probe_nonce"]
+            with get_conn() as conn:
+                audit(
+                    conn,
+                    "agent",
+                    "generate_dashboard_insights",
+                    {"probe_nonce": probe_nonce},
+                    metrics,
+                )
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={
+                    "ok": True,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps(receipt, separators=(",", ":")),
+                        }],
+                        "details": receipt,
+                    },
+                },
+            )
+
+    gateway = OpenClawGateway(
+        client_factory=lambda **_: AuditingNativeClient(),
+        gateway_url="http://gateway.test",
+    )
+    driver = OpenClawDriver(gateway=gateway)
+    agent_status.record_chat(True)
+    monkeypatch.setattr(misc, "get_driver", lambda: driver)
+
+    response = client.post("/api/health/crm-check")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "crm_verified"
+    assert response.json()["crm_verified"] is True
 
 
 def test_crm_check_moves_database_reads_off_event_loop(client, monkeypatch):

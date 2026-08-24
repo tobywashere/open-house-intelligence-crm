@@ -15,6 +15,8 @@ import secrets
 import time
 from typing import Any
 
+from .openclaw_gateway import OpenClawGatewayError
+
 
 DASHBOARD_CHANNEL = "openhouse-dashboard"
 MAX_MODEL_ROUNDS = 8
@@ -201,6 +203,23 @@ def _unknown_outcome_receipt(call_id: str, operation: str) -> CrmCallReceipt:
         {
             "code": "outcome_unknown",
             "message": _SAFE_ERROR_MESSAGES["outcome_unknown"],
+            "retryable": False,
+        },
+    )
+
+
+def _definite_invoke_failure_receipt(
+    call_id: str, operation: str
+) -> CrmCallReceipt:
+    return CrmCallReceipt(
+        call_id,
+        operation,
+        False,
+        "error",
+        None,
+        {
+            "code": "operation_failed",
+            "message": _SAFE_ERROR_MESSAGES["operation_failed"],
             "retryable": False,
         },
     )
@@ -489,6 +508,24 @@ def validate_finish(params: object, receipts: list[CrmCallReceipt]) -> FinishDec
     if any(call_id not in by_id for call_id in evidence_ids):
         return FinishDecision(classification, message, evidence_ids, pending_id, "Finish evidence references an unknown call")
     evidence = [by_id[call_id] for call_id in evidence_ids]
+    mutation_receipts = [
+        receipt for receipt in receipts
+        if _is_mutating_operation(receipt.operation)
+    ]
+    missing_mutation_ids = [
+        receipt.call_id
+        for receipt in mutation_receipts
+        if receipt.call_id not in evidence_ids
+    ]
+    if missing_mutation_ids:
+        return FinishDecision(
+            classification,
+            message,
+            evidence_ids,
+            pending_id,
+            "Finish evidence must include every mutation receipt; missing: "
+            + ", ".join(missing_mutation_ids),
+        )
     all_proposals = [
         receipt for receipt in receipts
         if receipt.ok and receipt.kind == "proposal"
@@ -658,31 +695,125 @@ def _format_narrative(receipt: CrmCallReceipt) -> str:
     return f"Verified {receipt.operation} result: {bounded}"
 
 
+def _pending_mutation_line(receipt: CrmCallReceipt) -> str:
+    result = receipt.result
+    prefix = f"Queued Pending approval #{result['id']}: "
+    suffix = (
+        f". Status: {result['status']}; the change has not been applied."
+    )
+    summary_limit = max(0, 600 - len(prefix) - len(suffix))
+    summary = result["summary"].strip()[:summary_limit]
+    return prefix + summary + suffix
+
+
+def _trusted_failure_parts(receipt: CrmCallReceipt) -> tuple[str, str]:
+    error = receipt.error or {}
+    code = error.get("code")
+    if code not in _SAFE_ERROR_CODES:
+        code = "operation_failed"
+    return code, _trusted_error_message(code, error.get("message"))
+
+
+def _legacy_failure_reply(receipt: CrmCallReceipt) -> str:
+    code, message = _trusted_failure_parts(receipt)
+    if code == "outcome_unknown":
+        return AMBIGUOUS_INVOKE_REPLY
+    return (
+        "Nothing was queued or changed. "
+        f"[{code}] {message.rstrip('.')}."
+    )[:4000]
+
+
+def _mutation_status_line(receipt: CrmCallReceipt) -> str:
+    if (
+        receipt.ok
+        and receipt.kind == "proposal"
+        and _is_pending_result(receipt.result, receipt.operation)
+    ):
+        return _pending_mutation_line(receipt)
+    if receipt.ok and receipt.kind == "validated_write":
+        rendered = json.dumps(
+            receipt.result,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )[:480]
+        return f"Applied {receipt.operation}: {rendered}."
+    code, message = _trusted_failure_parts(receipt)
+    if code == "outcome_unknown":
+        return (
+            f"Outcome unknown for {receipt.operation}. The CRM change may have "
+            "reached the backend; it was not retried. Check Pending approvals "
+            "before trying again."
+        )
+    return f"Failed {receipt.operation}: [{code}] {message.rstrip('.')}."
+
+
+def _mutation_sequence_reply(receipts: list[CrmCallReceipt]) -> str | None:
+    mutations = [
+        receipt for receipt in receipts
+        if _is_mutating_operation(receipt.operation)
+    ]
+    if not mutations:
+        return None
+    if len(mutations) == 1:
+        only = mutations[0]
+        if not only.ok:
+            return _legacy_failure_reply(only)
+    return "\n".join(_mutation_status_line(receipt) for receipt in mutations)[:4000]
+
+
+def _evidence_failure_line(receipt: CrmCallReceipt) -> str:
+    code, message = _trusted_failure_parts(receipt)
+    return f"Failed {receipt.operation}: [{code}] {message.rstrip('.')}."
+
+
 def render_verified_reply(decision: FinishDecision, receipts: list[CrmCallReceipt]) -> str:
     """Render critical facts and every mutation status from receipts only."""
     by_id = {receipt.call_id: receipt for receipt in receipts}
     evidence = [by_id[item] for item in decision.evidence_call_ids if item in by_id]
+    mutation_receipts = [
+        receipt for receipt in receipts
+        if _is_mutating_operation(receipt.operation)
+    ]
+    if mutation_receipts:
+        if (
+            len(receipts) == 1
+            and len(mutation_receipts) == 1
+            and not mutation_receipts[0].ok
+        ):
+            return _legacy_failure_reply(mutation_receipts[0])
+        evidence_ids = set(decision.evidence_call_ids)
+        rendered = []
+        for receipt in receipts:
+            if _is_mutating_operation(receipt.operation):
+                rendered.append(_mutation_status_line(receipt))
+            elif receipt.call_id in evidence_ids:
+                if decision.classification == "failed" and not receipt.ok:
+                    rendered.append(_evidence_failure_line(receipt))
+                elif (
+                    decision.classification == "answered"
+                    and receipt.ok
+                    and receipt.kind in {"read", "validated_write"}
+                ):
+                    rendered.append(_format_read(receipt))
+                elif (
+                    decision.classification == "answered"
+                    and receipt.ok
+                    and receipt.kind == "narrative"
+                ):
+                    rendered.append(_format_narrative(receipt))
+        if rendered:
+            return "\n".join(line[:600] for line in rendered)[:4000]
     if decision.classification == "queued":
         proposal = next((receipt for receipt in evidence if receipt.ok and receipt.kind == "proposal"), None)
         if proposal and _is_pending_result(proposal.result, proposal.operation):
-            result = proposal.result
-            return (
-                f"Queued Pending approval #{result['id']}: {result['summary'].strip()}. "
-                f"Status: {result['status']}; the change has not been applied."
-            )[:4000]
+            return _pending_mutation_line(proposal)
     if decision.classification == "failed":
         failure = next((receipt for receipt in reversed(evidence) if not receipt.ok and receipt.error), None)
         if failure:
-            code = failure.error.get("code")
-            if code == "outcome_unknown":
-                return AMBIGUOUS_INVOKE_REPLY
-            if code not in _SAFE_ERROR_CODES:
-                code = "operation_failed"
-            message = _trusted_error_message(code, failure.error.get("message"))
-            return (
-                "Nothing was queued or changed. "
-                f"[{code}] {message.rstrip('.')}."
-            )[:4000]
+            return _legacy_failure_reply(failure)
         return "Nothing was queued or changed. The CRM request could not be verified."
     if decision.classification == "needs_clarification":
         return CLARIFICATION_REPLY
@@ -793,7 +924,7 @@ def _idempotency_key(
 
 
 def _terminal_reply(receipts: list[CrmCallReceipt], fallback: str) -> str:
-    return _single_proposal_reply(receipts) or fallback
+    return _mutation_sequence_reply(receipts) or fallback
 
 
 def _deadline_seconds(configured: float | None) -> float | None:
@@ -984,6 +1115,27 @@ async def run_verified_crm_chat(
                                     receipts,
                                 )
                             return _terminal_reply(receipts, DEADLINE_REPLY)
+                        except OpenClawGatewayError as exc:
+                            if (
+                                _is_mutating_operation(operation)
+                                and exc.definite_pre_dispatch
+                            ):
+                                receipt = _definite_invoke_failure_receipt(
+                                    call_id, operation
+                                )
+                            elif _is_mutating_operation(operation):
+                                receipt = _unknown_outcome_receipt(
+                                    call_id, operation
+                                )
+                                receipts.append(receipt)
+                                return render_verified_reply(
+                                    FinishDecision(
+                                        "failed", "", (receipt.call_id,)
+                                    ),
+                                    receipts,
+                                )
+                            else:
+                                return _terminal_reply(receipts, UNAVAILABLE_REPLY)
                         except Exception:
                             if _is_mutating_operation(operation):
                                 receipt = _unknown_outcome_receipt(
@@ -997,7 +1149,10 @@ async def run_verified_crm_chat(
                                     receipts,
                                 )
                             return _terminal_reply(receipts, UNAVAILABLE_REPLY)
-                        receipt = _normalize_gateway_receipt(call_id, operation, raw_receipt)
+                        else:
+                            receipt = _normalize_gateway_receipt(
+                                call_id, operation, raw_receipt
+                            )
         receipts.append(receipt)
         if _is_unknown_outcome(receipt):
             return render_verified_reply(
@@ -1010,9 +1165,9 @@ async def run_verified_crm_chat(
                 _receipt_payload(receipt), separators=(",", ":"), ensure_ascii=False
             ),
         })
-    proposal_reply = _single_proposal_reply(receipts)
-    if proposal_reply:
-        return proposal_reply
+    mutation_reply = _mutation_sequence_reply(receipts)
+    if mutation_reply:
+        return mutation_reply
     last_error = next(
         (receipt for receipt in reversed(receipts) if not receipt.ok and receipt.error),
         None,

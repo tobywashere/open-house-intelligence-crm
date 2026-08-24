@@ -796,14 +796,33 @@ def _post_write_owned_proposals(
     api: ApiBoundary,
     baseline_ids: set[int],
     expected_name: str,
-) -> tuple[dict[int, dict], int]:
-    """Bound retries while establishing which proposals this run owns."""
+) -> tuple[dict[int, dict], list[int], int]:
+    """Settle, then partition new proposals by strong acceptance ownership."""
+    observed_owned: dict[int, dict] = {}
+    observed_unattributed: set[int] = set()
     for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
         try:
             snapshot = _pending_snapshot(api)
         except Exception:
+            if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
+                raise ProposalOwnershipUnknown(attempt) from None
             continue
-        return _owned_proposals(snapshot, baseline_ids, expected_name), attempt
+        owned = _owned_proposals(snapshot, baseline_ids, expected_name)
+        new_ids = set(snapshot) - baseline_ids
+        observed_unattributed.update(new_ids - set(owned))
+        observed_owned.update(
+            (pending_id, row)
+            for pending_id, row in owned.items()
+            if pending_id not in observed_unattributed
+        )
+        for pending_id in observed_unattributed:
+            observed_owned.pop(pending_id, None)
+        if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
+            return (
+                observed_owned,
+                sorted(observed_unattributed),
+                attempt,
+            )
     raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
 
 
@@ -867,14 +886,33 @@ def _post_write_owned_booking_proposals(
     baseline_ids: set[int],
     expected_payload: dict,
 ) -> tuple[dict[int, dict], list[int], int]:
+    observed_owned: dict[int, dict] = {}
+    observed_unattributed: set[int] = set()
     for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
         try:
             snapshot = _pending_snapshot(api)
         except Exception:
+            if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
+                raise ProposalOwnershipUnknown(attempt) from None
             continue
-        owned = _owned_booking_proposals(snapshot, baseline_ids, expected_payload)
+        owned = _owned_booking_proposals(
+            snapshot, baseline_ids, expected_payload
+        )
         new_ids = set(snapshot) - baseline_ids
-        return owned, sorted(new_ids - set(owned)), attempt
+        observed_unattributed.update(new_ids - set(owned))
+        observed_owned.update(
+            (pending_id, row)
+            for pending_id, row in owned.items()
+            if pending_id not in observed_unattributed
+        )
+        for pending_id in observed_unattributed:
+            observed_owned.pop(pending_id, None)
+        if attempt == POST_WRITE_SNAPSHOT_ATTEMPTS:
+            return (
+                observed_owned,
+                sorted(observed_unattributed),
+                attempt,
+            )
     raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
 
 
@@ -1085,6 +1123,9 @@ def _cleanup_owned_proposals(
     cleanup: list[dict],
     *,
     name: str,
+    baseline_ids: set[int],
+    expected_name: str,
+    unattributed_ids: list[int],
 ) -> bool:
     failures: list[int] = []
     for pending_id in sorted(proposals):
@@ -1092,15 +1133,56 @@ def _cleanup_owned_proposals(
             _deny_pending(api, pending_id, "Automated acceptance cleanup")
         except Exception:
             failures.append(pending_id)
+
+    pending_after: int | str = "unknown"
+    verification_failed = False
+    try:
+        final_snapshot = _pending_snapshot(api)
+        remaining = _owned_proposals(
+            final_snapshot, baseline_ids, expected_name
+        )
+        pending_after = len(remaining)
+        failures.extend(
+            pending_id
+            for pending_id in remaining
+            if pending_id not in failures
+        )
+        unattributed_ids = sorted(
+            set(unattributed_ids)
+            | (
+                (set(final_snapshot) - baseline_ids)
+                - set(remaining)
+            )
+        )
+    except Exception:
+        verification_failed = True
+
+    failed = bool(failures or unattributed_ids or verification_failed)
+    if verification_failed:
+        detail = "proposal cleanup could not be fully verified"
+    elif failures:
+        detail = "proposal cleanup failed"
+    elif unattributed_ids:
+        detail = "unexpected post-baseline proposals could not be safely attributed"
+    else:
+        detail = "all unexpected proposals were denied"
     cleanup.append(
         _entry(
-            "FAIL" if failures else "PASS",
+            "FAIL" if failed else "PASS",
             name,
-            "proposal cleanup failed" if failures else "all unexpected proposals were denied",
-            {"attempted": len(proposals), "failed": failures},
+            detail,
+            {
+                "attempted": len(proposals),
+                "failed": sorted(set(failures)),
+                "acceptance_pending_after_cleanup": pending_after,
+                "unattributed_ids": unattributed_ids[
+                    :MAX_UNATTRIBUTED_PROPOSAL_IDS
+                ],
+                "unattributed_count": len(unattributed_ids),
+            },
         )
     )
-    return not failures
+    return not failed
 
 
 def _run_invalid_write(
@@ -1114,6 +1196,7 @@ def _run_invalid_write(
     name = f"OHI ACCEPTANCE INVALID {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
+    unattributed_ids: list[int] = []
     reply = ""
     lead_applied = False
     error: str | None = None
@@ -1141,9 +1224,11 @@ def _run_invalid_write(
         except Exception as exc:
             error = error or _safe_error(exc)
         try:
-            owned, snapshot_attempts = _post_write_owned_proposals(
-                api, baseline_ids, name
-            )
+            (
+                owned,
+                unattributed_ids,
+                snapshot_attempts,
+            ) = _post_write_owned_proposals(api, baseline_ids, name)
             ownership_known = True
         except ProposalOwnershipUnknown as exc:
             snapshot_attempts = exc.attempts
@@ -1161,6 +1246,7 @@ def _run_invalid_write(
         and ownership_known
         and truthful
         and not owned
+        and not unattributed_ids
         and not lead_applied
     )
     evidence = (
@@ -1170,7 +1256,20 @@ def _run_invalid_write(
             "ownership": "unknown",
         }
         if write_sent and not ownership_known
-        else {"new_pending_count": len(owned), "lead_applied": lead_applied}
+        else {
+            "new_pending_count": len(owned) + len(unattributed_ids),
+            "lead_applied": lead_applied,
+            **(
+                {
+                    "unattributed_ids": unattributed_ids[
+                        :MAX_UNATTRIBUTED_PROPOSAL_IDS
+                    ],
+                    "unattributed_count": len(unattributed_ids),
+                }
+                if unattributed_ids
+                else {}
+            ),
+        }
     )
     checks.append(
         _entry(
@@ -1196,12 +1295,19 @@ def _run_invalid_write(
                 },
             )
         )
-    elif owned:
+    elif owned or unattributed_ids:
         _cleanup_owned_proposals(
             api,
             owned,
             cleanup,
-            name="Deny unexpected invalid-write proposal",
+            name=(
+                "Deny unexpected invalid-write proposal"
+                if owned
+                else "Invalid-write proposal cleanup"
+            ),
+            baseline_ids=baseline_ids,
+            expected_name=name,
+            unattributed_ids=unattributed_ids,
         )
     return passed
 
@@ -1217,6 +1323,7 @@ def _run_reviewed_write(
     name = f"OHI ACCEPTANCE TEST {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
+    unattributed_ids: list[int] = []
     reported_pending_id: int | None = None
     pending_id: int | None = None
     absent_before = False
@@ -1226,6 +1333,7 @@ def _run_reviewed_write(
     write_sent = False
     ownership_known = False
     snapshot_attempts = 0
+    pending_after: int | str = "unknown"
     try:
         try:
             baseline_ids = set(_pending_snapshot(api))
@@ -1251,9 +1359,11 @@ def _run_reviewed_write(
             if match:
                 reported_pending_id = int(match.group(1))
             try:
-                owned, snapshot_attempts = _post_write_owned_proposals(
-                    api, baseline_ids, name
-                )
+                (
+                    owned,
+                    unattributed_ids,
+                    snapshot_attempts,
+                ) = _post_write_owned_proposals(api, baseline_ids, name)
                 ownership_known = True
             except ProposalOwnershipUnknown as exc:
                 snapshot_attempts = exc.attempts
@@ -1261,6 +1371,12 @@ def _run_reviewed_write(
 
             if ownership_known:
                 try:
+                    if len(owned) == 1:
+                        pending_id = next(iter(owned))
+                    if unattributed_ids:
+                        raise ValueError(
+                            "unexpected post-baseline proposals could not be safely attributed"
+                        )
                     if len(owned) != 1 or reported_pending_id not in owned:
                         raise ValueError(
                             "chat did not return exactly one real pending proposal ID"
@@ -1297,20 +1413,66 @@ def _run_reviewed_write(
                         denied = True
                 except Exception:
                     failures.append(candidate)
+            verification_failed = False
+            if write_sent and ownership_known:
+                try:
+                    if baseline_ids is None:
+                        raise ValueError("proposal cleanup context was incomplete")
+                    final_snapshot = _pending_snapshot(api)
+                    remaining = _owned_proposals(
+                        final_snapshot, baseline_ids, name
+                    )
+                    pending_after = len(remaining)
+                    failures.extend(
+                        candidate
+                        for candidate in remaining
+                        if candidate not in failures
+                    )
+                    unattributed_ids = sorted(
+                        set(unattributed_ids)
+                        | (
+                            (set(final_snapshot) - baseline_ids)
+                            - set(remaining)
+                        )
+                    )
+                except Exception:
+                    verification_failed = True
+            cleanup_failed = bool(
+                failures
+                or unattributed_ids
+                or verification_failed
+                or (write_sent and not owned)
+            )
+            if verification_failed:
+                cleanup_detail = "proposal cleanup could not be fully verified"
+            elif failures:
+                cleanup_detail = "proposal cleanup failed"
+            elif unattributed_ids:
+                cleanup_detail = (
+                    "unexpected post-baseline proposals could not be safely attributed"
+                )
+            elif owned:
+                cleanup_detail = "disposable proposal was denied"
+            elif write_sent:
+                cleanup_detail = (
+                    "no acceptance-owned proposal was found after the write request"
+                )
+            else:
+                cleanup_detail = "write request was not sent"
             cleanup.append(
                 _entry(
-                    "FAIL" if failures else "PASS" if owned else "SKIP",
+                    "FAIL" if cleanup_failed else "PASS" if owned else "SKIP",
                     "Deny disposable proposal",
-                    (
-                        "proposal cleanup failed"
-                        if failures
-                        else "disposable proposal was denied"
-                        if owned
-                        else "verified snapshot contained no acceptance-owned proposal"
-                        if write_sent
-                        else "write request was not sent"
-                    ),
-                    {"pending_id": pending_id, "failed": failures},
+                    cleanup_detail,
+                    {
+                        "pending_id": pending_id,
+                        "failed": sorted(set(failures)),
+                        "acceptance_pending_after_cleanup": pending_after,
+                        "unattributed_ids": unattributed_ids[
+                            :MAX_UNATTRIBUTED_PROPOSAL_IDS
+                        ],
+                        "unattributed_count": len(unattributed_ids),
+                    },
                 )
             )
         try:
@@ -1327,6 +1489,8 @@ def _run_reviewed_write(
         and absent_before
         and denied
         and absent_after
+        and pending_after == 0
+        and not unattributed_ids
     )
     checks.append(
         _entry(
@@ -1342,6 +1506,16 @@ def _run_reviewed_write(
                 "absent_before_denial": absent_before,
                 "denied": denied,
                 "absent_after_denial": absent_after,
+                **(
+                    {
+                        "unattributed_ids": unattributed_ids[
+                            :MAX_UNATTRIBUTED_PROPOSAL_IDS
+                        ],
+                        "unattributed_count": len(unattributed_ids),
+                    }
+                    if unattributed_ids
+                    else {}
+                ),
             },
         )
     )

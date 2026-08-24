@@ -960,6 +960,176 @@ def test_invalid_write_fails_and_cleans_up_if_a_proposal_appears():
     assert acceptance.exit_code(result) == 1
 
 
+def test_invalid_write_surfaces_altered_name_as_unattributed_without_denial():
+    class AlteredNameAPI(FakeAPI):
+        def _add_pending(self, pending_id: int, name: str) -> None:
+            super()._add_pending(pending_id, name)
+            if pending_id == 29:
+                self.pending[pending_id]["payload"]["name"] = name + " altered"
+
+    api = AlteredNameAPI()
+    api.invalid_creates_pending = True
+
+    result = run(api, allow_test_write=True)
+
+    check = by_name(result, "Invalid write")
+    cleanup = cleanup_by_name(result, "Invalid-write proposal cleanup")
+    assert check["level"] == "FAIL"
+    assert check["evidence"]["unattributed_ids"] == [29]
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["unattributed_ids"] == [29]
+    assert 29 in api.pending
+    assert 29 not in api.denied
+
+
+def test_reviewed_write_surfaces_altered_operation_without_denial():
+    class AlteredOperationAPI(FakeAPI):
+        def _add_pending(self, pending_id: int, name: str) -> None:
+            super()._add_pending(pending_id, name)
+            if pending_id == 17:
+                self.pending[pending_id]["operation"] = "update_lead"
+                self.pending[pending_id]["payload"] = {
+                    "lead_id": 1,
+                    "area": "customer value",
+                }
+
+    api = AlteredOperationAPI()
+
+    result = run(api, allow_test_write=True)
+
+    check = by_name(result, "Reviewed write")
+    cleanup = cleanup_by_name(result, "Deny disposable proposal")
+    assert check["level"] == "FAIL"
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["unattributed_ids"] == [17]
+    assert 17 in api.pending
+    assert 17 not in api.denied
+
+
+class LateProposalAPI(FakeAPI):
+    def __init__(self, phrase: str, row: dict):
+        super().__init__()
+        self._late_phrase = phrase
+        self._late_row = row
+        self._settling_polls = 0
+        self._settling_active = False
+
+    def request(self, method: str, path: str, payload: dict | None = None):
+        if (
+            method == "POST"
+            and path == "/chat"
+            and isinstance(payload, dict)
+            and self._late_phrase in payload.get("message", "")
+        ):
+            self._settling_active = True
+            self._settling_polls = 0
+        if (
+            method == "GET"
+            and path == "/pending-changes?status=pending"
+            and self._settling_active
+        ):
+            self._settling_polls += 1
+            if self._settling_polls == 2:
+                row = dict(self._late_row)
+                self.pending[row["id"]] = row
+            if self._settling_polls >= acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS:
+                self._settling_active = False
+        return super().request(method, path, payload)
+
+
+def test_invalid_write_catches_late_unattributed_proposal_without_denial():
+    api = LateProposalAPI(
+        "unsupported arguments",
+        {
+            "id": 29,
+            "operation": "update_lead",
+            "status": "pending",
+            "payload": {"lead_id": 1, "area": "late customer value"},
+            "summary": "Late customer update",
+        },
+    )
+
+    result = run(api, allow_test_write=True)
+
+    cleanup = cleanup_by_name(result, "Invalid-write proposal cleanup")
+    assert by_name(result, "Invalid write")["level"] == "FAIL"
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["unattributed_ids"] == [29]
+    assert api._settling_polls == acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert 29 in api.pending
+    assert 29 not in api.denied
+
+
+def test_reviewed_write_catches_late_unattributed_proposal_without_denial():
+    api = LateProposalAPI(
+        "Create exactly one disposable",
+        {
+            "id": 18,
+            "operation": "create_lead",
+            "status": "pending",
+            "payload": {"name": "Altered acceptance name", "source": "note"},
+            "summary": "Create altered acceptance lead",
+        },
+    )
+
+    result = run(api, allow_test_write=True)
+
+    cleanup = cleanup_by_name(result, "Deny disposable proposal")
+    assert by_name(result, "Reviewed write")["level"] == "FAIL"
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["unattributed_ids"] == [18]
+    assert api._settling_polls == acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert 17 in api.denied
+    assert 18 in api.pending
+    assert 18 not in api.denied
+
+
+def test_reviewed_write_remembers_transient_unattributed_proposal():
+    class TransientProposalAPI(FakeAPI):
+        def __init__(self):
+            super().__init__()
+            self._reviewed_settling_poll = 0
+            self._reviewed_settling = False
+
+        def request(self, method: str, path: str, payload: dict | None = None):
+            if (
+                method == "POST"
+                and path == "/chat"
+                and isinstance(payload, dict)
+                and "Create exactly one disposable" in payload.get("message", "")
+            ):
+                self._reviewed_settling = True
+                self._reviewed_settling_poll = 0
+            if (
+                method == "GET"
+                and path == "/pending-changes?status=pending"
+                and self._reviewed_settling
+            ):
+                self._reviewed_settling_poll += 1
+                if self._reviewed_settling_poll == 1:
+                    self.pending[18] = {
+                        "id": 18,
+                        "operation": "update_lead",
+                        "status": "pending",
+                        "payload": {"lead_id": 1, "area": "transient"},
+                        "summary": "Transient update",
+                    }
+                elif self._reviewed_settling_poll == 2:
+                    self.pending.pop(18, None)
+            return super().request(method, path, payload)
+
+    api = TransientProposalAPI()
+
+    result = run(api, allow_test_write=True)
+
+    cleanup = cleanup_by_name(result, "Deny disposable proposal")
+    assert by_name(result, "Reviewed write")["level"] == "FAIL"
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["unattributed_ids"] == [18]
+    assert 17 in api.denied
+    assert 18 not in api.denied
+
+
 def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
     api = FakeAPI()
 
@@ -998,7 +1168,7 @@ def test_fabricated_existing_pending_id_is_never_denied():
     assert api.pending[5]["payload"]["name"] == "Real customer"
 
 
-def test_concurrent_user_proposal_is_ignored_and_never_denied():
+def test_concurrent_user_proposal_fails_acceptance_and_is_never_denied():
     api = FakeAPI()
     api.concurrent_pending = {
         "id": 18,
@@ -1010,8 +1180,11 @@ def test_concurrent_user_proposal_is_ignored_and_never_denied():
 
     result = run(api, allow_test_write=True)
 
-    assert by_name(result, "Reviewed write")["level"] == "PASS"
-    assert api.denied == [17, 41]
+    assert by_name(result, "Reviewed write")["level"] == "FAIL"
+    cleanup = cleanup_by_name(result, "Deny disposable proposal")
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["unattributed_ids"] == [18]
+    assert api.denied == [17]
     assert 18 in api.pending
     assert api.pending[18]["operation"] == "update_lead"
 
@@ -1060,7 +1233,9 @@ def test_invalid_write_snapshot_uncertainty_is_explicit_cleanup_failure():
 
 def test_reviewed_write_snapshot_uncertainty_is_explicit_cleanup_failure():
     api = FakeAPI()
-    api.pending_fail_from_call = 4
+    api.pending_fail_from_call = (
+        acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS + 3
+    )
 
     result = run(api, allow_test_write=True)
 
@@ -1070,7 +1245,7 @@ def test_reviewed_write_snapshot_uncertainty_is_explicit_cleanup_failure():
         "ownership": "unknown",
         "snapshot_attempts": acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS,
     }
-    assert api.pending_get_calls == 3 + acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert api.pending_get_calls == 2 + 2 * acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
     assert api.denied == []
     assert 17 in api.pending
     assert "no proposal" not in cleanup["detail"].lower()
