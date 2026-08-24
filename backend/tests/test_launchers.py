@@ -344,6 +344,19 @@ def test_setup_evidence_is_explicit_and_tied_to_the_tested_revision_everywhere()
             assert phrase in text, (path, phrase)
 
 
+def test_setup_evidence_uses_exact_head_material_and_logs_are_only_diagnostics():
+    required = (
+        "tracked HEAD files",
+        "ignored extra files",
+        "executable modes",
+        "manual diagnostics only",
+    )
+    for path in BEGINNER_GUIDES:
+        text = _normalized(path.read_text())
+        for phrase in required:
+            assert phrase in text, (path, phrase)
+
+
 def test_generated_hardware_acceptance_artifacts_are_not_tracked_by_default():
     ignored = (REPO / ".gitignore").read_text().splitlines()
 

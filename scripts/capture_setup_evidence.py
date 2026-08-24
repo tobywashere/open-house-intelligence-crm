@@ -25,6 +25,7 @@ from scripts.setup_openclaw import (
     SetupConflict,
     _parse_args,
     _redact_api_token,
+    _material_head_state,
     canonical_installed_state_digest,
     capture_installed_state,
     validate_installed_state_snapshot,
@@ -32,7 +33,7 @@ from scripts.setup_openclaw import (
 
 
 Runner = Callable[[int], tuple[int, str, int, dict | None]]
-RepositoryState = Callable[[], tuple[str, bool]]
+RepositoryState = Callable[[], tuple[str, bool, str]]
 MAX_CAPTURE_TEXT = 1024 * 1024
 
 
@@ -55,7 +56,7 @@ def _capture_revision() -> str:
     return revision
 
 
-def _capture_repository_state() -> tuple[str, bool]:
+def _capture_repository_state() -> tuple[str, bool, str]:
     revision = _capture_revision()
     result = subprocess.run(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
@@ -67,7 +68,8 @@ def _capture_repository_state() -> tuple[str, bool]:
     )
     if result.returncode != 0:
         raise RuntimeError("could not verify that the tested worktree is clean")
-    return revision, not bool(result.stdout)
+    material = _material_head_state(REPO)
+    return revision, not bool(result.stdout), material["material_tree_sha256"]
 
 
 def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
@@ -98,29 +100,48 @@ def _run_setup(_sequence: int) -> tuple[int, str, int, dict | None]:
 
 
 def _private_parent(path: Path) -> tuple[Path, int]:
-    absolute = path.absolute()
-    parent = absolute.parent
-    for component in reversed((parent, *parent.parents)):
-        try:
-            node = os.lstat(component)
-        except OSError as exc:
-            raise OSError("evidence parent could not be inspected") from exc
-        if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
-            raise OSError("evidence parent must contain only real directories")
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    return absolute, os.open(parent, flags)
+    absolute = Path(os.path.abspath(path))
+    if absolute.name in {"", ".", ".."}:
+        raise OSError("evidence destination must have a safe filename")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory:
+        raise OSError("this platform cannot safely create setup evidence")
+    flags = os.O_RDONLY | directory | nofollow
+    descriptor = os.open(os.path.sep, flags)
+    try:
+        for component in absolute.parent.parts[1:]:
+            if component in {"", ".", ".."}:
+                raise OSError("evidence parent contained an unsafe component")
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            node = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(node.st_mode):
+                os.close(next_descriptor)
+                raise OSError("evidence parent must contain only real directories")
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return absolute, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
 
 
-def _verify_private_file(path: Path, expected: bytes) -> None:
-    absolute, parent_fd = _private_parent(path)
+def _verify_private_file(
+    parent_fd: int,
+    leaf: str,
+    expected: bytes,
+    identity: tuple[int, int],
+) -> None:
     descriptor = -1
     try:
         descriptor = os.open(
-            absolute.name,
+            leaf,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=parent_fd,
         )
         node = os.fstat(descriptor)
+        if (node.st_dev, node.st_ino) != identity:
+            raise OSError("evidence verification found a changed file identity")
         if not stat.S_ISREG(node.st_mode) or stat.S_IMODE(node.st_mode) != 0o600:
             raise OSError("evidence verification found an unsupported file")
         digest = hashlib.sha256()
@@ -136,7 +157,29 @@ def _verify_private_file(path: Path, expected: bytes) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        os.close(parent_fd)
+
+
+def _parent_identity_matches_path(path: Path, parent_fd: int) -> None:
+    expected = os.fstat(parent_fd)
+    _, current_fd = _private_parent(path)
+    try:
+        current = os.fstat(current_fd)
+        if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+            raise OSError("evidence parent identity changed during the write")
+    finally:
+        os.close(current_fd)
+
+
+def _remove_owned_private_file_at(
+    parent_fd: int, leaf: str, identity: tuple[int, int]
+) -> None:
+    try:
+        node = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if stat.S_ISREG(node.st_mode) and (node.st_dev, node.st_ino) == identity:
+        os.unlink(leaf, dir_fd=parent_fd)
+        os.fsync(parent_fd)
 
 
 def _remove_owned_private_file(path: Path, identity: tuple[int, int]) -> None:
@@ -145,13 +188,7 @@ def _remove_owned_private_file(path: Path, identity: tuple[int, int]) -> None:
     except OSError:
         return
     try:
-        try:
-            node = os.lstat(absolute.name, dir_fd=parent_fd)
-        except OSError:
-            return
-        if stat.S_ISREG(node.st_mode) and (node.st_dev, node.st_ino) == identity:
-            os.unlink(absolute.name, dir_fd=parent_fd)
-            os.fsync(parent_fd)
+        _remove_owned_private_file_at(parent_fd, absolute.name, identity)
     finally:
         os.close(parent_fd)
 
@@ -177,11 +214,12 @@ def _write_private_verified(path: Path, content: bytes) -> tuple[int, int]:
         os.close(descriptor)
         descriptor = -1
         os.fsync(parent_fd)
-        _verify_private_file(absolute, content)
+        _verify_private_file(parent_fd, absolute.name, content, identity)
+        _parent_identity_matches_path(absolute, parent_fd)
         return identity
     except Exception:
         if identity is not None:
-            _remove_owned_private_file(absolute, identity)
+            _remove_owned_private_file_at(parent_fd, absolute.name, identity)
         raise
     finally:
         if descriptor >= 0:
@@ -215,9 +253,14 @@ def capture_setup_evidence(
     records: list[dict] = []
     logs: list[tuple[Path, str]] = []
     repository_checks: list[dict] = []
-    initial_revision, initial_clean = inspect_repository()
+    initial_revision, initial_clean, initial_material = inspect_repository()
     repository_checks.append(
-        {"phase": "before_run_1", "revision": initial_revision, "clean": initial_clean}
+        {
+            "phase": "before_run_1",
+            "revision": initial_revision,
+            "clean": initial_clean,
+            "material_tree_sha256": initial_material,
+        }
     )
     if initial_revision != tested_revision:
         raise RuntimeError("tested repository revision changed before setup")
@@ -228,7 +271,6 @@ def capture_setup_evidence(
         exit_code, raw_log, state_capture_exit_code, state = run_setup(sequence)
         finished_at = _now()
         sanitized_log = _sanitize_output(raw_log)
-        encoded = (sanitized_log + "\n").encode("utf-8")
         log_path = log_paths[sequence - 1]
         logs.append((log_path, sanitized_log + "\n"))
         state_sha256 = None
@@ -241,24 +283,26 @@ def capture_setup_evidence(
                 "exit_code": exit_code,
                 "started_at": started_at,
                 "finished_at": finished_at,
-                "sanitized_log_sha256": hashlib.sha256(encoded).hexdigest(),
                 "state_capture_exit_code": state_capture_exit_code,
                 "state": state,
                 "state_sha256": state_sha256,
             }
         )
-        checked_revision, checked_clean = inspect_repository()
+        checked_revision, checked_clean, checked_material = inspect_repository()
         repository_checks.append(
             {
                 "phase": f"after_run_{sequence}",
                 "revision": checked_revision,
                 "clean": checked_clean,
+                "material_tree_sha256": checked_material,
             }
         )
         if checked_revision != tested_revision:
             raise RuntimeError("tested repository revision changed during setup")
         if not checked_clean:
             raise RuntimeError("tested worktree became unclean during setup")
+        if checked_material != initial_material:
+            raise RuntimeError("tested material tree changed during setup")
         if exit_code != 0 or state_capture_exit_code != 0:
             break
     manifest = {
@@ -299,6 +343,8 @@ def _evidence_succeeded(manifest: dict) -> bool:
             or any(
                 item.get("revision") != manifest.get("revision")
                 or item.get("clean") is not True
+                or item.get("material_tree_sha256")
+                != checks[0].get("material_tree_sha256")
                 for item in checks
             )
         ):
@@ -309,6 +355,8 @@ def _evidence_succeeded(manifest: dict) -> bool:
                 return False
             state = validate_installed_state_snapshot(run.get("state"))
             if canonical_installed_state_digest(state) != run.get("state_sha256"):
+                return False
+            if state["sources"]["material_tree_sha256"] != checks[0]["material_tree_sha256"]:
                 return False
             states.append(state)
         return states[0] == states[1]
@@ -331,13 +379,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         manifest = capture_setup_evidence(args.output)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, SetupConflict, ValueError) as exc:
         print(exc.__class__.__name__, file=sys.stderr)
         return 1
     succeeded = _evidence_succeeded(manifest)
     print(
-        "Saved revision-tied setup evidence and sanitized run logs. "
-        "Inspect them before sharing."
+        "Saved revision-tied setup evidence. Sanitized setup logs are manual "
+        "diagnostics only; inspect them before sharing."
     )
     return 0 if succeeded else 1
 

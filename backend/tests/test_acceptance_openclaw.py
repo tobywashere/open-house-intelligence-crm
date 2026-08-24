@@ -247,19 +247,102 @@ class FakeAPI:
 
 def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> dict:
     digest = marker * 64
-    skill_digests = {
-        name: digest
-        for name in (
-            "business-card-scanner",
-            "crm-db-operations",
-            "daily-brief",
-            "daily-command-center",
-        )
+
+    def tree(entries: list[dict]) -> dict:
+        return {
+            "sha256": hashlib.sha256(
+                json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "entries": entries,
+        }
+
+    skills = {
+        "business-card-scanner": tree(
+            [{"path": "SKILL.md", "mode": "100644", "size": 1, "sha256": digest}]
+        ),
+        "crm-db-operations": tree(
+            [
+                {"path": "SKILL.md", "mode": "100644", "size": 1, "sha256": digest},
+                {"path": "cli.py", "mode": "100755", "size": 1, "sha256": digest},
+            ]
+        ),
+        "daily-brief": tree(
+            [
+                {"path": "SKILL.md", "mode": "100644", "size": 1, "sha256": digest},
+                {
+                    "path": "scripts/run_daily_brief.py",
+                    "mode": "100755",
+                    "size": 1,
+                    "sha256": digest,
+                },
+            ]
+        ),
+        "daily-command-center": tree(
+            [{"path": "SKILL.md", "mode": "100644", "size": 1, "sha256": digest}]
+        ),
     }
+    plugin_tree = tree(
+        [
+            {"path": "dist/index.js", "mode": "100644", "size": 1, "sha256": digest},
+            {
+                "path": "openclaw.plugin.json",
+                "mode": "100644",
+                "size": 1,
+                "sha256": digest,
+            },
+            {"path": "package.json", "mode": "100644", "size": 1, "sha256": digest},
+        ]
+    )
+    shared_tree = tree(
+        [
+            {
+                "path": "backend/app/briefing_contract.py",
+                "mode": "100644",
+                "size": 1,
+                "sha256": digest,
+            },
+            {
+                "path": "scripts/acceptance_openclaw.py",
+                "mode": "100644",
+                "size": 1,
+                "sha256": digest,
+            },
+            {
+                "path": "scripts/capture_setup_evidence.py",
+                "mode": "100644",
+                "size": 1,
+                "sha256": digest,
+            },
+            {
+                "path": "scripts/doctor.py",
+                "mode": "100644",
+                "size": 1,
+                "sha256": digest,
+            },
+            {
+                "path": "scripts/setup_openclaw.py",
+                "mode": "100755",
+                "size": 1,
+                "sha256": digest,
+            },
+        ]
+    )
+    material_digest = hashlib.sha256(
+        json.dumps(
+            {"skills": skills, "plugin": plugin_tree, "shared": shared_tree},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     return {
-        "schema_version": 1,
-        "sources": {"skills": skill_digests, "plugin": digest},
-        "installed": {"skills": dict(skill_digests)},
+        "schema_version": 2,
+        "sources": {
+            "material_tree_sha256": material_digest,
+            "skills": skills,
+            "plugin": plugin_tree,
+            "shared": shared_tree,
+        },
+        "installed": {"skills": json.loads(json.dumps(skills))},
         "plugin": {
             "registered": True,
             "enabled": True,
@@ -301,10 +384,14 @@ def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> di
             },
             "sandbox": {"mode": "off"},
         },
-        "bindings": [],
+        "bindings": {
+            "count": 0,
+            "sha256": hashlib.sha256(b"[]").hexdigest(),
+        },
         "approvals": {
             "patterns": ["daily-brief"],
             "daily_brief_sha256": digest,
+            "daily_brief_mode": "100755",
             "effective": {
                 "host": "gateway",
                 "mode": "allowlist",
@@ -323,7 +410,7 @@ def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> di
                 "matches_process_token": None,
             },
             "gateway_url_sha256": digest,
-            "chat_path": "/v1/chat/completions",
+            "chat_path_sha256": hashlib.sha256(b"/v1/chat/completions").hexdigest(),
         },
     }
 
@@ -332,6 +419,12 @@ def state_digest(state: dict) -> str:
     return hashlib.sha256(
         json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def changed_runtime_state() -> dict:
+    state = installed_state()
+    state["gateway"]["crm_api_url_sha256"] = "b" * 64
+    return state
 
 
 def setup_evidence(
@@ -345,7 +438,12 @@ def setup_evidence(
     capture_exits = capture_exits or tuple(0 for _ in exits)
     states = states or tuple(installed_state() for _ in exits)
     repository_checks = repository_checks or [
-        {"phase": phase, "revision": revision, "clean": True}
+        {
+            "phase": phase,
+            "revision": revision,
+            "clean": True,
+            "material_tree_sha256": states[0]["sources"]["material_tree_sha256"],
+        }
         for phase in ("before_run_1", "after_run_1", "after_run_2")
     ]
     return {
@@ -360,7 +458,6 @@ def setup_evidence(
                 "exit_code": exit_code,
                 "started_at": f"2026-08-24T12:0{sequence}:00Z",
                 "finished_at": f"2026-08-24T12:0{sequence}:30Z",
-                "sanitized_log_sha256": str(sequence) * 64,
                 "state_capture_exit_code": capture_exits[sequence - 1],
                 "state": states[sequence - 1],
                 "state_sha256": (
@@ -1118,7 +1215,7 @@ def test_two_successful_setup_runs_are_a_required_machine_verified_prerequisite(
         (setup_evidence(exits=(0,)), "setup evidence did not contain two runs"),
         (setup_evidence(exits=(0, 1)), "one or more setup runs failed"),
         (setup_evidence(capture_exits=(0, 1)), "setup state capture failed"),
-        (setup_evidence(states=(installed_state(), installed_state(marker="b"))),
+        (setup_evidence(states=(installed_state(), changed_runtime_state())),
          "setup reruns were not idempotent"),
         (setup_evidence(revision="def5678"), "setup evidence revision did not match"),
     ],
@@ -1181,6 +1278,11 @@ def test_setup_evidence_rejects_dirty_current_worktree():
 
 def test_worktree_check_allows_only_the_named_evidence_artifacts(monkeypatch, tmp_path):
     monkeypatch.setattr(acceptance, "REPO", tmp_path)
+    monkeypatch.setattr(
+        acceptance,
+        "_material_head_state",
+        lambda _repo: {"material_tree_sha256": "a" * 64},
+    )
 
     def status(*_args, **_kwargs):
         return acceptance.subprocess.CompletedProcess(
@@ -1209,7 +1311,7 @@ def test_worktree_check_allows_only_the_named_evidence_artifacts(monkeypatch, tm
 
 def test_setup_evidence_recomputes_state_digest_and_rejects_tampering():
     evidence = setup_evidence()
-    evidence["runs"][1]["state"]["gateway"]["chat_path"] = "/tampered"
+    evidence["runs"][1]["state"]["gateway"]["chat_path_sha256"] = "b" * 64
 
     result = run(FakeAPI(), evidence=evidence)
 
@@ -1229,6 +1331,48 @@ def test_setup_evidence_rejects_partial_structured_state():
 
     assert by_name(result, "Setup twice")["detail"] == (
         "setup installed-state snapshot was unsupported"
+    )
+
+
+def test_setup_evidence_rejects_mode_changes_even_with_recomputed_digests():
+    evidence = setup_evidence()
+    changed = evidence["runs"][1]["state"]
+    daily = changed["installed"]["skills"]["daily-brief"]
+    daily["entries"][1]["mode"] = "100644"
+    daily["sha256"] = hashlib.sha256(
+        json.dumps(
+            daily["entries"], sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    evidence["runs"][1]["state_sha256"] = state_digest(changed)
+
+    result = run(FakeAPI(), evidence=evidence)
+
+    assert by_name(result, "Setup twice")["detail"] == (
+        "setup installed-state snapshot was unsupported"
+    )
+
+
+def test_setup_evidence_requires_material_tree_digest_at_every_checkpoint():
+    evidence = setup_evidence()
+    evidence["repository_checks"][1]["material_tree_sha256"] = "b" * 64
+
+    result = run(FakeAPI(), evidence=evidence)
+
+    assert by_name(result, "Setup twice")["detail"] == (
+        "setup repository checks did not prove exact HEAD material trees"
+    )
+
+
+def test_setup_evidence_rejects_state_not_tied_to_checkpoint_material_tree():
+    evidence = setup_evidence()
+    for check in evidence["repository_checks"]:
+        check["material_tree_sha256"] = "b" * 64
+
+    result = run(FakeAPI(), evidence=evidence)
+
+    assert by_name(result, "Setup twice")["detail"] == (
+        "setup state did not match the exact HEAD material tree"
     )
 
 
@@ -1279,7 +1423,11 @@ def test_setup_evidence_capture_runs_setup_twice_and_writes_only_sanitized_logs(
         manifest_path,
         revision="a" * 40,
         runner=runner,
-        repository_state=lambda: ("a" * 40, True),
+        repository_state=lambda: (
+            "a" * 40,
+            True,
+            state["sources"]["material_tree_sha256"],
+        ),
     )
 
     assert calls == [1, 2]
@@ -1288,6 +1436,7 @@ def test_setup_evidence_capture_runs_setup_twice_and_writes_only_sanitized_logs(
     assert [run["state_capture_exit_code"] for run in result["runs"]] == [0, 0]
     assert result["runs"][0]["state"] == state
     assert result["runs"][0]["state_sha256"] == state_digest(state)
+    assert all("sanitized_log_sha256" not in run for run in result["runs"])
     assert result["runs"][0]["state"] == result["runs"][1]["state"]
     assert [check["phase"] for check in result["repository_checks"]] == [
         "before_run_1",
@@ -1314,7 +1463,11 @@ def test_setup_evidence_structured_state_detects_material_differences(tmp_path):
         tmp_path / "openhouse-setup-evidence.json",
         revision="a" * 40,
         runner=lambda sequence: outputs[sequence - 1],
-        repository_state=lambda: ("a" * 40, True),
+        repository_state=lambda: (
+            "a" * 40,
+            True,
+            installed_state()["sources"]["material_tree_sha256"],
+        ),
     )
 
     assert manifest["runs"][0]["state_sha256"] != manifest["runs"][1][
@@ -1336,7 +1489,11 @@ def test_setup_evidence_capture_preflights_all_output_files_before_running_setup
             revision="a" * 40,
             runner=lambda sequence: calls.append(sequence)
             or (0, "", 0, installed_state()),
-            repository_state=lambda: ("a" * 40, True),
+            repository_state=lambda: (
+                "a" * 40,
+                True,
+                installed_state()["sources"]["material_tree_sha256"],
+            ),
         )
 
     assert calls == []
@@ -1353,7 +1510,11 @@ def test_setup_evidence_refuses_dirty_worktree_before_running_setup(tmp_path):
             revision="a" * 40,
             runner=lambda sequence: calls.append(sequence)
             or (0, "", 0, installed_state()),
-            repository_state=lambda: ("a" * 40, False),
+            repository_state=lambda: (
+                "a" * 40,
+                False,
+                installed_state()["sources"]["material_tree_sha256"],
+            ),
         )
 
     assert calls == []
@@ -1363,7 +1524,8 @@ def test_setup_evidence_refuses_dirty_worktree_before_running_setup(tmp_path):
 def test_setup_evidence_stops_if_head_changes_after_first_run(tmp_path):
     capture = importlib.import_module("scripts.capture_setup_evidence")
     calls: list[int] = []
-    states = iter([("a" * 40, True), ("b" * 40, True)])
+    material = installed_state()["sources"]["material_tree_sha256"]
+    states = iter([("a" * 40, True, material), ("b" * 40, True, material)])
 
     with pytest.raises(RuntimeError, match="revision changed"):
         capture.capture_setup_evidence(
@@ -1372,6 +1534,26 @@ def test_setup_evidence_stops_if_head_changes_after_first_run(tmp_path):
             runner=lambda sequence: calls.append(sequence)
             or (0, "", 0, installed_state()),
             repository_state=lambda: next(states),
+        )
+
+    assert calls == [1]
+
+
+def test_setup_evidence_stops_if_material_tree_changes_after_first_run(tmp_path):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    calls: list[int] = []
+    state = installed_state()
+    material = state["sources"]["material_tree_sha256"]
+    repository_states = iter(
+        [("a" * 40, True, material), ("a" * 40, True, "b" * 64)]
+    )
+
+    with pytest.raises(RuntimeError, match="material tree changed"):
+        capture.capture_setup_evidence(
+            tmp_path / "openhouse-setup-evidence.json",
+            revision="a" * 40,
+            runner=lambda sequence: calls.append(sequence) or (0, "", 0, state),
+            repository_state=lambda: next(repository_states),
         )
 
     assert calls == [1]
@@ -1410,6 +1592,63 @@ def test_private_evidence_write_removes_only_its_partial_file_on_verify_failure(
 
     assert not path.exists()
     assert unrelated.read_text() == "keep"
+
+
+def test_private_evidence_write_rejects_intermediate_ancestor_swap(
+    monkeypatch, tmp_path
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    trusted = tmp_path / "trusted"
+    trusted_inner = trusted / "inner"
+    trusted_inner.mkdir(parents=True)
+    moved = tmp_path / "trusted-original"
+    attacker = tmp_path / "attacker"
+    (attacker / "inner").mkdir(parents=True)
+    target = trusted_inner / "evidence.json"
+    real_open = capture.os.open
+    swapped = False
+
+    def swap_before_path_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and path == "inner" and kwargs.get("dir_fd") is not None:
+            swapped = True
+            trusted.rename(moved)
+            trusted.symlink_to(attacker, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(capture.os, "open", swap_before_path_open)
+
+    with pytest.raises(OSError):
+        capture._write_private_verified(target, b"private")
+
+    assert not (attacker / "inner" / "evidence.json").exists()
+
+
+def test_private_evidence_write_rejects_identical_leaf_replacement(
+    monkeypatch, tmp_path
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    target = tmp_path / "evidence.json"
+    content = b"complete durable content"
+    real_fsync = capture.os.fsync
+    replaced = False
+
+    def replace_before_reopen(descriptor):
+        nonlocal replaced
+        node = capture.os.fstat(descriptor)
+        if not replaced and capture.stat.S_ISDIR(node.st_mode):
+            replaced = True
+            target.unlink()
+            target.write_bytes(content)
+            target.chmod(0o600)
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(capture.os, "fsync", replace_before_reopen)
+
+    with pytest.raises(OSError, match="identity"):
+        capture._write_private_verified(target, content)
+
+    assert target.read_bytes() == content
 
 
 def test_natural_language_booking_is_pending_unapplied_denied_and_absent():

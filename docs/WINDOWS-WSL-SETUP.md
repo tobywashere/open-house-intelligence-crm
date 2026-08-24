@@ -167,9 +167,11 @@ The evidence helper runs setup twice. The first run creates or repairs the
 dedicated CRM agent. The second proves the same setup is safe to repeat. It
 saves two sanitized logs, compares a canonical structured snapshot of the
 installed skills, plugin, agent policy, bindings, approvals, and gateway
-references after each run, and ties the evidence to one clean revision.
-That clean revision is the tested revision. The later report names this
-prerequisite `Setup twice`.
+references after each run, and ties the evidence to one clean revision. It
+verifies tracked HEAD files and executable modes; modified, missing, or ignored
+extra files in material setup sources fail closed. The sanitized logs are
+manual diagnostics only and do not make this pass. That clean revision is the
+tested revision. The later report names the structured prerequisite `Setup twice`.
 
 ```bash
 python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json

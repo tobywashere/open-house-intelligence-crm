@@ -33,6 +33,7 @@ try:
         SetupConflict,
         _redact_api_token,
         _read_repo_env_values,
+        _material_head_state,
         _validate_requested_agent_id,
         canonical_installed_state_digest,
         validate_installed_state_snapshot,
@@ -43,6 +44,7 @@ except ModuleNotFoundError:  # Direct execution puts scripts/, not the repo, on 
         SetupConflict,
         _redact_api_token,
         _read_repo_env_values,
+        _material_head_state,
         _validate_requested_agent_id,
         canonical_installed_state_digest,
         validate_installed_state_snapshot,
@@ -68,14 +70,18 @@ SETUP_RUN_KEYS = {
     "exit_code",
     "finished_at",
     "run_id",
-    "sanitized_log_sha256",
     "sequence",
     "started_at",
     "state",
     "state_capture_exit_code",
     "state_sha256",
 }
-SETUP_REPOSITORY_CHECK_KEYS = {"phase", "revision", "clean"}
+SETUP_REPOSITORY_CHECK_KEYS = {
+    "phase",
+    "revision",
+    "clean",
+    "material_tree_sha256",
+}
 FORBIDDEN_BRIEFING_KEYS = {
     "ai_insights",
     "citations",
@@ -196,6 +202,10 @@ def _capture_worktree_clean(
     )
     if result.returncode != 0:
         return False
+    try:
+        _material_head_state(REPO)
+    except SetupConflict:
+        return False
     allowed: set[str] = set()
     for path in allowed_untracked or set():
         try:
@@ -314,6 +324,7 @@ def _setup_evidence_entry(
         return _entry(
             "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
         )
+    material_digests: list[str] = []
     for expected_phase, item in zip(expected_phases, repository_checks, strict=True):
         if (
             not isinstance(item, dict)
@@ -328,6 +339,22 @@ def _setup_evidence_entry(
                 "setup repository checks did not prove a clean unchanged revision",
                 base_evidence,
             )
+        material_digest = item.get("material_tree_sha256")
+        if not isinstance(material_digest, str) or SHA256_RE.fullmatch(material_digest) is None:
+            return _entry(
+                "FAIL",
+                "Setup twice",
+                "setup repository checks did not prove exact HEAD material trees",
+                base_evidence,
+            )
+        material_digests.append(material_digest)
+    if len(set(material_digests)) != 1:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "setup repository checks did not prove exact HEAD material trees",
+            base_evidence,
+        )
     valid_runs = True
     run_ids: set[str] = set()
     previous_finish: datetime | None = None
@@ -354,8 +381,6 @@ def _setup_evidence_entry(
             or isinstance(exit_code, bool)
             or not isinstance(capture_exit_code, int)
             or isinstance(capture_exit_code, bool)
-            or not isinstance(run.get("sanitized_log_sha256"), str)
-            or SHA256_RE.fullmatch(run["sanitized_log_sha256"]) is None
             or run_id in run_ids
             or finished < started
             or (previous_finish is not None and started < previous_finish)
@@ -403,6 +428,16 @@ def _setup_evidence_entry(
                     "FAIL",
                     "Setup twice",
                     "setup state digest did not match its content",
+                    base_evidence,
+                )
+            if (
+                validated_state["sources"]["material_tree_sha256"]
+                != material_digests[expected_sequence]
+            ):
+                return _entry(
+                    "FAIL",
+                    "Setup twice",
+                    "setup state did not match the exact HEAD material tree",
                     base_evidence,
                 )
             state_hashes.append(state_hash)

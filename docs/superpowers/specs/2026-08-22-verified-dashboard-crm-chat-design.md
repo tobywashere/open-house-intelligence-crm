@@ -405,10 +405,13 @@ runner validates that evidence and reports whether both runs succeeded and were
 idempotent by comparing complete canonical structured installed-state snapshots
 after each run. The helper requires a clean, unchanged exact revision before and
 after both runs. Acceptance recomputes each snapshot digest and strictly checks
-the shipped and installed skill digests, plugin registration/configuration and
-runtime inventory, agent policy, bindings, executable approvals, and relevant
-gateway references. Missing, partial, failed, malformed, mismatched-state,
-dirty-worktree, changed-HEAD, or wrong-revision evidence is a required failure.
+the tracked HEAD files, content digests, executable modes, shipped and installed
+skills, plugin registration/configuration and runtime inventory, agent policy,
+bindings, executable approvals, and relevant gateway references. Modified,
+missing, or ignored extra files in any material source tree are a required
+failure, as are partial, failed, malformed, mismatched-state, dirty-worktree,
+changed-HEAD, or wrong-revision evidence. Sanitized setup logs are manual
+diagnostics only and cannot make `Setup twice` pass.
 Shared JSON includes no raw logs, local paths, home data, or secrets.
 
 The sanitized report records:
@@ -474,7 +477,9 @@ sanitized evidence prove all of the following without manual repair:
 
 1. two explicit setup runs succeed at the tested revision and the acceptance
    report validates their complete canonical installed-state snapshots as
-   identical on a clean, unchanged exact revision;
+   identical on a clean, unchanged exact revision whose tracked HEAD files,
+   content digests, and executable modes match at every checkpoint, with no
+   ignored extra files in material setup trees;
 2. the doctor records an audited direct CRM call;
 3. dashboard chat reports the exact real lead count;
 4. dashboard chat queues a natural-language disposable write and names the

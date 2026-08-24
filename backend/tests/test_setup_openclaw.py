@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 
@@ -1579,9 +1580,16 @@ def test_installed_state_snapshot_is_complete_structured_and_read_only(tmp_path)
 
     state = setup_openclaw.capture_installed_state(options, cli)
 
-    assert state["schema_version"] == 1
+    assert state["schema_version"] == 2
     assert set(state["sources"]["skills"]) == set(setup_openclaw.SKILL_NAMES)
     assert state["sources"]["skills"] == state["installed"]["skills"]
+    assert state["sources"]["shared"]["entries"]
+    assert state["sources"]["material_tree_sha256"]
+    assert all(
+        entry["mode"] in {"100644", "100755"}
+        for tree in state["sources"]["skills"].values()
+        for entry in tree["entries"]
+    )
     assert state["plugin"]["registered"] is True
     assert state["plugin"]["runtime_tools"] == ["openhouse_crm"]
     assert state["plugin"]["runtime_hooks"] == sorted(
@@ -1590,8 +1598,10 @@ def test_installed_state_snapshot_is_complete_structured_and_read_only(tmp_path)
     assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
     assert state["agent"]["skills"] == list(setup_openclaw.SKILL_NAMES)
     assert state["approvals"]["patterns"] == ["daily-brief"]
-    assert state["bindings"][0]["channel"] == "discord"
+    assert state["bindings"]["count"] == 1
+    assert set(state["bindings"]) == {"count", "sha256"}
     assert "primary-account" not in json.dumps(state, sort_keys=True)
+    assert state["approvals"]["daily_brief_mode"] == "100755"
     assert setup_openclaw.canonical_installed_state_digest(state) == hashlib.sha256(
         json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -1608,7 +1618,7 @@ def test_installed_state_snapshot_fails_when_installed_skill_differs_from_source
     installed_skill = options.workspace / "skills" / "daily-brief" / "SKILL.md"
     installed_skill.write_text(installed_skill.read_text() + "\nchanged\n")
 
-    with pytest.raises(SetupConflict, match="installed skill digest"):
+    with pytest.raises(SetupConflict, match="installed skill content"):
         setup_openclaw.capture_installed_state(options, cli)
 
 
@@ -1653,6 +1663,127 @@ def test_installed_state_snapshot_never_contains_gateway_or_crm_secrets(
     assert crm_token not in rendered
     assert gateway_token not in rendered
     assert gateway_password not in rendered
+
+
+def test_installed_state_snapshot_hashes_chat_path_and_binding_channel(
+    tmp_path, monkeypatch
+):
+    chat_secret = "secret-like-chat-path"
+    channel_secret = "secret-like-binding-channel"
+    monkeypatch.setenv("AGENT_CHAT_PATH", f"/v1/{chat_secret}/completions")
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    cli.bindings = {(options.agent_id, f"{channel_secret}:account")}
+
+    rendered = json.dumps(
+        setup_openclaw.capture_installed_state(options, cli), sort_keys=True
+    )
+
+    assert chat_secret not in rendered
+    assert channel_secret not in rendered
+    assert "chat_path_sha256" in rendered
+
+
+@pytest.mark.parametrize(
+    "chat_path",
+    ["relative/path", "/v1/chat?secret=value", "/" + "x" * 300],
+)
+def test_installed_state_snapshot_rejects_malformed_or_unbounded_chat_path(
+    tmp_path, monkeypatch, chat_path
+):
+    monkeypatch.setenv("AGENT_CHAT_PATH", chat_path)
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+
+    with pytest.raises(SetupConflict, match="AGENT_CHAT_PATH"):
+        setup_openclaw.capture_installed_state(options, cli)
+
+
+def test_installed_state_snapshot_rejects_unbounded_binding_channel(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    cli.bindings = {(options.agent_id, f"{'x' * 300}:account")}
+
+    with pytest.raises(SetupConflict, match="bindings"):
+        setup_openclaw.capture_installed_state(options, cli)
+
+
+def test_installed_state_snapshot_rejects_changed_daily_brief_executable_mode(
+    tmp_path,
+):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    daily = options.workspace / "skills" / "daily-brief" / "scripts" / "run_daily_brief.py"
+    daily.chmod(0o644)
+
+    with pytest.raises(SetupConflict, match="mode"):
+        setup_openclaw.capture_installed_state(options, cli)
+
+
+def _committed_tree(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    root = repo / "skills" / "demo"
+    root.mkdir(parents=True)
+    (repo / ".gitignore").write_text("*.pyc\nnode_modules/\n.DS_Store\n")
+    script = root / "runner.py"
+    script.write_text("#!/usr/bin/env python3\nprint('tracked')\n")
+    script.chmod(0o755)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Acceptance Test",
+            "-c",
+            "user.email=acceptance@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    return repo, root
+
+
+def test_tracked_tree_manifest_rejects_ignored_extra_files(tmp_path):
+    repo, root = _committed_tree(tmp_path)
+    (root / "ignored.pyc").write_bytes(b"ignored bytecode")
+
+    with pytest.raises(SetupConflict, match="extra non-HEAD"):
+        setup_openclaw._tracked_head_tree(repo, Path("skills/demo"), "test tree")
+
+
+def test_tracked_tree_manifest_records_and_enforces_executable_mode(tmp_path):
+    repo, root = _committed_tree(tmp_path)
+
+    manifest = setup_openclaw._tracked_head_tree(
+        repo, Path("skills/demo"), "test tree"
+    )
+    assert manifest["entries"] == [
+        {
+            "path": "runner.py",
+            "mode": "100755",
+            "size": 40,
+            "sha256": hashlib.sha256(
+                b"#!/usr/bin/env python3\nprint('tracked')\n"
+            ).hexdigest(),
+        }
+    ]
+
+    (root / "runner.py").chmod(0o644)
+    with pytest.raises(SetupConflict, match="mode"):
+        setup_openclaw._tracked_head_tree(repo, Path("skills/demo"), "test tree")
 
 
 def test_setup_rerun_replaces_stale_contract_and_operations_catalog(tmp_path):

@@ -94,6 +94,13 @@ VALID_AGENT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
 RESERVED_AGENT_IDS = frozenset({"main", "openclaw", "crestodian"})
 LEGACY_AGENT_PREFIX_RE = re.compile(r"agents\.list\[\d+\]")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+MATERIAL_SHARED_PATHS = (
+    Path("scripts"),
+    Path("backend/app/briefing_contract.py"),
+)
+MAX_MATERIAL_ENTRIES = 2048
+MAX_BINDINGS = 100
+MAX_PRIVATE_RUNTIME_VALUE = 256
 
 
 @dataclass(frozen=True)
@@ -1481,37 +1488,181 @@ def _read_regular_file_digest(path: Path, label: str) -> tuple[int, str]:
         os.close(descriptor)
 
 
-def _tree_digest(root: Path, label: str) -> str:
-    """Return a path-independent digest of a strict regular-file tree."""
+def _normalized_git_mode(node_mode: int) -> str:
+    return "100755" if node_mode & 0o111 else "100644"
+
+
+def _git_bytes(repo: Path, argv: list[str], label: str) -> bytes:
     try:
-        root_node = os.lstat(root)
-    except OSError as exc:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *argv],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
         raise SetupConflict(f"could not inspect {label}") from exc
-    if stat.S_ISLNK(root_node.st_mode) or not stat.S_ISDIR(root_node.st_mode):
-        raise SetupConflict(f"{label} must be a real directory")
-    records: list[dict[str, Any]] = []
-    try:
-        children = sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
-    except OSError as exc:
-        raise SetupConflict(f"could not inspect {label}") from exc
-    for child in children:
-        relative = child.relative_to(root).as_posix()
+    if result.returncode != 0:
+        raise SetupConflict(f"could not inspect {label}")
+    return result.stdout
+
+
+def _filesystem_material_files(
+    repo: Path, roots: tuple[Path, ...], label: str
+) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+    for relative_root in roots:
+        if relative_root.is_absolute() or ".." in relative_root.parts:
+            raise SetupConflict(f"could not inspect {label}")
+        root = repo / relative_root
         try:
-            node = os.lstat(child)
+            node = os.lstat(root)
         except OSError as exc:
             raise SetupConflict(f"could not inspect {label}") from exc
         if stat.S_ISLNK(node.st_mode):
             raise SetupConflict(f"{label} must not contain symlinks")
-        if stat.S_ISDIR(node.st_mode):
-            records.append({"path": relative, "type": "directory"})
+        if stat.S_ISREG(node.st_mode):
+            files[relative_root.as_posix()] = root
             continue
-        if not stat.S_ISREG(node.st_mode):
+        if not stat.S_ISDIR(node.st_mode):
             raise SetupConflict(f"{label} must contain only regular files and directories")
-        size, digest = _read_regular_file_digest(child, label)
-        records.append(
-            {"path": relative, "type": "file", "size": size, "sha256": digest}
+        for current, directory_names, file_names in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            for name in list(directory_names):
+                child = current_path / name
+                try:
+                    child_node = os.lstat(child)
+                except OSError as exc:
+                    raise SetupConflict(f"could not inspect {label}") from exc
+                if stat.S_ISLNK(child_node.st_mode) or not stat.S_ISDIR(child_node.st_mode):
+                    raise SetupConflict(f"{label} must contain only real directories")
+            for name in file_names:
+                child = current_path / name
+                try:
+                    child_node = os.lstat(child)
+                except OSError as exc:
+                    raise SetupConflict(f"could not inspect {label}") from exc
+                if not stat.S_ISREG(child_node.st_mode):
+                    raise SetupConflict(f"{label} must contain only regular files")
+                relative = child.relative_to(repo).as_posix()
+                files[relative] = child
+                if len(files) > MAX_MATERIAL_ENTRIES:
+                    raise SetupConflict(f"{label} contains too many files")
+    return files
+
+
+def _tracked_head_manifest(
+    repo: Path,
+    roots: tuple[Path, ...],
+    label: str,
+    *,
+    paths_relative_to: Path | None = None,
+) -> dict[str, Any]:
+    """Return a HEAD-authoritative manifest and reject every non-HEAD filesystem entry."""
+    pathspecs = [root.as_posix() for root in roots]
+    raw = _git_bytes(
+        repo,
+        ["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *pathspecs],
+        label,
+    )
+    tracked: dict[str, tuple[str, str]] = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, encoded_path = record.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("ascii").split(" ")
+            relative = encoded_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SetupConflict(f"could not inspect {label}") from exc
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise SetupConflict(f"{label} contains an unsupported tracked entry")
+        tracked[relative] = (mode, object_id)
+    if not tracked or len(tracked) > MAX_MATERIAL_ENTRIES:
+        raise SetupConflict(f"{label} did not resolve to a bounded tracked tree")
+    filesystem = _filesystem_material_files(repo, roots, label)
+    extras = sorted(set(filesystem) - set(tracked))
+    missing = sorted(set(tracked) - set(filesystem))
+    if extras:
+        raise SetupConflict(f"{label} contains an extra non-HEAD file")
+    if missing:
+        raise SetupConflict(f"{label} is missing a tracked HEAD file")
+    entries: list[dict[str, Any]] = []
+    for relative in sorted(tracked):
+        expected_mode, object_id = tracked[relative]
+        path = filesystem[relative]
+        node = os.lstat(path)
+        actual_mode = _normalized_git_mode(node.st_mode)
+        if actual_mode != expected_mode:
+            raise SetupConflict(f"{label} file mode does not match HEAD")
+        contents = _git_bytes(repo, ["cat-file", "blob", object_id], label)
+        size, digest = _read_regular_file_digest(path, label)
+        if size != len(contents) or digest != hashlib.sha256(contents).hexdigest():
+            raise SetupConflict(f"{label} contents do not match HEAD")
+        display_path = relative
+        if paths_relative_to is not None:
+            try:
+                display_path = Path(relative).relative_to(paths_relative_to).as_posix()
+            except ValueError as exc:
+                raise SetupConflict(f"could not inspect {label}") from exc
+        entries.append(
+            {"path": display_path, "mode": actual_mode, "size": size, "sha256": digest}
         )
-    return hashlib.sha256(_canonical_json_bytes(records)).hexdigest()
+    return {
+        "sha256": hashlib.sha256(_canonical_json_bytes(entries)).hexdigest(),
+        "entries": entries,
+    }
+
+
+def _tracked_head_tree(repo: Path, relative_root: Path, label: str) -> dict[str, Any]:
+    return _tracked_head_manifest(
+        repo,
+        (relative_root,),
+        label,
+        paths_relative_to=relative_root,
+    )
+
+
+def _material_head_state(repo: Path) -> dict[str, Any]:
+    skills = {
+        name: _tracked_head_tree(repo, Path("skills") / name, f"shipped {name} skill")
+        for name in SKILL_NAMES
+    }
+    plugin = _tracked_head_tree(
+        repo, Path("openclaw-plugins") / PLUGIN_ID, "bundled OpenClaw CRM plugin"
+    )
+    shared = _tracked_head_manifest(repo, MATERIAL_SHARED_PATHS, "shared setup sources")
+    material = {"skills": skills, "plugin": plugin, "shared": shared}
+    return {
+        **material,
+        "material_tree_sha256": hashlib.sha256(
+            _canonical_json_bytes(material)
+        ).hexdigest(),
+    }
+
+
+def _installed_tree_manifest(
+    root: Path, expected: dict[str, Any], label: str
+) -> dict[str, Any]:
+    validated = _validate_tree_manifest(expected, label)
+    files = _filesystem_material_files(root.parent, (Path(root.name),), label)
+    actual_paths = {Path(path).relative_to(root.name).as_posix(): value for path, value in files.items()}
+    expected_by_path = {entry["path"]: entry for entry in validated["entries"]}
+    if set(actual_paths) != set(expected_by_path):
+        raise SetupConflict(f"{label} has files outside the shipped HEAD tree")
+    entries: list[dict[str, Any]] = []
+    for relative in sorted(expected_by_path):
+        path = actual_paths[relative]
+        expected_entry = expected_by_path[relative]
+        node = os.lstat(path)
+        mode = _normalized_git_mode(node.st_mode)
+        size, digest = _read_regular_file_digest(path, label)
+        entry = {"path": relative, "mode": mode, "size": size, "sha256": digest}
+        if entry != expected_entry:
+            field = "mode" if mode != expected_entry["mode"] else "content"
+            raise SetupConflict(f"installed skill {field} does not match the shipped source")
+        entries.append(entry)
+    return {"sha256": hashlib.sha256(_canonical_json_bytes(entries)).hexdigest(), "entries": entries}
 
 
 def sync_skills(
@@ -2741,6 +2892,49 @@ def _require_sha256(value: Any, label: str) -> str:
     return value
 
 
+def _validate_tree_manifest(value: Any, label: str) -> dict[str, Any]:
+    manifest = _require_exact_keys(value, {"sha256", "entries"}, label)
+    entries = manifest["entries"]
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_MATERIAL_ENTRIES:
+        raise SetupConflict(f"unsupported installed-state snapshot: {label}")
+    validated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in entries:
+        entry = _require_exact_keys(
+            item, {"path", "mode", "size", "sha256"}, f"{label} entry"
+        )
+        path = entry["path"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or len(path) > 512
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or any(ord(character) < 32 for character in path)
+            or path in seen
+        ):
+            raise SetupConflict(f"unsupported installed-state snapshot: {label} path")
+        if entry["mode"] not in {"100644", "100755"}:
+            raise SetupConflict(f"unsupported installed-state snapshot: {label} mode")
+        if (
+            not isinstance(entry["size"], int)
+            or isinstance(entry["size"], bool)
+            or entry["size"] < 0
+            or entry["size"] > 64 * 1024 * 1024
+        ):
+            raise SetupConflict(f"unsupported installed-state snapshot: {label} size")
+        _require_sha256(entry["sha256"], f"{label} entry digest")
+        seen.add(path)
+        validated.append(entry)
+    if [entry["path"] for entry in validated] != sorted(seen):
+        raise SetupConflict(f"unsupported installed-state snapshot: {label} order")
+    digest = _require_sha256(manifest["sha256"], f"{label} digest")
+    if digest != hashlib.sha256(_canonical_json_bytes(validated)).hexdigest():
+        raise SetupConflict(f"unsupported installed-state snapshot: {label} digest")
+    return manifest
+
+
 def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
     """Validate the complete privacy-safe state used for setup idempotence proof."""
     root = _require_exact_keys(
@@ -2757,20 +2951,69 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
         },
         "root",
     )
-    if root["schema_version"] != 1:
+    if root["schema_version"] != 2:
         raise SetupConflict("unsupported installed-state snapshot: schema version")
 
-    sources = _require_exact_keys(root["sources"], {"skills", "plugin"}, "sources")
+    sources = _require_exact_keys(
+        root["sources"],
+        {"material_tree_sha256", "skills", "plugin", "shared"},
+        "sources",
+    )
     installed = _require_exact_keys(root["installed"], {"skills"}, "installed")
     for holder, label in ((sources, "sources"), (installed, "installed")):
         skills = holder["skills"]
         if not isinstance(skills, dict) or set(skills) != set(SKILL_NAMES):
             raise SetupConflict(f"unsupported installed-state snapshot: {label} skills")
         for name in SKILL_NAMES:
-            _require_sha256(skills[name], f"{label} skill digest")
-    _require_sha256(sources["plugin"], "plugin source digest")
+            _validate_tree_manifest(skills[name], f"{label} {name} skill")
+    plugin_source = _validate_tree_manifest(sources["plugin"], "plugin source")
+    shared_source = _validate_tree_manifest(sources["shared"], "shared source")
     if sources["skills"] != installed["skills"]:
         raise SetupConflict("unsupported installed-state snapshot: installed skill digest")
+    daily_entries = {
+        entry["path"]: entry
+        for entry in sources["skills"]["daily-brief"]["entries"]
+    }
+    if daily_entries.get("scripts/run_daily_brief.py", {}).get("mode") != "100755":
+        raise SetupConflict("unsupported installed-state snapshot: daily brief mode")
+    crm_entries = {
+        entry["path"]: entry
+        for entry in sources["skills"]["crm-db-operations"]["entries"]
+    }
+    if crm_entries.get("cli.py", {}).get("mode") != "100755":
+        raise SetupConflict("unsupported installed-state snapshot: CRM CLI mode")
+    plugin_paths = {entry["path"] for entry in plugin_source["entries"]}
+    if not {
+        "dist/index.js",
+        "openclaw.plugin.json",
+        "package.json",
+    }.issubset(plugin_paths):
+        raise SetupConflict("unsupported installed-state snapshot: plugin source")
+    shared_paths = {entry["path"] for entry in shared_source["entries"]}
+    if not {
+        "backend/app/briefing_contract.py",
+        "scripts/acceptance_openclaw.py",
+        "scripts/capture_setup_evidence.py",
+        "scripts/doctor.py",
+        "scripts/setup_openclaw.py",
+    }.issubset(shared_paths):
+        raise SetupConflict("unsupported installed-state snapshot: shared source")
+    setup_entry = next(
+        entry
+        for entry in shared_source["entries"]
+        if entry["path"] == "scripts/setup_openclaw.py"
+    )
+    if setup_entry["mode"] != "100755":
+        raise SetupConflict("unsupported installed-state snapshot: setup entrypoint mode")
+    material = {
+        "skills": sources["skills"],
+        "plugin": sources["plugin"],
+        "shared": sources["shared"],
+    }
+    if _require_sha256(
+        sources["material_tree_sha256"], "material tree digest"
+    ) != hashlib.sha256(_canonical_json_bytes(material)).hexdigest():
+        raise SetupConflict("unsupported installed-state snapshot: material tree digest")
 
     plugin = _require_exact_keys(
         root["plugin"],
@@ -2821,29 +3064,25 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
     if agent["sandbox"] != DESIRED_SANDBOX:
         raise SetupConflict("unsupported installed-state snapshot: agent sandbox")
 
-    bindings = root["bindings"]
-    if not isinstance(bindings, list):
+    bindings = _require_exact_keys(root["bindings"], {"count", "sha256"}, "bindings")
+    if (
+        not isinstance(bindings["count"], int)
+        or isinstance(bindings["count"], bool)
+        or not 0 <= bindings["count"] <= MAX_BINDINGS
+    ):
         raise SetupConflict("unsupported installed-state snapshot: bindings")
-    binding_sort_keys: list[tuple[str, str, str]] = []
-    for binding in bindings:
-        record = _require_exact_keys(
-            binding, {"agent_id", "channel", "binding_sha256"}, "binding"
-        )
-        agent_id = _require_canonical_agent_id(record["agent_id"], "snapshot binding agent ID")
-        channel = record["channel"]
-        if not isinstance(channel, str) or not channel:
-            raise SetupConflict("unsupported installed-state snapshot: binding channel")
-        digest = _require_sha256(record["binding_sha256"], "binding digest")
-        binding_sort_keys.append((agent_id, channel, digest))
-    if binding_sort_keys != sorted(set(binding_sort_keys)):
-        raise SetupConflict("unsupported installed-state snapshot: bindings")
+    _require_sha256(bindings["sha256"], "bindings digest")
 
     approvals = _require_exact_keys(
-        root["approvals"], {"patterns", "daily_brief_sha256", "effective"}, "approvals"
+        root["approvals"],
+        {"patterns", "daily_brief_sha256", "daily_brief_mode", "effective"},
+        "approvals",
     )
     if approvals["patterns"] != ["daily-brief"]:
         raise SetupConflict("unsupported installed-state snapshot: approval patterns")
     _require_sha256(approvals["daily_brief_sha256"], "daily brief digest")
+    if approvals["daily_brief_mode"] != "100755":
+        raise SetupConflict("unsupported installed-state snapshot: daily brief mode")
     effective = _require_exact_keys(
         approvals["effective"],
         {"host", "mode", "security", "ask", "ask_fallback"},
@@ -2865,7 +3104,7 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
             "api_token_ref",
             "gateway_env",
             "gateway_url_sha256",
-            "chat_path",
+            "chat_path_sha256",
         },
         "gateway",
     )
@@ -2903,14 +3142,7 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
         raise SetupConflict(
             "unsupported installed-state snapshot: gateway token environment"
         )
-    chat_path = gateway["chat_path"]
-    if (
-        not isinstance(chat_path, str)
-        or not chat_path.startswith("/")
-        or "?" in chat_path
-        or "#" in chat_path
-    ):
-        raise SetupConflict("unsupported installed-state snapshot: chat path")
+    _require_sha256(gateway["chat_path_sha256"], "chat path digest")
     return root
 
 
@@ -2919,11 +3151,24 @@ def canonical_installed_state_digest(value: Any) -> str:
     return hashlib.sha256(_canonical_json_bytes(validated)).hexdigest()
 
 
-def _configured_bindings_snapshot(cli: OpenClawCLI) -> list[dict[str, str]]:
+def _validated_private_path(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or len(value) > MAX_PRIVATE_RUNTIME_VALUE
+        or "?" in value
+        or "#" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise SetupConflict(f"{label} has an unsupported value")
+    return value
+
+
+def _configured_bindings_snapshot(cli: OpenClawCLI) -> dict[str, Any]:
     snapshot = _read_config_snapshot(cli, "bindings")
     if not snapshot.existed:
-        return []
-    if not isinstance(snapshot.value, list):
+        return {"count": 0, "sha256": hashlib.sha256(b"[]").hexdigest()}
+    if not isinstance(snapshot.value, list) or len(snapshot.value) > MAX_BINDINGS:
         raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
     result: list[dict[str, str]] = []
     for binding in snapshot.value:
@@ -2936,36 +3181,49 @@ def _configured_bindings_snapshot(cli: OpenClawCLI) -> list[dict[str, str]]:
         if not isinstance(match, dict):
             raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
         channel = match.get("channel")
-        if not isinstance(channel, str) or not channel:
+        if (
+            not isinstance(channel, str)
+            or not channel
+            or len(channel) > MAX_PRIVATE_RUNTIME_VALUE
+            or any(ord(character) < 32 for character in channel)
+        ):
+            raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+        try:
+            encoded = _canonical_json_bytes(binding)
+        except (TypeError, ValueError) as exc:
+            raise SetupConflict("OpenClaw bindings have an unsupported JSON shape") from exc
+        if len(encoded) > 16 * 1024:
             raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
         result.append(
             {
                 "agent_id": agent_id,
-                "channel": channel,
-                "binding_sha256": hashlib.sha256(_canonical_json_bytes(binding)).hexdigest(),
+                "binding_sha256": hashlib.sha256(encoded).hexdigest(),
             }
         )
-    return sorted(
+    canonical = sorted(
         result,
         key=lambda item: (
             item["agent_id"],
-            item["channel"],
             item["binding_sha256"],
         ),
     )
+    return {
+        "count": len(canonical),
+        "sha256": hashlib.sha256(_canonical_json_bytes(canonical)).hexdigest(),
+    }
 
 
 def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str, Any]:
     """Capture the complete, canonical, secret-free state established by setup."""
     _validate_requested_agent_id(options.agent_id)
     repo = Path(__file__).resolve().parents[1]
-    source_skills = {
-        name: _tree_digest(repo / "skills" / name, f"shipped {name} skill")
-        for name in SKILL_NAMES
-    }
+    sources = _material_head_state(repo)
+    source_skills = sources["skills"]
     installed_skills = {
-        name: _tree_digest(
-            options.workspace / "skills" / name, f"installed {name} skill"
+        name: _installed_tree_manifest(
+            options.workspace / "skills" / name,
+            source_skills[name],
+            f"installed {name} skill",
         )
         for name in SKILL_NAMES
     }
@@ -2973,7 +3231,6 @@ def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str
         raise SetupConflict("installed skill digest does not match the shipped source")
 
     plugin_source = _plugin_source(repo)
-    plugin_digest = _tree_digest(plugin_source, "bundled OpenClaw CRM plugin")
     inventory = _run_required(
         cli, ["openclaw", "plugins", "list", "--json"], "installed plugin inventory"
     )
@@ -3045,8 +3302,8 @@ def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str
     matches_process = None if not process_token else env_token == process_token
 
     state = {
-        "schema_version": 1,
-        "sources": {"skills": source_skills, "plugin": plugin_digest},
+        "schema_version": 2,
+        "sources": sources,
         "installed": {"skills": installed_skills},
         "plugin": {
             "registered": registered,
@@ -3070,6 +3327,7 @@ def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str
         "approvals": {
             "patterns": ["daily-brief"],
             "daily_brief_sha256": daily_digest,
+            "daily_brief_mode": _normalized_git_mode(os.lstat(daily).st_mode),
             "effective": {
                 "host": scope["host"]["requested"],
                 "mode": scope["mode"]["effective"],
@@ -3093,7 +3351,12 @@ def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str
             "gateway_url_sha256": hashlib.sha256(
                 _loopback_gateway_base_url().encode("utf-8")
             ).hexdigest(),
-            "chat_path": os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions"),
+            "chat_path_sha256": hashlib.sha256(
+                _validated_private_path(
+                    os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions"),
+                    "AGENT_CHAT_PATH",
+                ).encode("utf-8")
+            ).hexdigest(),
         },
     }
     validate_installed_state_snapshot(state)

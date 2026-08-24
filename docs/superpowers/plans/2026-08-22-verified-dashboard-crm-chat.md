@@ -806,6 +806,10 @@ Use a fake HTTP boundary and temporary report path. Cover:
 - two strict setup results and matching complete canonical installed-state
   snapshots at one clean, unchanged exact revision, with missing, partial,
   failed, mismatched, or malformed evidence rejected;
+- exact tracked HEAD files and executable modes at every setup checkpoint,
+  rejecting modified, missing, or ignored extra files in material source trees;
+- sanitized setup logs labeled as manual diagnostics only, never evidence for
+  an automated `Setup twice` pass;
 - natural-language booking against an existing lead, exact Pending ownership,
   appointment nonapplication, denial, and post-cleanup absence;
 - bound Discord delivery retained as a manual hardware check, never automated

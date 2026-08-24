@@ -64,7 +64,10 @@ For a hardware acceptance report, first capture two explicit setup runs. This
 helper runs setup twice and saves machine-verifiable evidence tied to the
 tested revision, which must remain clean. It also compares a canonical structured snapshot of
 the installed skills, plugin, agent policy, bindings, approvals, and gateway
-references after each run. The acceptance report shows it as `Setup twice`:
+references after each run. The snapshot covers tracked HEAD files and executable
+modes; modified, missing, or ignored extra files in setup material fail closed.
+Sanitized run logs are manual diagnostics only. The acceptance report shows the
+structured proof as `Setup twice`:
 
 ```bash
 python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
