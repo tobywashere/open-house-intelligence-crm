@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -132,6 +133,9 @@ class FakeCLI:
         legacy_token=None,
         plugin_path=None,
         plugin_enabled=False,
+        plugin_runtime=None,
+        client_tool_probe=None,
+        dashboard_block_probe=None,
     ):
         self.calls = []
         self.mutating_calls = []
@@ -143,6 +147,57 @@ class FakeCLI:
         self.plugin_path = plugin_path
         self.plugin_enabled = plugin_enabled
         self.approval_patterns = set()
+        self.plugin_runtime = plugin_runtime
+        self.client_tool_probe = client_tool_probe
+        self.dashboard_block_probe = dashboard_block_probe
+        self.client_tool_probe_calls = []
+        self.dashboard_block_probe_calls = []
+
+    def probe_client_tools(self, *, agent_id, nonce):
+        self.client_tool_probe_calls.append({"agent_id": agent_id, "nonce": nonce})
+        if self.client_tool_probe is not None:
+            return self.client_tool_probe
+        return CommandResult(
+            200,
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "setup-call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "openhouse_setup_capability_probe",
+                                            "arguments": json.dumps({"nonce": nonce}),
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            ),
+            "",
+        )
+
+    def probe_dashboard_tool_block(self, *, agent_id, nonce):
+        self.dashboard_block_probe_calls.append(
+            {
+                "agent_id": agent_id,
+                "nonce": nonce,
+                "operation": "__openhouse_setup_probe__",
+            }
+        )
+        if self.dashboard_block_probe is not None:
+            return self.dashboard_block_probe
+        return CommandResult(
+            403,
+            "",
+            "Dashboard CRM calls must use the verified tool invocation path.",
+        )
 
     def run(self, args, *, mutate=False):
         self.calls.append(args)
@@ -271,21 +326,33 @@ class FakeCLI:
             "--runtime",
             "--json",
         ]:
+            runtime = self.plugin_runtime
+            if runtime is None:
+                runtime = {
+                    "plugin": {
+                        "id": "openhouse-crm",
+                        "enabled": self.plugin_enabled,
+                        "rootDir": self.plugin_path,
+                        "toolNames": ["openhouse_crm"],
+                        "hookNames": [
+                            "after_tool_call",
+                            "before_tool_call",
+                            "gateway_stop",
+                            "reply_payload_sending",
+                        ],
+                    },
+                    "typedHooks": [
+                        {"name": "after_tool_call"},
+                        {"name": "before_tool_call"},
+                        {"name": "gateway_stop"},
+                        {"name": "reply_payload_sending"},
+                    ],
+                    "tools": [{"names": ["openhouse_crm"], "optional": False}],
+                    "diagnostics": [],
+                }
             return CommandResult(
                 0,
-                json.dumps(
-                    {
-                        "plugin": {
-                            "id": "openhouse-crm",
-                            "enabled": self.plugin_enabled,
-                            "rootDir": self.plugin_path,
-                        },
-                        "runtime": {
-                            "tools": [{"name": "openhouse_crm"}],
-                            "diagnostics": [],
-                        },
-                    }
-                ),
+                json.dumps(runtime),
                 "",
             )
         if args == ["openclaw", "config", "get", "plugins.allow", "--json"]:
@@ -1217,6 +1284,219 @@ def test_setup_links_enables_and_runtime_verifies_repository_plugin(tmp_path):
     assert cli.plugin_enabled is True
 
 
+def test_fresh_setup_installs_digest_verified_contract_and_exact_policy(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+
+    result = configure_openclaw(options, cli=cli)
+
+    installed_contract = (
+        options.workspace / "skills" / "crm-db-operations" / "contract.json"
+    )
+    source_contract = REPO_ROOT / "skills" / "crm-db-operations" / "contract.json"
+    daily = options.workspace / "skills" / "daily-brief" / "scripts" / "run_daily_brief.py"
+    assert result.ok, result.render()
+    assert installed_contract.read_bytes() == source_contract.read_bytes()
+    assert not (installed_contract.parent / "operations.json").exists()
+    assert cli.created_agent["tools"] == setup_openclaw.DESIRED_TOOLS
+    assert cli.approval_patterns == {str(daily)}
+    assert "SHA-256" in result.render()
+    assert len(cli.client_tool_probe_calls) == 1
+
+
+def test_setup_rerun_replaces_stale_contract_and_operations_catalog(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    first = configure_openclaw(options, cli=cli)
+    assert first.ok, first.render()
+    installed = options.workspace / "skills" / "crm-db-operations"
+    (installed / "contract.json").write_text('{"version": 0}\n')
+    (installed / "operations.json").write_text('["legacy_operation"]\n')
+
+    second = configure_openclaw(options, cli=cli)
+
+    assert second.ok, second.render()
+    assert (installed / "contract.json").read_bytes() == (
+        REPO_ROOT / "skills" / "crm-db-operations" / "contract.json"
+    ).read_bytes()
+    assert not (installed / "operations.json").exists()
+    assert cli.created_agent["tools"] == setup_openclaw.DESIRED_TOOLS
+    assert len(cli.client_tool_probe_calls) == 2
+
+
+def test_setup_upgrade_preserves_global_plugin_policy_and_replaces_owned_skill(tmp_path):
+    options = make_options(tmp_path)
+    installed = options.workspace / "skills" / "crm-db-operations"
+    installed.mkdir(parents=True)
+    (installed / "operations.json").write_text('["legacy_operation"]\n')
+    (installed / "contract.json").write_text('{"version": 0}\n')
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+    cli = FakeCLI(plugin_path=plugin_path, plugin_enabled=True)
+    cli.created_agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "skills": ["legacy-skill"],
+        "tools": {"allow": ["web_search"]},
+        "sandbox": {"mode": "on"},
+    }
+    cli.config_values["plugins.allow"] = ["discord", "voice-call", "openhouse-crm"]
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.config_values["plugins.allow"] == [
+        "discord",
+        "voice-call",
+        "openhouse-crm",
+    ]
+    assert cli.created_agent["tools"] == setup_openclaw.DESIRED_TOOLS
+    assert not (installed / "operations.json").exists()
+    assert (installed / "contract.json").read_bytes() == (
+        REPO_ROOT / "skills" / "crm-db-operations" / "contract.json"
+    ).read_bytes()
+
+
+def test_setup_rejects_runtime_missing_outcome_hooks_and_restores_state(tmp_path):
+    options = make_options(tmp_path)
+    original = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "skills": ["legacy-skill"],
+        "tools": {"allow": ["web_search"]},
+        "sandbox": {"mode": "on"},
+    }
+    cli = FakeCLI(
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+                "hookNames": [],
+            },
+            "typedHooks": [],
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        }
+    )
+    cli.created_agent = dict(original)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "required CRM outcome hooks" in result.render()
+    assert cli.created_agent == original
+    assert cli.plugin_path is None
+    assert cli.plugin_enabled is False
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_setup_rejects_optional_crm_runtime_tool_and_restores_state(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI(
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+                "hookNames": list(setup_openclaw.REQUIRED_PLUGIN_HOOKS),
+            },
+            "typedHooks": [
+                {"name": name} for name in setup_openclaw.REQUIRED_PLUGIN_HOOKS
+            ],
+            "tools": [{"names": ["openhouse_crm"], "optional": True}],
+            "diagnostics": [],
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "must not be optional" in result.render()
+    assert cli.plugin_path is None
+    assert cli.plugin_enabled is False
+    assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_runtime_without_authoritative_hook_inventory_uses_only_bounded_block_probe(
+    tmp_path,
+):
+    cli = FakeCLI(
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+            },
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert len(cli.dashboard_block_probe_calls) == 1
+    assert cli.dashboard_block_probe_calls[0]["operation"] == "__openhouse_setup_probe__"
+    assert len(cli.client_tool_probe_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("probe", "message"),
+    [
+        (
+            CommandResult(400, "", "unsupported tools field"),
+            "does not support required request-scoped function tools",
+        ),
+        (
+            CommandResult(503, "", "provider unavailable"),
+            "provider/model capability was not proven",
+        ),
+        (
+            CommandResult(200, '{"choices": []}', ""),
+            "structurally incompatible client-tool response",
+        ),
+    ],
+)
+def test_setup_rejects_unproven_client_tool_capability_and_rolls_back(
+    tmp_path, probe, message
+):
+    options = make_options(tmp_path)
+    cli = FakeCLI(client_tool_probe=probe)
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert message in result.render()
+    assert cli.plugin_path is None
+    assert cli.plugin_enabled is False
+    assert "Validated the native CRM tool" not in result.render()
+
+
+def test_post_copy_contract_digest_mismatch_rolls_back_existing_skill_tree(
+    tmp_path, monkeypatch
+):
+    options = make_options(tmp_path)
+    installed = options.workspace / "skills" / "crm-db-operations"
+    installed.mkdir(parents=True)
+    (installed / "existing.txt").write_text("preserve me\n")
+    real_copytree = setup_openclaw.shutil.copytree
+
+    def corrupt_copied_contract(source, target, *args, **kwargs):
+        result = real_copytree(source, target, *args, **kwargs)
+        if Path(source) == REPO_ROOT / "skills" / "crm-db-operations":
+            (Path(target) / "contract.json").write_text('{"version": 0}\n')
+        return result
+
+    monkeypatch.setattr(setup_openclaw.shutil, "copytree", corrupt_copied_contract)
+
+    result = configure_openclaw(options, cli=FakeCLI())
+
+    assert not result.ok
+    assert "contract" in result.render().lower()
+    assert (installed / "existing.txt").read_text() == "preserve me\n"
+    assert sorted(path.name for path in installed.iterdir()) == ["existing.txt"]
+
+
 def test_setup_repairs_legacy_crm_exec_approval_and_keeps_daily_runner(tmp_path):
     options = make_options(tmp_path)
     wrapper, daily = setup_openclaw._entrypoints(options)
@@ -1407,6 +1687,55 @@ def test_runtime_failure_restores_legacy_approvals_and_new_plugin_state(tmp_path
     assert cli.approval_patterns == {str(wrapper), str(daily)}
     assert cli.plugin_path is None
     assert cli.plugin_enabled is False
+
+
+def test_late_capability_failure_restores_policy_plugin_approvals_and_contract_files(
+    tmp_path,
+):
+    options = make_options(tmp_path)
+    original_agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "skills": ["legacy-skill"],
+        "tools": {"allow": ["web_search"]},
+        "sandbox": {"mode": "on"},
+    }
+    skills_root = options.workspace / "skills"
+    for name in setup_openclaw.SKILL_NAMES:
+        target = skills_root / name
+        target.mkdir(parents=True)
+        (target / "before.txt").write_text(f"original {name}\n")
+    original_files = {
+        str(path.relative_to(options.workspace)): path.read_bytes()
+        for path in options.workspace.rglob("*")
+        if path.is_file()
+    }
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+    cli = FakeCLI(
+        plugin_path=plugin_path,
+        plugin_enabled=True,
+        client_tool_probe=CommandResult(400, "", "gateway-secret crm-secret"),
+    )
+    cli.created_agent = dict(original_agent)
+    cli.config_values["plugins.allow"] = ["discord", "openhouse-crm"]
+    wrapper, daily = setup_openclaw._entrypoints(options)
+    cli.approval_patterns.update({str(wrapper), str(daily)})
+
+    result = configure_openclaw(options, cli=cli)
+
+    restored_files = {
+        str(path.relative_to(options.workspace)): path.read_bytes()
+        for path in options.workspace.rglob("*")
+        if path.is_file()
+    }
+    assert not result.ok
+    assert restored_files == original_files
+    assert cli.created_agent == original_agent
+    assert cli.plugin_path == plugin_path
+    assert cli.plugin_enabled is True
+    assert cli.config_values["plugins.allow"] == ["discord", "openhouse-crm"]
+    assert cli.approval_patterns == {str(wrapper), str(daily)}
+    assert cli.mutating_calls.count(["openclaw", "gateway", "restart"]) == 2
 
 
 def test_dedicated_agent_allows_only_native_crm_tool_and_daily_brief_exec(tmp_path):
@@ -1764,6 +2093,31 @@ def test_sync_skills_copies_canonical_directories_and_sets_entrypoints_executabl
     assert (targets[3] / "scripts" / "run_daily_brief.py").stat().st_mode & 0o111
 
 
+def test_canonical_contract_digest_rejects_missing_malformed_and_duplicate_keys(
+    tmp_path,
+):
+    validate = getattr(setup_openclaw, "_canonical_contract_digest", None)
+    assert validate is not None
+    repo = tmp_path / "repo"
+    contract = repo / "skills" / "crm-db-operations" / "contract.json"
+    contract.parent.mkdir(parents=True)
+
+    with pytest.raises(SetupConflict, match="missing"):
+        validate(repo)
+
+    contract.write_text("not-json\n")
+    with pytest.raises(SetupConflict, match="invalid JSON"):
+        validate(repo)
+
+    contract.write_text('{"version":1,"version":1,"operations":{}}\n')
+    with pytest.raises(SetupConflict, match="invalid JSON"):
+        validate(repo)
+
+    source = REPO_ROOT / "skills" / "crm-db-operations" / "contract.json"
+    contract.write_bytes(source.read_bytes())
+    assert validate(repo) == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
 def test_sync_skills_creates_a_missing_custom_workspace_parent(tmp_path):
     workspace = tmp_path / "custom" / "nested" / "workspace"
 
@@ -1872,6 +2226,31 @@ def test_dry_run_never_executes_mutating_commands(fake_cli, tmp_path):
 
     assert result.ok
     assert fake_cli.mutating_calls == []
+
+
+def test_dry_run_describes_contract_cleanup_and_capability_checks_without_io(
+    tmp_path,
+):
+    options = make_options(tmp_path, dry_run=True)
+    installed = options.workspace / "skills" / "crm-db-operations"
+    installed.mkdir(parents=True)
+    (installed / "operations.json").write_text('["legacy"]\n')
+    before = (installed / "operations.json").read_bytes()
+    cli = FakeCLI()
+
+    result = configure_openclaw(options, cli=cli)
+
+    rendered = result.render()
+    assert result.ok, rendered
+    assert "contract.json" in rendered
+    assert "SHA-256" in rendered
+    assert "operations.json" in rendered
+    assert "request-scoped function tools" in rendered
+    assert "required CRM outcome hooks" in rendered
+    assert (installed / "operations.json").read_bytes() == before
+    assert cli.mutating_calls == []
+    assert cli.client_tool_probe_calls == []
+    assert cli.dashboard_block_probe_calls == []
 
 
 def test_crm_skill_declares_the_api_token_as_its_primary_environment_variable():
@@ -2108,6 +2487,29 @@ def test_dotenv_token_is_redacted_from_dry_run_and_setup_error(tmp_path, monkeyp
         assert "<redacted>" in failed.render()
     finally:
         os.environ.pop("OHI_API_TOKEN", None)
+
+
+def test_capability_failure_redacts_gateway_and_crm_tokens(tmp_path, monkeypatch):
+    crm_token = "crm-token-secret"
+    gateway_token = "gateway-token-secret"
+    monkeypatch.setenv("OHI_API_TOKEN", crm_token)
+    monkeypatch.setenv("AGENT_GATEWAY_TOKEN", gateway_token)
+    cli = FakeCLI(
+        config_path=tmp_path / "openclaw.json",
+        client_tool_probe=CommandResult(
+            500,
+            "",
+            f"provider failed with {gateway_token} and {crm_token}",
+        ),
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+    rendered = result.render()
+
+    assert not result.ok
+    assert gateway_token not in rendered
+    assert crm_token not in rendered
+    assert "provider/model capability was not proven" in rendered
 
 
 @pytest.mark.parametrize(

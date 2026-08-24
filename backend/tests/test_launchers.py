@@ -1,8 +1,11 @@
 """Behavior tests for the shared launcher environment loader."""
 
+import importlib.util
+import json
+import re
 import shlex
 import subprocess
-import re
+import sys
 from pathlib import Path
 
 
@@ -194,3 +197,126 @@ def test_load_env_accepts_comments_blank_lines_and_quoted_values(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Annie Example"
+
+
+def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypatch):
+    setup_path = REPO / "scripts" / "setup_openclaw.py"
+    spec = importlib.util.spec_from_file_location("setup_openclaw_launcher_test", setup_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    captured = {}
+    nonce = "bounded-nonce"
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "probe-call",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "openhouse_setup_capability_probe",
+                                            "arguments": json.dumps({"nonce": nonce}),
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            ).encode()
+
+    def fake_urlopen(request, *, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["payload"] = json.loads(request.data)
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", "http://127.0.0.1:18789/")
+    monkeypatch.setenv("AGENT_CHAT_PATH", "/v1/chat/completions")
+    monkeypatch.setenv("AGENT_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    result = module.OpenClawCLI().probe_client_tools(
+        agent_id="openhouse-crm", nonce=nonce
+    )
+
+    assert result.returncode == 200
+    assert captured["url"] == "http://127.0.0.1:18789/v1/chat/completions"
+    assert captured["timeout"] <= 30
+    assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
+    assert captured["headers"]["X-openclaw-message-channel"] == "openhouse-dashboard"
+    payload = captured["payload"]
+    assert payload["model"] == "openclaw/openhouse-crm"
+    assert payload["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payload["tools"]] == [
+        "openhouse_setup_capability_probe"
+    ]
+    assert "openhouse_crm" not in json.dumps(payload)
+
+
+def test_setup_dashboard_fallback_is_loopback_only_and_uses_no_real_operation(
+    monkeypatch,
+):
+    setup_path = REPO / "scripts" / "setup_openclaw.py"
+    spec = importlib.util.spec_from_file_location(
+        "setup_openclaw_dashboard_probe_test", setup_path
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    captured = {"calls": 0}
+
+    def fake_post(_self, path, payload, *, channel):
+        captured["calls"] += 1
+        captured.update(path=path, payload=payload, channel=channel)
+        return module.CommandResult(
+            403,
+            "",
+            "Dashboard CRM calls must use the verified tool invocation path.",
+        )
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", "http://localhost:18789")
+    monkeypatch.setattr(module.OpenClawCLI, "_post_gateway_json", fake_post)
+
+    result = module.OpenClawCLI().probe_dashboard_tool_block(
+        agent_id="openhouse-crm", nonce="bounded-nonce"
+    )
+
+    assert result.returncode == 403
+    assert captured["path"] == "/tools/invoke"
+    assert captured["channel"] == "openhouse-dashboard"
+    assert captured["payload"]["tool"] == "openhouse_crm"
+    assert captured["payload"]["args"] == {
+        "operation": "__openhouse_setup_probe__",
+        "arguments": {},
+    }
+    assert "__openhouse_setup_probe__" not in (
+        REPO / "skills" / "crm-db-operations" / "contract.json"
+    ).read_text()
+    assert captured["calls"] == 1
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", "https://gateway.example.test")
+    rejected = module.OpenClawCLI().probe_dashboard_tool_block(
+        agent_id="openhouse-crm", nonce="bounded-nonce"
+    )
+    assert rejected.returncode == 503
+    assert "loopback" in rejected.stderr
+    assert captured["calls"] == 1

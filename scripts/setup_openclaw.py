@@ -4,16 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
-import stat
-from dataclasses import dataclass
-from pathlib import Path
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -43,6 +48,18 @@ DESIRED_TOOLS = {
 }
 PLUGIN_ID = "openhouse-crm"
 PLUGIN_TOOL = "openhouse_crm"
+REQUIRED_PLUGIN_HOOKS = (
+    "after_tool_call",
+    "before_tool_call",
+    "gateway_stop",
+    "reply_payload_sending",
+)
+DASHBOARD_CHANNEL = "openhouse-dashboard"
+SETUP_PROBE_TOOL = "openhouse_setup_capability_probe"
+SETUP_BLOCK_PROBE_OPERATION = "__openhouse_setup_probe__"
+GATEWAY_PROBE_TIMEOUT_SECONDS = 30
+GATEWAY_PROBE_MAX_BYTES = 256 * 1024
+CONTRACT_RELATIVE_PATH = Path("skills") / "crm-db-operations" / "contract.json"
 DESIRED_SANDBOX = {"mode": "off"}
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
 TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
@@ -98,6 +115,16 @@ class AgentRollback:
     changed_fields: list[str]
 
 
+@dataclass
+class SkillRollback:
+    workspace: Path
+    backup_root: Path
+    existing_names: set[str]
+    workspace_existed: bool
+    skills_root_existed: bool
+    missing_parent_dirs: list[Path]
+
+
 @dataclass(frozen=True)
 class SetupResult:
     ok: bool
@@ -123,6 +150,107 @@ class OpenClawCLI:
             return CommandResult(127, "", str(exc))
         return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
+    def _post_gateway_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        channel: str,
+    ) -> CommandResult:
+        gateway_url = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+        endpoint = gateway_url.rstrip("/") + "/" + path.lstrip("/")
+        headers = {
+            "Content-Type": "application/json",
+            "x-openclaw-message-channel": channel,
+        }
+        gateway_token = os.environ.get("AGENT_GATEWAY_TOKEN", "")
+        if gateway_token:
+            headers["Authorization"] = f"Bearer {gateway_token}"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=GATEWAY_PROBE_TIMEOUT_SECONDS
+            ) as response:
+                body = response.read(GATEWAY_PROBE_MAX_BYTES + 1)
+                status_code = int(response.status)
+        except urllib.error.HTTPError as exc:
+            body = exc.read(GATEWAY_PROBE_MAX_BYTES + 1)
+            status_code = int(exc.code)
+        except (OSError, TimeoutError, urllib.error.URLError):
+            return CommandResult(503, "", "Gateway capability request failed")
+        if len(body) > GATEWAY_PROBE_MAX_BYTES:
+            return CommandResult(502, "", "Gateway capability response was too large")
+        try:
+            rendered = body.decode("utf-8")
+        except UnicodeError:
+            return CommandResult(502, "", "Gateway capability response was not UTF-8")
+        return CommandResult(status_code, rendered, "")
+
+    def probe_client_tools(self, *, agent_id: str, nonce: str) -> CommandResult:
+        chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
+        payload = {
+            "model": f"openclaw/{agent_id}",
+            "user": f"setup-capability:{nonce}",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Call the one provided client function exactly once with the "
+                        "required nonce. Do not use any internal tool."
+                    ),
+                },
+                {"role": "user", "content": f"Capability nonce: {nonce}"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": SETUP_PROBE_TOOL,
+                        "description": "Return the setup capability nonce without side effects.",
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["nonce"],
+                            "properties": {"nonce": {"const": nonce}},
+                        },
+                    },
+                }
+            ],
+            "tool_choice": "required",
+            "max_completion_tokens": 128,
+        }
+        return self._post_gateway_json(
+            chat_path, payload, channel=DASHBOARD_CHANNEL
+        )
+
+    def probe_dashboard_tool_block(
+        self, *, agent_id: str, nonce: str
+    ) -> CommandResult:
+        gateway_url = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+        hostname = (urllib.parse.urlsplit(gateway_url).hostname or "").lower()
+        if hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return CommandResult(
+                503, "", "Dashboard hook diagnostic requires a loopback Gateway"
+            )
+        payload = {
+            "tool": PLUGIN_TOOL,
+            "args": {
+                "operation": SETUP_BLOCK_PROBE_OPERATION,
+                "arguments": {},
+            },
+            "agentId": agent_id,
+            "sessionKey": f"dashboard:setup-capability:{nonce}",
+            "idempotencyKey": f"setup-capability:{nonce}",
+        }
+        return self._post_gateway_json(
+            "/tools/invoke", payload, channel=DASHBOARD_CHANNEL
+        )
+
 
 class SetupConflict(RuntimeError):
     pass
@@ -133,15 +261,25 @@ class _DuplicateJSONKey(ValueError):
 
 
 def _redact_api_token(value: str) -> str:
-    token = os.environ.get("OHI_API_TOKEN", "")
-    if not token:
-        return value
-    forms = {token}
-    encoded = token
-    for _ in range(3):
-        encoded = json.dumps(encoded)
-        forms.add(encoded)
-        forms.add(encoded[1:-1])
+    tokens = {
+        os.environ.get(name, "")
+        for name in (
+            "OHI_API_TOKEN",
+            "AGENT_GATEWAY_TOKEN",
+            "OPENCLAW_GATEWAY_TOKEN",
+            "OPENCLAW_GATEWAY_PASSWORD",
+        )
+    }
+    forms: set[str] = set()
+    for token in tokens:
+        if not token:
+            continue
+        forms.add(token)
+        encoded = token
+        for _ in range(3):
+            encoded = json.dumps(encoded)
+            forms.add(encoded)
+            forms.add(encoded[1:-1])
     for form in sorted((item for item in forms if item), key=len, reverse=True):
         value = value.replace(form, "<redacted>")
     return value
@@ -506,6 +644,129 @@ def _remove_empty_directories(paths: list[Path]) -> None:
     for path in reversed(paths):
         if path.exists() and path.is_dir() and not any(path.iterdir()):
             path.rmdir()
+
+
+def _contract_digest_path(path: Path, label: str) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise SetupConflict(f"{label} is missing or is not a regular file: {path}")
+    try:
+        contents = path.read_bytes()
+    except OSError as exc:
+        raise SetupConflict(f"could not read {label}: {exc}") from exc
+    if len(contents) > 1024 * 1024:
+        raise SetupConflict(f"{label} is unexpectedly large")
+    try:
+        raw = contents.decode("utf-8")
+    except UnicodeError as exc:
+        raise SetupConflict(f"{label} is not valid UTF-8") from exc
+    payload = _decode_json(raw, label)
+    operations = payload.get("operations") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or not isinstance(operations, dict)
+        or not operations
+        or not all(
+            isinstance(name, str)
+            and name
+            and isinstance(operation, dict)
+            for name, operation in operations.items()
+        )
+    ):
+        raise SetupConflict(f"{label} has an unsupported contract shape")
+    return hashlib.sha256(contents).hexdigest()
+
+
+def _canonical_contract_digest(repo: Path) -> str:
+    return _contract_digest_path(
+        repo / CONTRACT_RELATIVE_PATH,
+        "canonical CRM operation contract",
+    )
+
+
+def _verify_installed_contract(workspace: Path, expected_digest: str) -> None:
+    installed = workspace / CONTRACT_RELATIVE_PATH
+    actual_digest = _contract_digest_path(
+        installed,
+        "installed CRM operation contract",
+    )
+    if actual_digest != expected_digest:
+        raise SetupConflict(
+            "installed CRM operation contract digest does not match the canonical contract"
+        )
+    legacy = installed.parent / "operations.json"
+    if legacy.exists() or legacy.is_symlink():
+        raise SetupConflict(
+            "stale installed CRM operations.json was not removed during skill synchronization"
+        )
+
+
+def _missing_directory_chain(path: Path) -> list[Path]:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return list(reversed(missing))
+
+
+def _snapshot_installed_skills(workspace: Path) -> SkillRollback:
+    skills_root = workspace / "skills"
+    for name in SKILL_NAMES:
+        _validate_skill_tree(skills_root / name, "installed skill directory")
+    backup_root = Path(tempfile.mkdtemp(prefix="openhouse-skill-rollback-"))
+    existing_names: set[str] = set()
+    try:
+        for name in SKILL_NAMES:
+            target = skills_root / name
+            if target.exists():
+                shutil.copytree(target, backup_root / name)
+                existing_names.add(name)
+    except OSError as exc:
+        shutil.rmtree(backup_root, ignore_errors=True)
+        raise SetupConflict(f"could not snapshot installed CRM skills: {exc}") from exc
+    return SkillRollback(
+        workspace=workspace,
+        backup_root=backup_root,
+        existing_names=existing_names,
+        workspace_existed=workspace.exists(),
+        skills_root_existed=skills_root.exists(),
+        missing_parent_dirs=_missing_directory_chain(workspace.parent),
+    )
+
+
+def _restore_installed_skills(snapshot: SkillRollback) -> bool:
+    skills_root = snapshot.workspace / "skills"
+    try:
+        for name in SKILL_NAMES:
+            target = skills_root / name
+            if target.exists() or target.is_symlink():
+                _remove_installed_tree(target)
+            if name in snapshot.existing_names:
+                shutil.copytree(snapshot.backup_root / name, target)
+        if (
+            not snapshot.skills_root_existed
+            and skills_root.exists()
+            and not any(skills_root.iterdir())
+        ):
+            skills_root.rmdir()
+        if (
+            not snapshot.workspace_existed
+            and snapshot.workspace.exists()
+            and not any(snapshot.workspace.iterdir())
+        ):
+            snapshot.workspace.rmdir()
+        _remove_empty_directories(snapshot.missing_parent_dirs)
+        return True
+    except OSError:
+        return False
+
+
+def _discard_skill_snapshot(snapshot: SkillRollback) -> None:
+    shutil.rmtree(snapshot.backup_root, ignore_errors=True)
 
 
 def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
@@ -1513,7 +1774,26 @@ def _read_plugin_allowlist(cli: OpenClawCLI) -> list[str] | None:
     return value
 
 
-def _validate_runtime_plugin(payload: Any, source: Path) -> None:
+def _registered_hook_names(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise SetupConflict(f"OpenClaw returned unsupported {label}")
+    names: list[str] = []
+    for entry in value:
+        if isinstance(entry, str) and entry:
+            names.append(entry)
+            continue
+        if isinstance(entry, dict):
+            name = entry.get("name", entry.get("hookName"))
+            if isinstance(name, str) and name:
+                names.append(name)
+                continue
+        raise SetupConflict(f"OpenClaw returned unsupported {label}")
+    if len(names) != len(set(names)):
+        raise SetupConflict(f"OpenClaw returned duplicate {label}")
+    return names
+
+
+def _validate_runtime_plugin(payload: Any, source: Path) -> bool:
     if not isinstance(payload, dict):
         raise SetupConflict("OpenClaw plugin runtime inspection returned unsupported JSON")
     plugin = payload.get("plugin")
@@ -1536,6 +1816,10 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> None:
             continue
         if not isinstance(entry, dict):
             raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
+        if entry.get("optional") is True:
+            raise SetupConflict("openhouse_crm runtime tool must not be optional")
+        if "optional" in entry and not isinstance(entry["optional"], bool):
+            raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
         if "name" in entry:
             name = entry["name"]
             if not isinstance(name, str) or not name:
@@ -1549,14 +1833,19 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> None:
         ):
             raise SetupConflict("OpenClaw returned an unsupported runtime tool entry")
         names.extend(factory_names)
-    reported_names = runtime.get("toolNames")
-    if reported_names is not None:
+    for holder, label in (
+        (runtime, "runtime tool names"),
+        (plugin, "plugin tool names"),
+    ):
+        if "toolNames" not in holder:
+            continue
+        reported_names = holder["toolNames"]
         if (
             not isinstance(reported_names, list)
             or not all(isinstance(name, str) and name for name in reported_names)
             or len(reported_names) != len(set(reported_names))
         ):
-            raise SetupConflict("OpenClaw returned unsupported runtime tool names")
+            raise SetupConflict(f"OpenClaw returned unsupported {label}")
         if sorted(reported_names) != sorted(names):
             raise SetupConflict(
                 "OpenClaw runtime tool inventory is internally inconsistent"
@@ -1570,6 +1859,100 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> None:
     diagnostics = runtime.get("diagnostics", [])
     if not isinstance(diagnostics, list) or diagnostics:
         raise SetupConflict("openhouse-crm runtime inspection reported diagnostics")
+
+    hook_inventories: list[list[str]] = []
+    seen_inventory_keys: set[tuple[int, str]] = set()
+    for holder, key, label in (
+        (runtime, "typedHooks", "runtime typed hooks"),
+        (runtime, "hooks", "runtime hooks"),
+        (runtime, "hookNames", "runtime hook names"),
+        (plugin, "hookNames", "plugin hook names"),
+    ):
+        marker = (id(holder), key)
+        if marker in seen_inventory_keys or key not in holder:
+            continue
+        seen_inventory_keys.add(marker)
+        hook_inventories.append(_registered_hook_names(holder[key], label))
+    for hook_names in hook_inventories:
+        if sorted(hook_names) != sorted(REQUIRED_PLUGIN_HOOKS):
+            raise SetupConflict(
+                "OpenClaw runtime did not expose exactly the required CRM outcome hooks: "
+                + ", ".join(REQUIRED_PLUGIN_HOOKS)
+            )
+    if hook_inventories and any(
+        sorted(names) != sorted(hook_inventories[0])
+        for names in hook_inventories[1:]
+    ):
+        raise SetupConflict("OpenClaw runtime hook inventory is internally inconsistent")
+    hook_count = plugin.get("hookCount")
+    if hook_count is not None and (
+        not isinstance(hook_count, int) or hook_count != len(REQUIRED_PLUGIN_HOOKS)
+    ):
+        raise SetupConflict(
+            "OpenClaw runtime did not expose exactly the required CRM outcome hooks"
+        )
+    return bool(hook_inventories)
+
+
+def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
+    nonce = secrets.token_hex(16)
+    result = cli.probe_client_tools(agent_id=agent_id, nonce=nonce)
+    if result.returncode == 400:
+        raise SetupConflict(
+            "unsupported OpenClaw installation: Chat Completions does not support "
+            "required request-scoped function tools with tool_choice:\"required\""
+        )
+    if result.returncode in {401, 403}:
+        raise SetupConflict(
+            "OpenClaw client-tool capability was not proven because Gateway "
+            "authentication failed; configure the matching AGENT_GATEWAY_TOKEN"
+        )
+    if result.returncode != 200:
+        raise SetupConflict(
+            "OpenClaw provider/model capability was not proven by the bounded "
+            "request-scoped client-tool probe"
+        )
+    try:
+        payload = _decode_json(result.stdout, "client-tool capability probe")
+    except SetupConflict as exc:
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        ) from exc
+    try:
+        choices = payload["choices"]
+        choice = choices[0] if len(choices) == 1 else None
+        message = choice["message"]
+        tool_calls = message["tool_calls"]
+        call = tool_calls[0] if len(tool_calls) == 1 else None
+        function = call["function"]
+        arguments = _decode_json(
+            function["arguments"], "client-tool capability arguments"
+        )
+        valid = (
+            choice["finish_reason"] == "tool_calls"
+            and call["type"] == "function"
+            and function["name"] == SETUP_PROBE_TOOL
+            and arguments == {"nonce": nonce}
+        )
+    except (KeyError, IndexError, TypeError, SetupConflict):
+        valid = False
+    if not valid:
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+
+
+def _verify_dashboard_tool_block(cli: OpenClawCLI, agent_id: str) -> None:
+    nonce = secrets.token_hex(16)
+    result = cli.probe_dashboard_tool_block(agent_id=agent_id, nonce=nonce)
+    response = f"{result.stdout}\n{result.stderr}".lower()
+    expected_reason = "dashboard crm calls must use the verified tool invocation path"
+    if result.returncode != 403 or expected_reason not in response:
+        raise SetupConflict(
+            "OpenClaw could not authoritatively enumerate hooks and the bounded "
+            "loopback diagnostic did not prove the dashboard CRM tool block; "
+            "no supported CRM operation was executed"
+        )
 
 
 def _restore_approval_changes(
@@ -1618,6 +2001,7 @@ def _restore_approval_changes(
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
     rollback: AgentRollback | None = None
+    skill_rollback: SkillRollback | None = None
     plugin_source: Path | None = None
     plugin_preexisting = False
     plugin_previously_enabled = False
@@ -1627,6 +2011,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     plugin_allow_changed = False
     approval_added: set[str] = set()
     approval_removed: set[str] = set()
+    gateway_restarted = False
     try:
         _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
@@ -1637,6 +2022,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         messages.append(f"OpenClaw version: {version}")
         _preflight(cli, options)
         repo = Path(__file__).resolve().parents[1]
+        contract_digest = _canonical_contract_digest(repo)
         plugin_source = _plugin_source(repo)
         plugin_list = _run_required(
             cli,
@@ -1768,6 +2154,20 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             else:
                 planned.extend(_config_actions(options, prefix))
             messages.append("Dry run only. No files or OpenClaw configuration were changed.")
+            messages.append(
+                "Would install and verify skills/crm-db-operations/contract.json "
+                f"with canonical SHA-256 {contract_digest}."
+            )
+            messages.append(
+                "Would remove any stale installed skills/crm-db-operations/operations.json."
+            )
+            messages.append(
+                "Would verify exact openhouse_crm registration and the required CRM outcome hooks."
+            )
+            messages.append(
+                "Would verify Chat Completions request-scoped function tools with "
+                'tool_choice:"required" using one bounded no-write probe.'
+            )
             if gateway_env_path is not None:
                 messages.append(
                     "Would securely store OHI_API_TOKEN at "
@@ -1781,11 +2181,17 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 )
             return SetupResult(True, messages)
 
+        skill_rollback = _snapshot_installed_skills(options.workspace)
+
         if token and gateway_env_path is not None:
             _upsert_gateway_env(gateway_env_path, token)
 
         sync_skills(repo, options.workspace, dry_run=False)
-        messages.append(f"Installed CRM skills in {options.workspace / 'skills'}")
+        _verify_installed_contract(options.workspace, contract_digest)
+        messages.append(
+            f"Installed CRM skills in {options.workspace / 'skills'} and verified "
+            f"contract.json SHA-256 {contract_digest}"
+        )
 
         install_plugin = cli.run(
             [
@@ -2044,7 +2450,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             ],
             "openhouse-crm runtime inspection",
         )
-        _validate_runtime_plugin(
+        hooks_enumerated = _validate_runtime_plugin(
             _json(runtime_plugin, "openhouse-crm runtime inspection"),
             plugin_source,
         )
@@ -2096,15 +2502,23 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "deterministic daily-brief runner"
             )
 
-        rollback = None
         restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
         if restart.returncode != 0:
             raise SetupConflict(
                 f"Gateway restart failed: {(restart.stderr or restart.stdout).strip()}"
             )
+        gateway_restarted = True
+        _verify_client_tool_capability(cli, options.agent_id)
+        if not hooks_enumerated:
+            _verify_dashboard_tool_block(cli, options.agent_id)
+        rollback = None
+        if skill_rollback is not None:
+            _discard_skill_snapshot(skill_rollback)
+            skill_rollback = None
         messages.append(
-            "Validated the native CRM tool and restricted agent configuration, then restarted the "
-            "OpenClaw Gateway. Runtime CRM verification is still required: "
+            "Validated the native CRM tool, required CRM outcome hooks, dashboard "
+            "tool block, request-scoped client tools, and restricted agent configuration, "
+            "then restarted the OpenClaw Gateway. Runtime CRM verification is still required: "
             "python scripts/doctor.py --live-agent --live-crm"
         )
         if not options.bind_discord:
@@ -2180,6 +2594,21 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
             if disabled_plugin.returncode != 0:
                 messages.append("Could not restore the previous CRM plugin enablement.")
+        if skill_rollback is not None:
+            if _restore_installed_skills(skill_rollback):
+                messages.append("Restored the previous installed CRM skills after setup failed.")
+            else:
+                messages.append("Could not fully restore the previous installed CRM skills.")
+            _discard_skill_snapshot(skill_rollback)
+            skill_rollback = None
+        if gateway_restarted:
+            restored_gateway = cli.run(
+                ["openclaw", "gateway", "restart"], mutate=True
+            )
+            if restored_gateway.returncode != 0:
+                messages.append(
+                    "Could not restart the OpenClaw Gateway after restoring setup state."
+                )
         messages.append(str(exc))
         return SetupResult(False, messages)
 
