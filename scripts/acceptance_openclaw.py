@@ -61,6 +61,21 @@ class ApiBoundary(Protocol):
     ) -> object: ...
 
 
+class _SessionTrackingAPI:
+    def __init__(self, delegate: ApiBoundary):
+        self.delegate = delegate
+        self.used_sessions: set[str] = set()
+
+    def request(
+        self, method: str, path: str, payload: dict | None = None
+    ) -> object:
+        if method == "POST" and path == "/chat" and isinstance(payload, dict):
+            session_id = payload.get("session_id")
+            if isinstance(session_id, str):
+                self.used_sessions.add(session_id)
+        return self.delegate.request(method, path, payload)
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -198,6 +213,8 @@ def _chat(api: ApiBoundary, session_id: str, message: str) -> str:
         {"message": message, "session_id": session_id},
     )
     reply = body.get("reply")
+    if body.get("session_id") != session_id:
+        raise ValueError("chat response did not match the acceptance session")
     if not isinstance(reply, str) or not reply.strip():
         raise ValueError("chat reply was missing")
     return reply.strip()
@@ -212,15 +229,38 @@ def _lead_exists(leads: list[dict], name: str) -> bool:
     )
 
 
-def _pending_rows(api: ApiBoundary) -> list[dict]:
-    return _request_list(api, "GET", "/pending-changes?status=pending")
+def _pending_snapshot(api: ApiBoundary) -> dict[int, dict]:
+    rows = _request_list(api, "GET", "/pending-changes?status=pending")
+    snapshot: dict[int, dict] = {}
+    for row in rows:
+        pending_id = row.get("id")
+        if (
+            not isinstance(pending_id, int)
+            or isinstance(pending_id, bool)
+            or pending_id <= 0
+            or pending_id in snapshot
+            or not isinstance(row.get("operation"), str)
+            or not row["operation"].strip()
+            or row.get("status") != "pending"
+            or not isinstance(row.get("payload"), dict)
+        ):
+            raise ValueError("pending proposal snapshot was malformed")
+        snapshot[pending_id] = row
+    return snapshot
 
 
-def _pending_ids(rows: list[dict]) -> set[int]:
+def _owned_proposals(
+    snapshot: dict[int, dict],
+    baseline_ids: set[int],
+    expected_name: str,
+) -> dict[int, dict]:
     return {
-        row["id"]
-        for row in rows
-        if isinstance(row.get("id"), int) and not isinstance(row.get("id"), bool)
+        pending_id: row
+        for pending_id, row in snapshot.items()
+        if pending_id not in baseline_ids
+        and row.get("operation") == "create_lead"
+        and isinstance(row.get("payload"), dict)
+        and row["payload"].get("name") == expected_name
     }
 
 
@@ -246,6 +286,122 @@ def _forbidden_briefing_fields(value: object) -> set[str]:
         for child in value:
             found.update(_forbidden_briefing_fields(child))
     return found
+
+
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_number_or_none(value: object) -> bool:
+    return value is None or (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+
+
+def _is_text(value: object, *, allow_none: bool = False) -> bool:
+    return (allow_none and value is None) or (
+        isinstance(value, str) and bool(value.strip())
+    )
+
+
+def _valid_schedule_item(value: object) -> bool:
+    keys = {"appointment_id", "start", "end", "kind", "title", "lead_id"}
+    return (
+        isinstance(value, dict)
+        and set(value) == keys
+        and _is_positive_int(value.get("appointment_id"))
+        and _is_positive_int(value.get("lead_id"))
+        and isinstance(value.get("start"), str)
+        and re.fullmatch(r"\d{2}:\d{2}", value["start"]) is not None
+        and isinstance(value.get("end"), str)
+        and re.fullmatch(r"\d{2}:\d{2}", value["end"]) is not None
+        and value.get("kind") == "meeting"
+        and _is_text(value.get("title"))
+    )
+
+
+def _valid_assistant_advice(value: object) -> bool:
+    if value is None:
+        return True
+    return (
+        isinstance(value, dict)
+        and set(value) == {"prepare", "recommendation"}
+        and isinstance(value.get("prepare"), list)
+        and all(_is_text(item) for item in value["prepare"])
+        and _is_text(value.get("recommendation"), allow_none=True)
+    )
+
+
+def _valid_meeting_brief(value: object) -> bool:
+    keys = {
+        "appointment_id",
+        "lead_id",
+        "name",
+        "area",
+        "budget",
+        "timeline",
+        "intent",
+        "preferences",
+        "persona",
+        "score",
+        "summary",
+        "assistant_advice",
+    }
+    return (
+        isinstance(value, dict)
+        and set(value) == keys
+        and _is_positive_int(value.get("appointment_id"))
+        and _is_positive_int(value.get("lead_id"))
+        and _is_text(value.get("name"))
+        and _is_text(value.get("area"), allow_none=True)
+        and _is_number_or_none(value.get("budget"))
+        and _is_text(value.get("timeline"), allow_none=True)
+        and _is_text(value.get("intent"), allow_none=True)
+        and isinstance(value.get("preferences"), list)
+        and all(_is_text(item) for item in value["preferences"])
+        and _is_text(value.get("persona"), allow_none=True)
+        and _is_number_or_none(value.get("score"))
+        and _is_text(value.get("summary"))
+        and _valid_assistant_advice(value.get("assistant_advice"))
+    )
+
+
+def _valid_suggested_action(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "lead_id",
+        "name",
+        "channel",
+        "action",
+        "reason",
+        "evidence",
+    }:
+        return False
+    evidence = value.get("evidence")
+    return (
+        _is_positive_int(value.get("lead_id"))
+        and _is_text(value.get("name"))
+        and value.get("channel") in {"email", "call", "text"}
+        and _is_text(value.get("action"))
+        and _is_text(value.get("reason"))
+        and isinstance(evidence, dict)
+        and set(evidence) == {"kind", "id"}
+        and evidence.get("kind") in {"reminder", "lead"}
+        and _is_positive_int(evidence.get("id"))
+    )
+
+
+def _valid_nested_briefing(briefing: dict) -> bool:
+    schedule = briefing.get("schedule")
+    meeting_briefs = briefing.get("meeting_briefs")
+    suggested_actions = briefing.get("suggested_actions")
+    return (
+        isinstance(schedule, list)
+        and all(_valid_schedule_item(item) for item in schedule)
+        and isinstance(meeting_briefs, list)
+        and all(_valid_meeting_brief(item) for item in meeting_briefs)
+        and isinstance(suggested_actions, list)
+        and all(_valid_suggested_action(item) for item in suggested_actions)
+    )
 
 
 def _run_read_checks(
@@ -359,11 +515,16 @@ def _run_read_checks(
         )
         forbidden = sorted(_forbidden_briefing_fields(briefing))
         unexpected = sorted(set(briefing) - CANONICAL_BRIEFING_KEYS)
+        date_matches = briefing.get("date") == briefing_date
+        nested_shape_valid = _valid_nested_briefing(briefing)
         truthful = (
             summary_missing
+            and set(briefing) == CANONICAL_BRIEFING_KEYS
+            and date_matches
             and briefing.get("source") == "crm"
-            and isinstance(briefing.get("schedule"), list)
-            and isinstance(briefing.get("meeting_briefs"), list)
+            and _is_text(briefing.get("generated_at"))
+            and _is_text(briefing.get("greeting"))
+            and nested_shape_valid
             and not forbidden
             and not unexpected
         )
@@ -381,6 +542,8 @@ def _run_read_checks(
                     "briefing_source": briefing.get("source") or "unknown",
                     "forbidden_fields": forbidden,
                     "unexpected_fields": unexpected,
+                    "date_matches": date_matches,
+                    "nested_shape_valid": nested_shape_valid,
                 },
             )
         )
@@ -390,15 +553,15 @@ def _run_read_checks(
         )
 
 
-def _cleanup_new_proposals(
+def _cleanup_owned_proposals(
     api: ApiBoundary,
-    pending_ids: set[int],
+    proposals: dict[int, dict],
     cleanup: list[dict],
     *,
     name: str,
 ) -> bool:
     failures: list[int] = []
-    for pending_id in sorted(pending_ids):
+    for pending_id in sorted(proposals):
         try:
             _deny_pending(api, pending_id, "Automated acceptance cleanup")
         except Exception:
@@ -408,7 +571,7 @@ def _cleanup_new_proposals(
             "FAIL" if failures else "PASS",
             name,
             "proposal cleanup failed" if failures else "all unexpected proposals were denied",
-            {"attempted": len(pending_ids), "failed": failures},
+            {"attempted": len(proposals), "failed": failures},
         )
     )
     return not failures
@@ -423,13 +586,13 @@ def _run_invalid_write(
     test_id: str,
 ) -> bool:
     name = f"OHI ACCEPTANCE INVALID {test_id}"
-    before_ids: set[int] = set()
-    new_ids: set[int] = set()
+    baseline_ids: set[int] | None = None
+    owned: dict[int, dict] = {}
     reply = ""
     lead_applied = False
     error: str | None = None
     try:
-        before_ids = _pending_ids(_pending_rows(api))
+        baseline_ids = set(_pending_snapshot(api))
         reply = _chat(
             api,
             session_id,
@@ -440,16 +603,19 @@ def _run_invalid_write(
                 f"NAME={name}"
             ),
         )
-        new_ids = _pending_ids(_pending_rows(api)) - before_ids
+        owned = _owned_proposals(_pending_snapshot(api), baseline_ids, name)
         lead_applied = _lead_exists(_request_list(api, "GET", "/leads"), name)
     except Exception as exc:
         error = _safe_error(exc)
-        try:
-            new_ids = _pending_ids(_pending_rows(api)) - before_ids
-        except Exception:
-            pass
+        if baseline_ids is not None:
+            try:
+                owned = _owned_proposals(
+                    _pending_snapshot(api), baseline_ids, name
+                )
+            except Exception:
+                pass
     truthful = "nothing was queued or changed" in reply.casefold()
-    passed = error is None and truthful and not new_ids and not lead_applied
+    passed = error is None and truthful and not owned and not lead_applied
     checks.append(
         _entry(
             "PASS" if passed else "FAIL",
@@ -459,13 +625,13 @@ def _run_invalid_write(
                 if passed
                 else error or "invalid write did not prove that nothing changed"
             ),
-            {"new_pending_count": len(new_ids), "lead_applied": lead_applied},
+            {"new_pending_count": len(owned), "lead_applied": lead_applied},
         )
     )
-    if new_ids:
-        _cleanup_new_proposals(
+    if owned:
+        _cleanup_owned_proposals(
             api,
-            new_ids,
+            owned,
             cleanup,
             name="Deny unexpected invalid-write proposal",
         )
@@ -481,15 +647,16 @@ def _run_reviewed_write(
     test_id: str,
 ) -> None:
     name = f"OHI ACCEPTANCE TEST {test_id}"
-    before_ids: set[int] = set()
-    new_ids: set[int] = set()
+    baseline_ids: set[int] | None = None
+    owned: dict[int, dict] = {}
+    reported_pending_id: int | None = None
     pending_id: int | None = None
     absent_before = False
     absent_after = False
     denied = False
     error: str | None = None
     try:
-        before_ids = _pending_ids(_pending_rows(api))
+        baseline_ids = set(_pending_snapshot(api))
         reply = _chat(
             api,
             session_id,
@@ -501,50 +668,42 @@ def _run_reviewed_write(
         )
         match = PENDING_RE.search(reply)
         if match:
-            pending_id = int(match.group(1))
-        rows = _pending_rows(api)
-        new_ids = _pending_ids(rows) - before_ids
-        if pending_id is None or new_ids != {pending_id}:
+            reported_pending_id = int(match.group(1))
+        snapshot = _pending_snapshot(api)
+        owned = _owned_proposals(snapshot, baseline_ids, name)
+        if len(owned) != 1 or reported_pending_id not in owned:
             raise ValueError("chat did not return exactly one real pending proposal ID")
-        row = next(row for row in rows if row.get("id") == pending_id)
-        payload = row.get("payload")
-        if (
-            row.get("operation") != "create_lead"
-            or row.get("status") != "pending"
-            or not isinstance(payload, dict)
-            or payload.get("name") != name
-        ):
-            raise ValueError("pending proposal did not match the disposable lead")
+        pending_id = reported_pending_id
         absent_before = not _lead_exists(_request_list(api, "GET", "/leads"), name)
         if not absent_before:
             raise ValueError("disposable lead was applied before review")
     except Exception as exc:
         error = _safe_error(exc)
-        try:
-            new_ids = _pending_ids(_pending_rows(api)) - before_ids
-        except Exception:
-            pass
+        if baseline_ids is not None:
+            try:
+                owned = _owned_proposals(
+                    _pending_snapshot(api), baseline_ids, name
+                )
+            except Exception:
+                pass
     finally:
-        cleanup_ids = set(new_ids)
-        if pending_id is not None:
-            cleanup_ids.add(pending_id)
         failures: list[int] = []
-        for candidate in sorted(cleanup_ids):
+        for candidate in sorted(owned):
             try:
                 _deny_pending(api, candidate, "Automated disposable acceptance lead")
-                if candidate == pending_id:
+                if candidate == pending_id and pending_id is not None:
                     denied = True
             except Exception:
                 failures.append(candidate)
         cleanup.append(
             _entry(
-                "FAIL" if failures else "PASS" if cleanup_ids else "SKIP",
+                "FAIL" if failures else "PASS" if owned else "SKIP",
                 "Deny disposable proposal",
                 (
                     "proposal cleanup failed"
                     if failures
                     else "disposable proposal was denied"
-                    if cleanup_ids
+                    if owned
                     else "no disposable proposal was created"
                 ),
                 {"pending_id": pending_id, "failed": failures},
@@ -560,7 +719,7 @@ def _run_reviewed_write(
     passed = (
         error is None
         and pending_id is not None
-        and new_ids == {pending_id}
+        and set(owned) == {pending_id}
         and absent_before
         and denied
         and absent_after
@@ -604,6 +763,7 @@ def run_acceptance(
         discord_bound = _capture_discord_binding(
             os.environ.get("OPENCLAW_AGENT_ID", "openhouse-crm")
         )
+    tracked_api = _SessionTrackingAPI(api)
 
     checks: list[dict] = []
     cleanup: list[dict] = []
@@ -639,7 +799,7 @@ def run_acceptance(
 
     try:
         _run_read_checks(
-            api,
+            tracked_api,
             checks,
             session_id=session_id,
             briefing_date=briefing_date,
@@ -666,7 +826,7 @@ def run_acceptance(
             )
         elif allow_test_write:
             invalid_passed = _run_invalid_write(
-                api,
+                tracked_api,
                 checks,
                 cleanup,
                 session_id=session_id,
@@ -674,7 +834,7 @@ def run_acceptance(
             )
             if invalid_passed:
                 _run_reviewed_write(
-                    api,
+                    tracked_api,
                     checks,
                     cleanup,
                     session_id=session_id,
@@ -709,13 +869,31 @@ def run_acceptance(
     finally:
         try:
             encoded_session = urllib.parse.quote(session_id, safe="")
-            _request_dict(api, "DELETE", f"/chat/history?session_id={encoded_session}")
+            result = _request_dict(
+                tracked_api,
+                "DELETE",
+                f"/chat/history?session_id={encoded_session}",
+            )
+            deleted = result.get("deleted")
+            session_used = session_id in tracked_api.used_sessions
+            if result.get("session_id") != session_id:
+                raise ValueError("chat cleanup did not match the acceptance session")
+            if (
+                not isinstance(deleted, int)
+                or isinstance(deleted, bool)
+                or deleted < 0
+                or (session_used and deleted == 0)
+            ):
+                raise ValueError("chat cleanup did not confirm deleted messages")
             cleanup.append(
                 _entry(
                     "PASS",
                     "Delete acceptance chat session",
                     "acceptance chat history was removed",
-                    {"session_id": "<acceptance-session>"},
+                    {
+                        "session_id": "<acceptance-session>",
+                        "deleted": deleted,
+                    },
                 )
             )
         except Exception as exc:

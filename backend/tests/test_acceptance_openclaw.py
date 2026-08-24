@@ -41,6 +41,14 @@ class FakeAPI:
         self.fail_delete = False
         self.health_error: Exception | None = None
         self.briefing_extra: dict = {}
+        self.briefing_payload: dict | None = None
+        self.pending_get_failures = 0
+        self.chat_messages: list[str] = []
+        self.chat_session_override: str | None = None
+        self.delete_session_override: str | None = None
+        self.delete_count = 6
+        self.reviewed_reply_pending_id = 17
+        self.concurrent_pending: dict | None = None
 
     def request(self, method: str, path: str, payload: dict | None = None):
         if path == "/health" and method == "GET":
@@ -61,6 +69,9 @@ class FakeAPI:
         if path == "/leads" and method == "GET":
             return [dict(lead) for lead in self.leads]
         if path == "/pending-changes?status=pending" and method == "GET":
+            if self.pending_get_failures:
+                self.pending_get_failures -= 1
+                raise acceptance.ApiError(503, "pending unavailable")
             return [dict(row) for row in self.pending.values()]
         if path.startswith("/pending-changes/") and path.endswith("/deny") and method == "POST":
             pending_id = int(path.split("/")[2])
@@ -73,6 +84,8 @@ class FakeAPI:
         if path.startswith("/summary?") and method == "GET":
             raise acceptance.ApiError(404, "no daily summary")
         if path.startswith("/briefing?") and method == "GET":
+            if self.briefing_payload is not None:
+                return json.loads(json.dumps(self.briefing_payload))
             return {
                 "date": "2099-12-31",
                 "generated_at": "2099-12-31T08:00:00",
@@ -86,6 +99,8 @@ class FakeAPI:
         if path == "/chat" and method == "POST":
             assert payload is not None
             message = payload["message"]
+            self.chat_messages.append(message)
+            response_session = self.chat_session_override or payload["session_id"]
             if "unsupported arguments" in message:
                 if self.invalid_creates_pending:
                     self._add_pending(29, self._name_from_message(message))
@@ -94,43 +109,50 @@ class FakeAPI:
                             "Queued Pending approval #29: Create lead acceptance. "
                             "Status: pending; the change has not been applied."
                         ),
-                        "session_id": payload["session_id"],
+                        "session_id": response_session,
                     }
                 return {
                     "reply": (
                         "Nothing was queued or changed. [invalid_arguments] "
                         "Unsupported argument: status."
                     ),
-                    "session_id": payload["session_id"],
+                    "session_id": response_session,
                 }
             if "Create exactly one disposable" in message:
                 name = self._name_from_message(message)
                 if self.create_pending:
                     self._add_pending(17, name)
+                    if self.concurrent_pending is not None:
+                        row = dict(self.concurrent_pending)
+                        self.pending[row["id"]] = row
                     return {
                         "reply": (
-                            f"Queued Pending approval #17: Create lead {name}. "
+                            f"Queued Pending approval #{self.reviewed_reply_pending_id}: "
+                            f"Create lead {name}. "
                             "Status: pending; the change has not been applied."
                         ),
-                        "session_id": payload["session_id"],
+                        "session_id": response_session,
                     }
                 return {
                     "reply": "Nothing was queued or changed. The CRM tool failed.",
-                    "session_id": payload["session_id"],
+                    "session_id": response_session,
                 }
             return {
                 "reply": (
                     f"{self.directory_count} leads total. Showing 2 (offset 0): "
                     "Jordan Ellis (ID 1, new); Alex Rivera (ID 2, contacted)."
                 ),
-                "session_id": payload["session_id"],
+                "session_id": response_session,
             }
         if path.startswith("/chat/history?session_id=") and method == "DELETE":
             session_id = path.split("=", 1)[1]
             if self.fail_delete:
                 raise acceptance.ApiError(503, "delete failed")
             self.deleted_sessions.append(session_id)
-            return {"session_id": session_id, "deleted": 6}
+            return {
+                "session_id": self.delete_session_override or session_id,
+                "deleted": self.delete_count,
+            }
         raise AssertionError((method, path, payload))
 
     @staticmethod
@@ -168,6 +190,54 @@ def by_name(result: dict, name: str) -> dict:
 
 def cleanup_by_name(result: dict, name: str) -> dict:
     return next(check for check in result["cleanup"] if check["name"] == name)
+
+
+def canonical_briefing() -> dict:
+    return {
+        "date": "2099-12-31",
+        "generated_at": "2099-12-31T08:00:00",
+        "source": "crm",
+        "greeting": "Good morning, one appointment is scheduled today.",
+        "schedule": [
+            {
+                "appointment_id": 8,
+                "start": "17:00",
+                "end": "17:30",
+                "kind": "meeting",
+                "title": "Meeting, Jordan Ellis",
+                "lead_id": 1,
+            }
+        ],
+        "meeting_briefs": [
+            {
+                "appointment_id": 8,
+                "lead_id": 1,
+                "name": "Jordan Ellis",
+                "area": "Kirkland",
+                "budget": 850000,
+                "timeline": "90 days",
+                "intent": "buy",
+                "preferences": ["quiet street"],
+                "persona": "Home Buyer",
+                "score": 72,
+                "summary": "Intent: buy. Area: Kirkland.",
+                "assistant_advice": {
+                    "prepare": ["Review the saved CRM notes."],
+                    "recommendation": "Confirm the recorded timeline.",
+                },
+            }
+        ],
+        "suggested_actions": [
+            {
+                "lead_id": 1,
+                "name": "Jordan Ellis",
+                "channel": "email",
+                "action": "Follow up with Jordan Ellis",
+                "reason": "Reminder due.",
+                "evidence": {"kind": "reminder", "id": 4},
+            }
+        ],
+    }
 
 
 def test_read_only_acceptance_captures_revision_dependencies_and_verified_reads():
@@ -227,6 +297,49 @@ def test_briefing_rejects_fields_outside_the_canonical_crm_shape():
     check = by_name(result, "Briefing truthfulness")
     assert check["level"] == "FAIL"
     assert check["evidence"]["unexpected_fields"] == ["neighborhood_outlook"]
+
+
+def test_briefing_requires_the_requested_date():
+    api = FakeAPI()
+    api.briefing_payload = canonical_briefing()
+    api.briefing_payload["date"] = "2099-12-30"
+
+    result = run(api)
+
+    check = by_name(result, "Briefing truthfulness")
+    assert check["level"] == "FAIL"
+    assert check["evidence"]["date_matches"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda body: body["schedule"][0].update(
+            {"market_forecast": "Prices will rise."}
+        ),
+        lambda body: body["schedule"][0].pop("appointment_id"),
+        lambda body: body["meeting_briefs"][0].update(
+            {"news": "Invented neighborhood news."}
+        ),
+        lambda body: body["meeting_briefs"][0].update({"preferences": "quiet"}),
+        lambda body: body["meeting_briefs"][0]["assistant_advice"].update(
+            {"forecast": "Guaranteed appreciation."}
+        ),
+        lambda body: body["suggested_actions"][0]["evidence"].update(
+            {"headline": "Fabricated source"}
+        ),
+    ],
+)
+def test_briefing_rejects_noncanonical_nested_items(mutate):
+    api = FakeAPI()
+    api.briefing_payload = canonical_briefing()
+    mutate(api.briefing_payload)
+
+    result = run(api)
+
+    check = by_name(result, "Briefing truthfulness")
+    assert check["level"] == "FAIL"
+    assert check["evidence"]["nested_shape_valid"] is False
 
 
 def test_crm_capability_requires_direct_crm_verified_status():
@@ -304,6 +417,61 @@ def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
     assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
 
 
+def test_fabricated_existing_pending_id_is_never_denied():
+    api = FakeAPI()
+    api.pending[5] = {
+        "id": 5,
+        "operation": "create_lead",
+        "status": "pending",
+        "payload": {"name": "Real customer", "source": "referral"},
+        "summary": "Create lead Real customer",
+    }
+    api.reviewed_reply_pending_id = 5
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed write")["level"] == "FAIL"
+    assert api.denied == [17]
+    assert 5 in api.pending
+    assert api.pending[5]["payload"]["name"] == "Real customer"
+
+
+def test_concurrent_user_proposal_is_ignored_and_never_denied():
+    api = FakeAPI()
+    api.concurrent_pending = {
+        "id": 18,
+        "operation": "update_lead",
+        "status": "pending",
+        "payload": {"status": "contacted"},
+        "summary": "Update lead 1",
+    }
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed write")["level"] == "PASS"
+    assert api.denied == [17]
+    assert 18 in api.pending
+    assert api.pending[18]["operation"] == "update_lead"
+
+
+def test_failed_pending_baseline_sends_no_write_request():
+    api = FakeAPI()
+    api.pending_get_failures = 1
+
+    result = run(api, allow_test_write=True)
+
+    write_messages = [
+        message
+        for message in api.chat_messages
+        if "unsupported arguments" in message
+        or "Create exactly one disposable" in message
+    ]
+    assert write_messages == []
+    assert api.pending_posts == []
+    assert by_name(result, "Invalid write")["level"] == "FAIL"
+    assert by_name(result, "Reviewed write")["level"] == "SKIP"
+
+
 def test_cleanup_continues_after_an_intermediate_failure_and_is_required():
     api = FakeAPI()
     api.fail_deny = True
@@ -313,6 +481,37 @@ def test_cleanup_continues_after_an_intermediate_failure_and_is_required():
     assert cleanup_by_name(result, "Deny disposable proposal")["level"] == "FAIL"
     assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
     assert api.deleted_sessions == ["openhouse-acceptance-test-session"]
+    assert acceptance.exit_code(result) == 1
+
+
+def test_chat_reply_must_echo_the_acceptance_session():
+    api = FakeAPI()
+    api.chat_session_override = "somebody-elses-session"
+
+    result = run(api)
+
+    assert by_name(result, "Lead directory")["level"] == "FAIL"
+    assert acceptance.exit_code(result) == 1
+
+
+@pytest.mark.parametrize(
+    ("session_override", "deleted"),
+    [
+        ("somebody-elses-session", 6),
+        (None, 0),
+    ],
+)
+def test_chat_cleanup_requires_exact_session_and_meaningful_deletion(
+    session_override, deleted
+):
+    api = FakeAPI()
+    api.delete_session_override = session_override
+    api.delete_count = deleted
+
+    result = run(api)
+
+    cleanup = cleanup_by_name(result, "Delete acceptance chat session")
+    assert cleanup["level"] == "FAIL"
     assert acceptance.exit_code(result) == 1
 
 
