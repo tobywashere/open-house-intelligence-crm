@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -261,7 +263,10 @@ def test_setup_client_probe_uses_only_one_request_scoped_dummy_function(monkeypa
     assert captured["url"] == "http://127.0.0.1:18789/v1/chat/completions"
     assert captured["timeout"] <= 30
     assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
-    assert captured["headers"]["X-openclaw-message-channel"] == "openhouse-dashboard"
+    assert (
+        captured["headers"]["X-openclaw-message-channel"]
+        == "openhouse-setup-capability"
+    )
     payload = captured["payload"]
     assert payload["model"] == "openclaw/openhouse-crm"
     assert payload["tool_choice"] == "required"
@@ -320,3 +325,96 @@ def test_setup_dashboard_fallback_is_loopback_only_and_uses_no_real_operation(
     assert rejected.returncode == 503
     assert "loopback" in rejected.stderr
     assert captured["calls"] == 1
+
+
+@pytest.mark.parametrize(
+    "gateway_url",
+    [
+        "https://gateway.example.test",
+        "http://localhost.evil:18789",
+        "http://user:password@localhost:18789",
+        "ftp://localhost:18789",
+        "http://localhost:18789/unexpected/path",
+        "http://localhost:18789?target=remote",
+        "http://2130706433:18789",
+        "http://0177.0.0.1:18789",
+    ],
+)
+def test_setup_probes_reject_remote_credentialed_or_ambiguous_gateway_urls(
+    monkeypatch, gateway_url
+):
+    setup_path = REPO / "scripts" / "setup_openclaw.py"
+    spec = importlib.util.spec_from_file_location(
+        "setup_openclaw_loopback_rejection_test", setup_path
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    network_calls = []
+
+    def forbidden_urlopen(*args, **kwargs):
+        network_calls.append((args, kwargs))
+        raise AssertionError("unsafe network call")
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", gateway_url)
+    monkeypatch.setenv("AGENT_GATEWAY_TOKEN", "must-not-be-attached")
+    monkeypatch.setattr(module.urllib.request, "urlopen", forbidden_urlopen)
+
+    client = module.OpenClawCLI().probe_client_tools(
+        agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
+    )
+    dashboard = module.OpenClawCLI().probe_dashboard_tool_block(
+        agent_id="openhouse-crm", nonce="bounded-nonce"
+    )
+
+    assert client.returncode == 503
+    assert dashboard.returncode == 503
+    assert network_calls == []
+    assert "must-not-be-attached" not in client.stderr + dashboard.stderr
+
+
+@pytest.mark.parametrize(
+    "gateway_url",
+    [
+        "http://localhost:18789",
+        "http://127.0.0.1:18789",
+        "http://[::1]:18789",
+    ],
+)
+def test_setup_client_probe_accepts_exact_loopback_hosts(monkeypatch, gateway_url):
+    setup_path = REPO / "scripts" / "setup_openclaw.py"
+    spec = importlib.util.spec_from_file_location(
+        "setup_openclaw_loopback_acceptance_test", setup_path
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    calls = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, *_args):
+            return b"{}"
+
+    def fake_urlopen(request, *, timeout):
+        calls.append((request.full_url, timeout))
+        return Response()
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", gateway_url)
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    result = module.OpenClawCLI().probe_client_tools(
+        agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
+    )
+
+    assert result.returncode == 200
+    assert len(calls) == 1

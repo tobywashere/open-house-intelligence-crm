@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -55,11 +56,18 @@ REQUIRED_PLUGIN_HOOKS = (
     "reply_payload_sending",
 )
 DASHBOARD_CHANNEL = "openhouse-dashboard"
+SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability"
 SETUP_PROBE_TOOL = "openhouse_setup_capability_probe"
 SETUP_BLOCK_PROBE_OPERATION = "__openhouse_setup_probe__"
 GATEWAY_PROBE_TIMEOUT_SECONDS = 30
 GATEWAY_PROBE_MAX_BYTES = 256 * 1024
+CONTRACT_MAX_BYTES = 1024 * 1024
 CONTRACT_RELATIVE_PATH = Path("skills") / "crm-db-operations" / "contract.json"
+CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
+DIAGNOSTIC_TOOL_POLICY = {
+    "profile": "minimal",
+    "deny": ["session_status"],
+}
 DESIRED_SANDBOX = {"mode": "off"}
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
 TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
@@ -126,6 +134,30 @@ class SkillRollback:
 
 
 @dataclass(frozen=True)
+class ContractSnapshot:
+    path: Path
+    contents: bytes
+    digest: str
+    identity: tuple[int, int, int, int]
+    operations: frozenset[str]
+
+
+@dataclass(frozen=True)
+class GatewayEnvSnapshot:
+    path: Path
+    existed: bool
+    contents: bytes
+    mode: int | None
+
+
+@dataclass(frozen=True)
+class ConfigValueSnapshot:
+    path: str
+    existed: bool
+    value: Any
+
+
+@dataclass(frozen=True)
 class SetupResult:
     ok: bool
     messages: list[str]
@@ -157,7 +189,10 @@ class OpenClawCLI:
         *,
         channel: str,
     ) -> CommandResult:
-        gateway_url = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+        try:
+            gateway_url = _loopback_gateway_base_url()
+        except SetupConflict as exc:
+            return CommandResult(503, "", str(exc))
         endpoint = gateway_url.rstrip("/") + "/" + path.lstrip("/")
         headers = {
             "Content-Type": "application/json",
@@ -192,6 +227,10 @@ class OpenClawCLI:
         return CommandResult(status_code, rendered, "")
 
     def probe_client_tools(self, *, agent_id: str, nonce: str) -> CommandResult:
+        try:
+            _loopback_gateway_base_url()
+        except SetupConflict as exc:
+            return CommandResult(503, "", str(exc))
         chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
         payload = {
             "model": f"openclaw/{agent_id}",
@@ -225,18 +264,16 @@ class OpenClawCLI:
             "max_completion_tokens": 128,
         }
         return self._post_gateway_json(
-            chat_path, payload, channel=DASHBOARD_CHANNEL
+            chat_path, payload, channel=SETUP_CAPABILITY_CHANNEL
         )
 
     def probe_dashboard_tool_block(
         self, *, agent_id: str, nonce: str
     ) -> CommandResult:
-        gateway_url = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
-        hostname = (urllib.parse.urlsplit(gateway_url).hostname or "").lower()
-        if hostname not in {"localhost", "127.0.0.1", "::1"}:
-            return CommandResult(
-                503, "", "Dashboard hook diagnostic requires a loopback Gateway"
-            )
+        try:
+            _loopback_gateway_base_url()
+        except SetupConflict as exc:
+            return CommandResult(503, "", str(exc))
         payload = {
             "tool": PLUGIN_TOOL,
             "args": {
@@ -258,6 +295,28 @@ class SetupConflict(RuntimeError):
 
 class _DuplicateJSONKey(ValueError):
     pass
+
+
+def _loopback_gateway_base_url() -> str:
+    raw = os.environ.get("AGENT_GATEWAY_URL", "http://localhost:18789")
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise SetupConflict("Gateway capability probes require an exact loopback URL") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or port is None
+    ):
+        raise SetupConflict("Gateway capability probes require an exact loopback URL")
+    host = f"[{parsed.hostname}]" if parsed.hostname == "::1" else parsed.hostname
+    return f"{parsed.scheme}://{host}:{port}"
 
 
 def _redact_api_token(value: str) -> str:
@@ -472,6 +531,86 @@ def _upsert_gateway_env(env_path: Path, token: str) -> None:
     _verify_gateway_env_no_follow(env_path, token)
 
 
+def _snapshot_gateway_env(env_path: Path) -> GatewayEnvSnapshot:
+    absolute = _validate_no_symlink_components(
+        env_path, "OpenClaw gateway environment", leaf_directory=False
+    )
+    try:
+        node = os.lstat(absolute)
+    except FileNotFoundError:
+        return GatewayEnvSnapshot(absolute, False, b"", None)
+    except OSError as exc:
+        raise SetupConflict(
+            f"could not inspect OpenClaw gateway environment: {exc}"
+        ) from exc
+    if not stat.S_ISREG(node.st_mode):
+        raise SetupConflict(
+            f"OpenClaw gateway environment must be a regular file: {absolute}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(absolute, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            contents = stream.read()
+    except OSError as exc:
+        raise SetupConflict(
+            f"could not snapshot OpenClaw gateway environment: {exc}"
+        ) from exc
+    finally:
+        if "descriptor" in locals() and descriptor >= 0:
+            os.close(descriptor)
+    return GatewayEnvSnapshot(
+        path=absolute,
+        existed=True,
+        contents=contents,
+        mode=stat.S_IMODE(node.st_mode),
+    )
+
+
+def _restore_gateway_env(snapshot: GatewayEnvSnapshot) -> bool:
+    try:
+        _validate_no_symlink_components(
+            snapshot.path, "OpenClaw gateway environment", leaf_directory=False
+        )
+        if not snapshot.existed:
+            try:
+                node = os.lstat(snapshot.path)
+            except FileNotFoundError:
+                return True
+            if stat.S_ISLNK(node.st_mode) or not stat.S_ISREG(node.st_mode):
+                return False
+            snapshot.path.unlink()
+            return not snapshot.path.exists() and not snapshot.path.is_symlink()
+
+        snapshot.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".openhouse-env-restore-", dir=snapshot.path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, snapshot.mode or 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(snapshot.contents)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, snapshot.path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary.exists():
+                temporary.unlink()
+        restored = _snapshot_gateway_env(snapshot.path)
+        return (
+            restored.existed
+            and restored.contents == snapshot.contents
+            and restored.mode == snapshot.mode
+        )
+    except (OSError, SetupConflict):
+        return False
+
+
 def _load_repo_env(repo: Path) -> None:
     """Load simple .env assignments without overriding exported values.
 
@@ -646,42 +785,234 @@ def _remove_empty_directories(paths: list[Path]) -> None:
             path.rmdir()
 
 
-def _contract_digest_path(path: Path, label: str) -> str:
-    if path.is_symlink() or not path.is_file():
-        raise SetupConflict(f"{label} is missing or is not a regular file: {path}")
+def _absolute_lexical_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _validate_no_symlink_components(
+    path: Path, label: str, *, leaf_directory: bool | None = None
+) -> Path:
+    absolute = _absolute_lexical_path(path)
+    current = Path(absolute.anchor)
+    components = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for index, part in enumerate(components):
+        current /= part
+        try:
+            node = os.lstat(current)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SetupConflict(f"could not inspect {label}: {exc}") from exc
+        if stat.S_ISLNK(node.st_mode):
+            raise SetupConflict(f"{label} must not contain a symlink: {current}")
+        is_leaf = index == len(components) - 1
+        if (not is_leaf or leaf_directory is True) and not stat.S_ISDIR(node.st_mode):
+            raise SetupConflict(f"{label} must contain only directories: {current}")
+        if is_leaf and leaf_directory is False and not stat.S_ISREG(node.st_mode):
+            raise SetupConflict(f"{label} must be a regular file: {current}")
+    return absolute
+
+
+_CONTRACT_EFFECTS = frozenset({"read", "proposal", "narrative", "validated_write"})
+_CONTRACT_TYPES = frozenset(
+    {"object", "array", "string", "integer", "number", "boolean", "null"}
+)
+_CONTRACT_SCHEMA_KEYS = frozenset(
+    {
+        "type",
+        "additionalProperties",
+        "required",
+        "properties",
+        "items",
+        "enum",
+        "const",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "anyOf",
+    }
+)
+
+
+def _validate_contract_schema(schema: Any) -> None:
+    if not isinstance(schema, dict) or set(schema) - _CONTRACT_SCHEMA_KEYS:
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    schema_type = schema.get("type")
+    if "type" in schema and schema_type not in _CONTRACT_TYPES:
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if "additionalProperties" in schema and (
+        schema_type != "object" or not isinstance(schema["additionalProperties"], bool)
+    ):
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    properties = schema.get("properties")
+    if "properties" in schema:
+        if schema_type != "object" or not isinstance(properties, dict):
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+        for name, child in properties.items():
+            if not isinstance(name, str) or not name:
+                raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+            _validate_contract_schema(child)
+    if "required" in schema:
+        required = schema["required"]
+        if (
+            schema_type != "object"
+            or not isinstance(required, list)
+            or len(required) != len(set(required))
+            or not all(isinstance(name, str) and name for name in required)
+            or not isinstance(properties, dict)
+            or not all(name in properties for name in required)
+        ):
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if "items" in schema:
+        if schema_type != "array":
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+        _validate_contract_schema(schema["items"])
+    if "enum" in schema and (
+        not isinstance(schema["enum"], list) or not schema["enum"]
+    ):
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if "anyOf" in schema:
+        alternatives = schema["anyOf"]
+        if (
+            schema_type != "object"
+            or not isinstance(alternatives, list)
+            or not alternatives
+            or not isinstance(properties, dict)
+        ):
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+        for alternative in alternatives:
+            if not isinstance(alternative, dict) or set(alternative) != {"required"}:
+                raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+            required = alternative["required"]
+            if (
+                not isinstance(required, list)
+                or not required
+                or len(required) != len(set(required))
+                or not all(
+                    isinstance(name, str) and name in properties for name in required
+                )
+            ):
+                raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    for key in ("minimum", "maximum"):
+        if key in schema and (
+            schema_type not in {"integer", "number"}
+            or not isinstance(schema[key], (int, float))
+            or isinstance(schema[key], bool)
+        ):
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if "minimum" in schema and "maximum" in schema and schema["minimum"] > schema["maximum"]:
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    for key in ("minLength", "maxLength"):
+        if key in schema and (
+            schema_type != "string"
+            or not isinstance(schema[key], int)
+            or isinstance(schema[key], bool)
+            or schema[key] < 0
+        ):
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if "minLength" in schema and "maxLength" in schema and schema["minLength"] > schema["maxLength"]:
+        raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+    if "pattern" in schema:
+        if schema_type != "string" or not isinstance(schema["pattern"], str):
+            raise SetupConflict("canonical CRM operation contract has an unsupported contract shape")
+        try:
+            re.compile(schema["pattern"])
+        except re.error as exc:
+            raise SetupConflict(
+                "canonical CRM operation contract has an unsupported contract shape"
+            ) from exc
+
+
+def _validate_contract_payload(payload: Any, label: str) -> frozenset[str]:
+    if not isinstance(payload, dict) or set(payload) != {"version", "operations"}:
+        raise SetupConflict(f"{label} has an unsupported contract shape")
+    operations = payload.get("operations")
+    if payload.get("version") != 1 or not isinstance(operations, dict) or not operations:
+        raise SetupConflict(f"{label} has an unsupported contract shape")
+    for name, entry in operations.items():
+        if (
+            not isinstance(name, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]*", name) is None
+            or not isinstance(entry, dict)
+            or set(entry) != {"description", "effect", "arguments"}
+            or not isinstance(entry["description"], str)
+            or not entry["description"]
+            or entry["effect"] not in _CONTRACT_EFFECTS
+        ):
+            raise SetupConflict(f"{label} has an unsupported contract shape")
+        try:
+            _validate_contract_schema(entry["arguments"])
+        except SetupConflict as exc:
+            raise SetupConflict(f"{label} has an unsupported contract shape") from exc
+        arguments = entry["arguments"]
+        if arguments.get("type") != "object" or arguments.get("additionalProperties") is not False:
+            raise SetupConflict(f"{label} has an unsupported contract shape")
+    return frozenset(operations)
+
+
+def _read_contract_snapshot(path: Path, label: str) -> ContractSnapshot:
+    absolute = _validate_no_symlink_components(path, label, leaf_directory=False)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        contents = path.read_bytes()
+        descriptor = os.open(absolute, flags)
+    except FileNotFoundError as exc:
+        raise SetupConflict(f"{label} is missing: {absolute}") from exc
     except OSError as exc:
-        raise SetupConflict(f"could not read {label}: {exc}") from exc
-    if len(contents) > 1024 * 1024:
+        raise SetupConflict(f"could not open {label}: {exc}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise SetupConflict(f"{label} is missing or is not a regular file: {absolute}")
+        chunks: list[bytes] = []
+        remaining = CONTRACT_MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        contents = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if len(contents) > CONTRACT_MAX_BYTES:
         raise SetupConflict(f"{label} is unexpectedly large")
     try:
         raw = contents.decode("utf-8")
     except UnicodeError as exc:
         raise SetupConflict(f"{label} is not valid UTF-8") from exc
     payload = _decode_json(raw, label)
-    operations = payload.get("operations") if isinstance(payload, dict) else None
-    if (
-        not isinstance(payload, dict)
-        or payload.get("version") != 1
-        or not isinstance(operations, dict)
-        or not operations
-        or not all(
-            isinstance(name, str)
-            and name
-            and isinstance(operation, dict)
-            for name, operation in operations.items()
-        )
-    ):
-        raise SetupConflict(f"{label} has an unsupported contract shape")
-    return hashlib.sha256(contents).hexdigest()
+    operations = _validate_contract_payload(payload, label)
+    identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+    return ContractSnapshot(
+        path=absolute,
+        contents=contents,
+        digest=hashlib.sha256(contents).hexdigest(),
+        identity=identity,
+        operations=operations,
+    )
 
 
-def _canonical_contract_digest(repo: Path) -> str:
-    return _contract_digest_path(
+def _contract_digest_path(path: Path, label: str) -> str:
+    return _read_contract_snapshot(path, label).digest
+
+
+def _capture_canonical_contract(repo: Path) -> ContractSnapshot:
+    return _read_contract_snapshot(
         repo / CONTRACT_RELATIVE_PATH,
         "canonical CRM operation contract",
     )
+
+
+def _canonical_contract_digest(repo: Path) -> str:
+    return _capture_canonical_contract(repo).digest
+
+
+def _verify_contract_source_unchanged(snapshot: ContractSnapshot) -> None:
+    current = _read_contract_snapshot(snapshot.path, "canonical CRM operation contract")
+    if current.identity != snapshot.identity or current.digest != snapshot.digest:
+        raise SetupConflict("canonical CRM operation contract changed after validation")
 
 
 def _verify_installed_contract(workspace: Path, expected_digest: str) -> None:
@@ -715,9 +1046,17 @@ def _missing_directory_chain(path: Path) -> list[Path]:
 
 def _snapshot_installed_skills(workspace: Path) -> SkillRollback:
     skills_root = workspace / "skills"
+    _validate_no_symlink_components(
+        workspace, "OpenClaw workspace", leaf_directory=True
+    )
+    _validate_no_symlink_components(
+        skills_root, "OpenClaw skills directory", leaf_directory=True
+    )
     for name in SKILL_NAMES:
         _validate_skill_tree(skills_root / name, "installed skill directory")
-    backup_root = Path(tempfile.mkdtemp(prefix="openhouse-skill-rollback-"))
+    backup_root = Path(
+        tempfile.mkdtemp(prefix="openhouse-skill-rollback-")
+    ).resolve(strict=True)
     existing_names: set[str] = set()
     try:
         for name in SKILL_NAMES:
@@ -741,12 +1080,41 @@ def _snapshot_installed_skills(workspace: Path) -> SkillRollback:
 def _restore_installed_skills(snapshot: SkillRollback) -> bool:
     skills_root = snapshot.workspace / "skills"
     try:
+        _validate_no_symlink_components(
+            snapshot.workspace, "OpenClaw workspace", leaf_directory=True
+        )
+        _validate_no_symlink_components(
+            skills_root, "OpenClaw skills directory", leaf_directory=True
+        )
+        skills_root.mkdir(parents=True, exist_ok=True)
         for name in SKILL_NAMES:
             target = skills_root / name
-            if target.exists() or target.is_symlink():
-                _remove_installed_tree(target)
             if name in snapshot.existing_names:
-                shutil.copytree(snapshot.backup_root / name, target)
+                with tempfile.TemporaryDirectory(
+                    prefix=".openhouse-skill-restore-", dir=skills_root.parent
+                ) as staging_value:
+                    staging_root = Path(staging_value)
+                    staged = staging_root / name
+                    quarantine = staging_root / f"current-{name}"
+                    shutil.copytree(snapshot.backup_root / name, staged)
+                    _validate_skill_tree(staged, "staged restored skill directory")
+                    _validate_no_symlink_components(
+                        target, "installed skill directory", leaf_directory=True
+                    )
+                    if target.exists():
+                        target.rename(quarantine)
+                    staged.rename(target)
+                    if quarantine.exists():
+                        _remove_installed_tree(quarantine)
+                if not _skill_trees_match(snapshot.backup_root / name, target):
+                    return False
+            elif target.exists() or target.is_symlink():
+                _validate_no_symlink_components(
+                    target, "installed skill directory", leaf_directory=True
+                )
+                _remove_installed_tree(target)
+                if target.exists() or target.is_symlink():
+                    return False
         if (
             not snapshot.skills_root_existed
             and skills_root.exists()
@@ -761,7 +1129,30 @@ def _restore_installed_skills(snapshot: SkillRollback) -> bool:
             snapshot.workspace.rmdir()
         _remove_empty_directories(snapshot.missing_parent_dirs)
         return True
-    except OSError:
+    except (OSError, SetupConflict):
+        return False
+
+
+def _skill_trees_match(left: Path, right: Path) -> bool:
+    def manifest(root: Path) -> dict[str, tuple[str, bytes]]:
+        result: dict[str, tuple[str, bytes]] = {}
+        _validate_skill_tree(root, "skill restoration verification tree")
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root).as_posix()
+            node = os.lstat(path)
+            if stat.S_ISDIR(node.st_mode):
+                result[relative] = ("directory", b"")
+            elif stat.S_ISREG(node.st_mode):
+                result[relative] = ("file", path.read_bytes())
+            else:
+                raise SetupConflict(
+                    f"skill restoration verification found unsupported node: {path}"
+                )
+        return result
+
+    try:
+        return manifest(left) == manifest(right)
+    except (OSError, SetupConflict):
         return False
 
 
@@ -769,7 +1160,81 @@ def _discard_skill_snapshot(snapshot: SkillRollback) -> None:
     shutil.rmtree(snapshot.backup_root, ignore_errors=True)
 
 
-def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
+def _write_recovery_manifest(
+    skill_snapshot: SkillRollback,
+    *,
+    gateway_env: GatewayEnvSnapshot | None,
+    config_values: list[ConfigValueSnapshot],
+    crm_agent_id: str,
+    agent: dict[str, Any] | None,
+    approvals: set[str],
+    diagnostic_agent_id: str,
+    plugin_preexisting: bool,
+    plugin_enabled: bool,
+    plugin_source: Path,
+) -> None:
+    payload = {
+        "gatewayEnv": (
+            {
+                "path": str(gateway_env.path),
+                "existed": gateway_env.existed,
+                "mode": gateway_env.mode,
+                "contentsBase64": base64.b64encode(gateway_env.contents).decode("ascii"),
+            }
+            if gateway_env is not None
+            else None
+        ),
+        "config": [
+            {"path": item.path, "existed": item.existed, "value": item.value}
+            for item in config_values
+        ],
+        "agent": agent,
+        "crmAgent": {
+            "id": crm_agent_id,
+            "existed": agent is not None,
+            "snapshot": agent,
+        },
+        "diagnosticAgent": {"id": diagnostic_agent_id, "existed": False},
+        "skills": {
+            "workspace": str(skill_snapshot.workspace),
+            "workspaceExisted": skill_snapshot.workspace_existed,
+            "skillsRootExisted": skill_snapshot.skills_root_existed,
+            "existingNames": sorted(skill_snapshot.existing_names),
+        },
+        "approvals": sorted(approvals),
+        "plugin": {
+            "preexisting": plugin_preexisting,
+            "enabled": plugin_enabled,
+            "source": str(plugin_source) if plugin_preexisting else None,
+        },
+    }
+    path = skill_snapshot.backup_root / "transaction-state.json"
+    _write_bytes_exclusive(
+        path,
+        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        0o600,
+    )
+
+
+def _write_bytes_exclusive(path: Path, contents: bytes, mode: int = 0o644) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        view = memoryview(contents)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def sync_skills(
+    repo: Path,
+    workspace: Path,
+    *,
+    dry_run: bool,
+    contract_snapshot: ContractSnapshot | None = None,
+) -> list[Path]:
     sources = [repo / "skills" / name for name in SKILL_NAMES]
     skills_root = workspace / "skills"
     targets = [skills_root / name for name in SKILL_NAMES]
@@ -779,8 +1244,12 @@ def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
             if not source.exists():
                 raise SetupConflict(f"shipped skill directory is missing: {source}")
             _validate_skill_tree(source, "shipped skill directory")
-        _validate_directory_node(workspace, "OpenClaw workspace")
-        _validate_directory_node(skills_root, "OpenClaw skills directory")
+        _validate_no_symlink_components(
+            workspace, "OpenClaw workspace", leaf_directory=True
+        )
+        _validate_no_symlink_components(
+            skills_root, "OpenClaw skills directory", leaf_directory=True
+        )
         for target in targets:
             _validate_skill_tree(target, "installed skill directory")
         if dry_run:
@@ -798,7 +1267,28 @@ def sync_skills(repo: Path, workspace: Path, *, dry_run: bool) -> list[Path]:
             staged_skills = staging_root / "staged"
             backups = staging_root / "backups"
             for name, source in zip(SKILL_NAMES, sources):
-                shutil.copytree(source, staged_skills / name)
+                if name == "crm-db-operations" and contract_snapshot is not None:
+                    source_root = _absolute_lexical_path(source)
+
+                    def ignore_captured_contract(directory, names):
+                        return (
+                            ["contract.json"]
+                            if _absolute_lexical_path(Path(directory)) == source_root
+                            and "contract.json" in names
+                            else []
+                        )
+
+                    shutil.copytree(
+                        source,
+                        staged_skills / name,
+                        ignore=ignore_captured_contract,
+                    )
+                    _write_bytes_exclusive(
+                        staged_skills / name / "contract.json",
+                        contract_snapshot.contents,
+                    )
+                else:
+                    shutil.copytree(source, staged_skills / name)
             for path in (
                 staged_skills / "crm-db-operations" / "cli.py",
                 staged_skills / "daily-brief" / "scripts" / "run_daily_brief.py",
@@ -854,8 +1344,14 @@ def _decode_json(raw: str, label: str) -> Any:
         return decoded
 
     try:
-        return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
-    except (json.JSONDecodeError, _DuplicateJSONKey) as exc:
+        return json.loads(
+            raw,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"unsupported JSON constant: {value}")
+            ),
+        )
+    except ValueError as exc:
         raise SetupConflict(f"{label} returned invalid JSON") from exc
 
 
@@ -1339,7 +1835,9 @@ def _require_help(
 
 
 def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
-    agents_commands = ("add", "list") + (("bind",) if options.bind_discord else ())
+    agents_commands = ("add", "delete", "list") + (
+        ("bind",) if options.bind_discord else ()
+    )
     secretref_options = (
         "--ref-provider",
         "--ref-source",
@@ -1359,6 +1857,11 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
             ["openclaw", "agents", "add", "--help"],
             "agents add",
             ("--workspace", "--non-interactive", "--json"),
+        ),
+        (
+            ["openclaw", "agents", "delete", "--help"],
+            "agents delete",
+            ("--force", "--json"),
         ),
         (["openclaw", "agents", "list", "--help"], "agents list", ("--json",)),
         (["openclaw", "skills", "--help"], "skills", ("check",)),
@@ -1450,7 +1953,12 @@ def _preflight(cli: OpenClawCLI, options: SetupOptions) -> None:
             "plugins uninstall",
             ("--keep-files", "--force"),
         ),
-        (["openclaw", "gateway", "--help"], "gateway", ("restart",)),
+        (["openclaw", "gateway", "--help"], "gateway", ("restart", "call")),
+        (
+            ["openclaw", "gateway", "call", "--help"],
+            "gateway call",
+            ("--params", "--timeout", "--json"),
+        ),
     ]
     if options.bind_discord:
         checks.append(
@@ -1617,8 +2125,14 @@ def _same_workspace(configured: Any, requested: Path) -> bool:
     if not isinstance(configured, str) or not configured.strip():
         return False
     try:
-        return Path(configured).expanduser().resolve() == requested.expanduser().resolve()
-    except OSError:
+        configured_path = _validate_no_symlink_components(
+            Path(configured), "configured agent workspace", leaf_directory=True
+        )
+        requested_path = _validate_no_symlink_components(
+            requested, "requested agent workspace", leaf_directory=True
+        )
+        return configured_path == requested_path
+    except (OSError, SetupConflict):
         return False
 
 
@@ -1682,6 +2196,31 @@ def _restore_managed_agent_fields(
             continue
         if result.returncode != 0:
             errors.append(field)
+    if errors:
+        return errors
+    try:
+        roster = _read_agent_roster(
+            cli, allow_missing=False, label="agent rollback verification roster"
+        )
+        agent = next(
+            (record for record in roster.records if record.get("id") == agent_id),
+            None,
+        )
+        configured_workspace = (
+            agent.get("workspace") or agent.get("workspacePath")
+            if agent is not None
+            else None
+        )
+        if agent is None or not _same_workspace(configured_workspace, workspace):
+            return list(changed_fields)
+        for field in changed_fields:
+            existed = field in snapshot
+            if (field in agent) != existed or (
+                existed and agent[field] != snapshot[field]
+            ):
+                errors.append(field)
+    except (OSError, SetupConflict):
+        return list(changed_fields)
     return errors
 
 
@@ -1894,6 +2433,278 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> bool:
     return bool(hook_inventories)
 
 
+def _read_config_snapshot(cli: OpenClawCLI, path: str) -> ConfigValueSnapshot:
+    result = cli.run(["openclaw", "config", "get", path, "--json"])
+    if result.returncode != 0:
+        if _is_missing_config_path(result, path):
+            return ConfigValueSnapshot(path, False, None)
+        detail = (result.stderr or result.stdout).strip()
+        raise SetupConflict(f"could not snapshot {path}: {detail}")
+    return ConfigValueSnapshot(path, True, _json(result, f"{path} snapshot"))
+
+
+def _binding_agent_ids(snapshot: ConfigValueSnapshot) -> set[str]:
+    if not snapshot.existed:
+        return set()
+    if not isinstance(snapshot.value, list):
+        raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+    agent_ids: set[str] = set()
+    for entry in snapshot.value:
+        if not isinstance(entry, dict):
+            raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+        agent_id = _require_canonical_agent_id(
+            entry.get("agentId"), "OpenClaw binding agentId"
+        )
+        agent_ids.add(agent_id)
+    return agent_ids
+
+
+def _verify_diagnostic_agent_unbound(cli: OpenClawCLI, agent_id: str) -> None:
+    current = _read_config_snapshot(cli, "bindings")
+    if agent_id in _binding_agent_ids(current):
+        raise SetupConflict(
+            "OpenClaw did not keep the setup diagnostic agent unbound"
+        )
+
+
+def _config_value_matches(cli: OpenClawCLI, snapshot: ConfigValueSnapshot) -> bool:
+    try:
+        current = _read_config_snapshot(cli, snapshot.path)
+    except (OSError, SetupConflict):
+        return False
+    return current.existed == snapshot.existed and current.value == snapshot.value
+
+
+def _restore_config_snapshot(
+    cli: OpenClawCLI, snapshot: ConfigValueSnapshot
+) -> bool:
+    if snapshot.existed:
+        argv = [
+            "openclaw",
+            "config",
+            "set",
+            snapshot.path,
+            json.dumps(snapshot.value, separators=(",", ":")),
+            "--strict-json",
+        ]
+    else:
+        argv = ["openclaw", "config", "unset", snapshot.path]
+    try:
+        result = cli.run(argv, mutate=True)
+    except OSError:
+        return False
+    if result.returncode != 0 and snapshot.existed:
+        return False
+    # Missing-path unsets can legitimately report nonzero; authoritative readback
+    # is what determines whether restoration succeeded.
+    return _config_value_matches(cli, snapshot)
+
+
+def _delete_agent_and_verify(
+    cli: OpenClawCLI, agent_id: str, *, expected_workspace: Path
+) -> bool:
+    try:
+        listed = _run_required(
+            cli, ["openclaw", "agents", "list", "--json"], "agent cleanup list"
+        )
+        listed_records = _cli_agents(_json(listed, "agent cleanup list"))
+        listed_ids = {record["id"] for record in listed_records}
+        roster = _read_agent_roster(
+            cli, allow_missing=True, label="agent cleanup config"
+        )
+        configured_ids = {record["id"] for record in roster.records}
+        owned_records = [
+            record
+            for record in [*listed_records, *roster.records]
+            if record["id"] == agent_id
+        ]
+        if any(
+            not _same_workspace(
+                record.get("workspace") or record.get("workspacePath"),
+                expected_workspace,
+            )
+            for record in owned_records
+        ):
+            return False
+        if agent_id in listed_ids or agent_id in configured_ids:
+            deleted = cli.run(
+                [
+                    "openclaw",
+                    "agents",
+                    "delete",
+                    agent_id,
+                    "--force",
+                    "--json",
+                ],
+                mutate=True,
+            )
+            if deleted.returncode != 0:
+                return False
+        listed = _run_required(
+            cli,
+            ["openclaw", "agents", "list", "--json"],
+            "agent cleanup verification list",
+        )
+        roster = _read_agent_roster(
+            cli, allow_missing=True, label="agent cleanup verification config"
+        )
+        return agent_id not in {
+            record["id"]
+            for record in _cli_agents(_json(listed, "agent cleanup verification list"))
+        } and agent_id not in {record["id"] for record in roster.records}
+    except (OSError, SetupConflict):
+        return False
+
+
+def _agent_is_absent(cli: OpenClawCLI, agent_id: str) -> bool:
+    try:
+        listed = _run_required(
+            cli,
+            ["openclaw", "agents", "list", "--json"],
+            "agent absence verification list",
+        )
+        roster = _read_agent_roster(
+            cli, allow_missing=True, label="agent absence verification config"
+        )
+        return agent_id not in {
+            record["id"]
+            for record in _cli_agents(_json(listed, "agent absence verification list"))
+        } and agent_id not in {record["id"] for record in roster.records}
+    except (OSError, SetupConflict):
+        return False
+
+
+def _new_diagnostic_agent_id(existing_ids: set[str]) -> str:
+    for _ in range(32):
+        candidate = f"openhouse-setup-probe-{secrets.token_hex(6)}"
+        if candidate not in existing_ids:
+            return candidate
+    raise SetupConflict("could not allocate a unique setup diagnostic agent ID")
+
+
+def _create_diagnostic_agent(
+    cli: OpenClawCLI, agent_id: str, workspace: Path
+) -> None:
+    created = cli.run(
+        [
+            "openclaw",
+            "agents",
+            "add",
+            agent_id,
+            "--workspace",
+            str(workspace),
+            "--non-interactive",
+            "--json",
+        ],
+        mutate=True,
+    )
+    if created.returncode != 0:
+        raise SetupConflict(
+            "Could not create the isolated setup diagnostic agent: "
+            + (created.stderr or created.stdout).strip()
+        )
+    payload = _json(created, "diagnostic agents add --json")
+    if not isinstance(payload, dict) or _require_canonical_agent_id(
+        payload.get("agentId"), "diagnostic agents add --json agentId"
+    ) != agent_id:
+        raise SetupConflict("diagnostic agents add returned an incompatible agent record")
+    roster = _read_agent_roster(
+        cli, allow_missing=False, label="diagnostic agent configuration"
+    )
+    prefix = roster.prefixes.get(agent_id)
+    if prefix is None:
+        raise SetupConflict("OpenClaw did not expose the setup diagnostic agent")
+    diagnostic = next(
+        (record for record in roster.records if record.get("id") == agent_id), None
+    )
+    configured_workspace = (
+        diagnostic.get("workspace") or diagnostic.get("workspacePath")
+        if diagnostic is not None
+        else None
+    )
+    if not _same_workspace(configured_workspace, workspace):
+        raise SetupConflict("OpenClaw exposed the diagnostic agent with another workspace")
+    for field, value in (
+        ("skills", []),
+        ("tools", DIAGNOSTIC_TOOL_POLICY),
+    ):
+        result = cli.run(
+            [
+                "openclaw",
+                "config",
+                "set",
+                f"{prefix}.{field}",
+                json.dumps(value, separators=(",", ":")),
+                "--strict-json",
+            ],
+            mutate=True,
+        )
+        if result.returncode != 0:
+            raise SetupConflict(
+                f"Could not restrict the setup diagnostic agent {field}: "
+                + (result.stderr or result.stdout).strip()
+            )
+def _remove_diagnostic_workspace(root: Path) -> bool:
+    try:
+        if not root.exists() and not root.is_symlink():
+            return True
+        _validate_no_symlink_components(
+            root, "setup diagnostic workspace", leaf_directory=True
+        )
+        _validate_skill_tree(root, "setup diagnostic workspace")
+        shutil.rmtree(root)
+        return not root.exists() and not root.is_symlink()
+    except (OSError, SetupConflict):
+        return False
+
+
+def _verify_empty_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
+    params = json.dumps(
+        {"sessionKey": f"agent:{agent_id}:main"}, separators=(",", ":")
+    )
+    result = _run_required(
+        cli,
+        [
+            "openclaw",
+            "gateway",
+            "call",
+            "tools.effective",
+            "--params",
+            params,
+            "--timeout",
+            "15000",
+            "--json",
+        ],
+        "diagnostic effective tool inventory",
+    )
+    payload = _json(result, "diagnostic effective tool inventory")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("agentId") != agent_id
+        or payload.get("profile") != "minimal"
+        or not isinstance(payload.get("found"), list)
+    ):
+        raise SetupConflict(
+            "OpenClaw did not expose an authoritative empty effective native-tool inventory"
+        )
+    for group in payload["found"]:
+        if (
+            not isinstance(group, list)
+            or len(group) != 2
+            or not isinstance(group[0], str)
+            or not group[0]
+            or not isinstance(group[1], list)
+            or not all(isinstance(name, str) and name for name in group[1])
+        ):
+            raise SetupConflict(
+                "OpenClaw did not expose an authoritative empty effective native-tool inventory"
+            )
+        if group[1]:
+            raise SetupConflict(
+                "OpenClaw diagnostic agent does not have an empty effective native-tool inventory"
+            )
+
+
 def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
     nonce = secrets.token_hex(16)
     result = cli.probe_client_tools(agent_id=agent_id, nonce=nonce)
@@ -1942,15 +2753,20 @@ def _verify_client_tool_capability(cli: OpenClawCLI, agent_id: str) -> None:
         )
 
 
-def _verify_dashboard_tool_block(cli: OpenClawCLI, agent_id: str) -> None:
+def _verify_dashboard_tool_block(
+    cli: OpenClawCLI, agent_id: str, contract_operations: frozenset[str]
+) -> None:
+    if SETUP_BLOCK_PROBE_OPERATION in contract_operations:
+        raise SetupConflict(
+            "dashboard diagnostic sentinel unexpectedly exists in the canonical contract"
+        )
     nonce = secrets.token_hex(16)
     result = cli.probe_dashboard_tool_block(agent_id=agent_id, nonce=nonce)
     response = f"{result.stdout}\n{result.stderr}".lower()
     expected_reason = "dashboard crm calls must use the verified tool invocation path"
     if result.returncode != 403 or expected_reason not in response:
         raise SetupConflict(
-            "OpenClaw could not authoritatively enumerate hooks and the bounded "
-            "loopback diagnostic did not prove the dashboard CRM tool block; "
+            "the bounded loopback diagnostic did not prove the dashboard CRM tool block; "
             "no supported CRM operation was executed"
         )
 
@@ -1998,20 +2814,204 @@ def _restore_approval_changes(
     return failures
 
 
+def _restore_exact_approvals(
+    cli: OpenClawCLI, *, agent_id: str, original: set[str]
+) -> bool:
+    try:
+        current_result = _run_required(
+            cli,
+            ["openclaw", "approvals", "get", "--gateway", "--json"],
+            "gateway approvals rollback inspection",
+        )
+        current = _validate_gateway_approval_payload(
+            _json(current_result, "gateway approvals rollback inspection"),
+            agent_id,
+            require_effective=False,
+        )
+        for pattern in sorted(current - original):
+            result = cli.run(
+                [
+                    "openclaw",
+                    "approvals",
+                    "allowlist",
+                    "remove",
+                    "--agent",
+                    agent_id,
+                    "--gateway",
+                    pattern,
+                ],
+                mutate=True,
+            )
+            if result.returncode != 0:
+                return False
+        for pattern in sorted(original - current):
+            result = cli.run(
+                [
+                    "openclaw",
+                    "approvals",
+                    "allowlist",
+                    "add",
+                    "--agent",
+                    agent_id,
+                    "--gateway",
+                    pattern,
+                ],
+                mutate=True,
+            )
+            if result.returncode != 0:
+                return False
+        verify = _run_required(
+            cli,
+            ["openclaw", "approvals", "get", "--gateway", "--json"],
+            "gateway approvals rollback verification",
+        )
+        restored = _validate_gateway_approval_payload(
+            _json(verify, "gateway approvals rollback verification"),
+            agent_id,
+            require_effective=False,
+        )
+        return restored == original
+    except (OSError, SetupConflict):
+        return False
+
+
+def _rollback_state_matches(
+    cli: OpenClawCLI,
+    *,
+    options: SetupOptions,
+    crm_agent_preexisting: bool,
+    agent_snapshot: dict[str, Any] | None,
+    diagnostic_agent_id: str | None,
+    config_snapshots: list[ConfigValueSnapshot],
+    approvals: set[str],
+    plugin_source: Path,
+    plugin_preexisting: bool,
+    plugin_enabled: bool,
+    skill_snapshot: SkillRollback,
+    gateway_env_snapshot: GatewayEnvSnapshot | None,
+) -> bool:
+    try:
+        listed = _run_required(
+            cli,
+            ["openclaw", "agents", "list", "--json"],
+            "post-restart rollback agent list",
+        )
+        listed_records = _cli_agents(_json(listed, "post-restart rollback agent list"))
+        roster = _read_agent_roster(
+            cli, allow_missing=True, label="post-restart rollback agent config"
+        )
+        listed_by_id = {record["id"]: record for record in listed_records}
+        configured_by_id = {record["id"]: record for record in roster.records}
+        if diagnostic_agent_id is not None and (
+            diagnostic_agent_id in listed_by_id
+            or diagnostic_agent_id in configured_by_id
+        ):
+            return False
+        if crm_agent_preexisting:
+            listed_agent = listed_by_id.get(options.agent_id)
+            configured_agent = configured_by_id.get(options.agent_id)
+            if (
+                listed_agent is None
+                or configured_agent is None
+                or not _same_workspace(
+                    listed_agent.get("workspace")
+                    or listed_agent.get("workspacePath"),
+                    options.workspace,
+                )
+                or not _same_workspace(
+                    configured_agent.get("workspace")
+                    or configured_agent.get("workspacePath"),
+                    options.workspace,
+                )
+            ):
+                return False
+            expected_fields = agent_snapshot or {}
+            for field in ("skills", "tools", "sandbox"):
+                if (field in configured_agent) != (field in expected_fields):
+                    return False
+                if field in expected_fields and (
+                    configured_agent[field] != expected_fields[field]
+                ):
+                    return False
+        elif options.agent_id in listed_by_id or options.agent_id in configured_by_id:
+            return False
+
+        for snapshot in config_snapshots:
+            if not _config_value_matches(cli, snapshot):
+                return False
+
+        approvals_result = _run_required(
+            cli,
+            ["openclaw", "approvals", "get", "--gateway", "--json"],
+            "post-restart rollback approvals",
+        )
+        restored_approvals = _validate_gateway_approval_payload(
+            _json(approvals_result, "post-restart rollback approvals"),
+            options.agent_id,
+            require_effective=False,
+        )
+        if restored_approvals != approvals:
+            return False
+
+        plugins = _run_required(
+            cli,
+            ["openclaw", "plugins", "list", "--json"],
+            "post-restart rollback plugin inventory",
+        )
+        present, enabled = _inspect_plugin_inventory(
+            _json(plugins, "post-restart rollback plugin inventory"),
+            plugin_source,
+            require_present=plugin_preexisting,
+        )
+        if present != plugin_preexisting or (
+            present and enabled != plugin_enabled
+        ):
+            return False
+
+        skills_root = skill_snapshot.workspace / "skills"
+        for name in SKILL_NAMES:
+            target = skills_root / name
+            if name in skill_snapshot.existing_names:
+                if not _skill_trees_match(skill_snapshot.backup_root / name, target):
+                    return False
+            elif target.exists() or target.is_symlink():
+                return False
+
+        if gateway_env_snapshot is not None:
+            current_env = _snapshot_gateway_env(gateway_env_snapshot.path)
+            if current_env != gateway_env_snapshot:
+                return False
+        return True
+    except (OSError, SetupConflict):
+        return False
+
+
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
     rollback: AgentRollback | None = None
     skill_rollback: SkillRollback | None = None
+    gateway_env_snapshot: GatewayEnvSnapshot | None = None
+    config_snapshots: dict[str, ConfigValueSnapshot] = {}
+    config_mutations: list[str] = []
+    binding_snapshot: ConfigValueSnapshot | None = None
+    binding_mutation_attempted = False
+    legacy_token_mutation_attempted = False
     plugin_source: Path | None = None
     plugin_preexisting = False
     plugin_previously_enabled = False
-    plugin_installed_this_run = False
-    plugin_enabled_this_run = False
+    plugin_install_attempted = False
+    plugin_enable_attempted = False
     plugin_allow_original: list[str] | None = None
-    plugin_allow_changed = False
-    approval_added: set[str] = set()
-    approval_removed: set[str] = set()
-    gateway_restarted = False
+    plugin_allow_snapshot: ConfigValueSnapshot | None = None
+    plugin_allow_mutation_attempted = False
+    approvals_original: set[str] = set()
+    approvals_mutation_attempted = False
+    crm_agent_preexisting = False
+    crm_agent_creation_attempted = False
+    diagnostic_agent_id: str | None = None
+    diagnostic_root: Path | None = None
+    diagnostic_agent_creation_attempted = False
+    gateway_restart_attempted = False
     try:
         _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
@@ -2022,7 +3022,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         messages.append(f"OpenClaw version: {version}")
         _preflight(cli, options)
         repo = Path(__file__).resolve().parents[1]
-        contract_digest = _canonical_contract_digest(repo)
+        contract_snapshot = _capture_canonical_contract(repo)
+        contract_digest = contract_snapshot.digest
+        if SETUP_BLOCK_PROBE_OPERATION in contract_snapshot.operations:
+            raise SetupConflict(
+                "dashboard diagnostic sentinel unexpectedly exists in the canonical contract"
+            )
         plugin_source = _plugin_source(repo)
         plugin_list = _run_required(
             cli,
@@ -2035,6 +3040,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             require_present=False,
         )
         plugin_allow_original = _read_plugin_allowlist(cli)
+        plugin_allow_snapshot = ConfigValueSnapshot(
+            "plugins.allow",
+            plugin_allow_original is not None,
+            plugin_allow_original,
+        )
         if token:
             _run_required(
                 cli,
@@ -2067,6 +3077,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 f"OpenClaw has inconsistent records for agent {options.agent_id}; "
                 "repair the agent explicitly before running setup"
             )
+        crm_agent_preexisting = configured_agent is not None
         for source, agent in (
             ("agent list", listed_agent),
             ("agent configuration", configured_agent),
@@ -2091,6 +3102,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             options.agent_id,
             require_effective=False,
         )
+        approvals_original = set(existing_patterns)
         wrapper, daily = _entrypoints(options)
         expected_patterns = {str(daily)}
         repairable_patterns = {str(wrapper), str(daily)}
@@ -2165,6 +3177,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Would verify exact openhouse_crm registration and the required CRM outcome hooks."
             )
             messages.append(
+                "Would run the bounded dashboard-block behavior diagnostic with an "
+                "operation absent from the production contract."
+            )
+            messages.append(
                 "Would verify Chat Completions request-scoped function tools with "
                 'tool_choice:"required" using one bounded no-write probe.'
             )
@@ -2181,18 +3197,65 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 )
             return SetupResult(True, messages)
 
+        # Capture every setup-owned surface before the first target mutation.
         skill_rollback = _snapshot_installed_skills(options.workspace)
+        config_snapshots[CRM_URL_CONFIG_PATH] = _read_config_snapshot(
+            cli, CRM_URL_CONFIG_PATH
+        )
+        if token:
+            config_snapshots[TOKEN_CONFIG_PATH] = _read_config_snapshot(
+                cli, TOKEN_CONFIG_PATH
+            )
+            config_snapshots[LEGACY_TOKEN_CONFIG_PATH] = _read_config_snapshot(
+                cli, LEGACY_TOKEN_CONFIG_PATH
+            )
+            gateway_env_snapshot = _snapshot_gateway_env(gateway_env_path)
+        binding_snapshot = _read_config_snapshot(cli, "bindings")
+        diagnostic_agent_id = _new_diagnostic_agent_id(
+            {
+                *(record["id"] for record in agents),
+                *(record["id"] for record in configured_agents),
+                *_binding_agent_ids(binding_snapshot),
+            }
+        )
+        if configured_agent is not None:
+            rollback = AgentRollback(
+                snapshot=_managed_agent_snapshot(configured_agent), changed_fields=[]
+            )
+        _write_recovery_manifest(
+            skill_rollback,
+            gateway_env=gateway_env_snapshot,
+            config_values=[
+                *config_snapshots.values(),
+                binding_snapshot,
+                plugin_allow_snapshot,
+            ],
+            crm_agent_id=options.agent_id,
+            agent=configured_agent,
+            approvals=approvals_original,
+            diagnostic_agent_id=diagnostic_agent_id,
+            plugin_preexisting=plugin_preexisting,
+            plugin_enabled=plugin_previously_enabled,
+            plugin_source=plugin_source,
+        )
 
         if token and gateway_env_path is not None:
             _upsert_gateway_env(gateway_env_path, token)
 
-        sync_skills(repo, options.workspace, dry_run=False)
+        sync_skills(
+            repo,
+            options.workspace,
+            dry_run=False,
+            contract_snapshot=contract_snapshot,
+        )
+        _verify_contract_source_unchanged(contract_snapshot)
         _verify_installed_contract(options.workspace, contract_digest)
         messages.append(
             f"Installed CRM skills in {options.workspace / 'skills'} and verified "
             f"contract.json SHA-256 {contract_digest}"
         )
 
+        plugin_install_attempted = True
         install_plugin = cli.run(
             [
                 "openclaw",
@@ -2209,9 +3272,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Bundled OpenClaw CRM plugin installation failed: "
                 + (install_plugin.stderr or install_plugin.stdout).strip()
             )
-        plugin_installed_this_run = not plugin_preexisting
         messages.append("Linked the bundled OpenClaw CRM plugin")
 
+        plugin_enable_attempted = True
         enable_plugin = cli.run(
             ["openclaw", "plugins", "enable", PLUGIN_ID],
             mutate=True,
@@ -2221,10 +3284,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Bundled OpenClaw CRM plugin enablement failed: "
                 + (enable_plugin.stderr or enable_plugin.stdout).strip()
             )
-        plugin_enabled_this_run = not plugin_previously_enabled
         messages.append("Enabled the bundled OpenClaw CRM plugin")
 
         if plugin_allow_original is not None and PLUGIN_ID not in plugin_allow_original:
+            plugin_allow_mutation_attempted = True
             plugin_allow = cli.run(
                 [
                     "openclaw",
@@ -2241,13 +3304,33 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     "Could not include openhouse-crm in plugins.allow: "
                     + (plugin_allow.stderr or plugin_allow.stdout).strip()
                 )
-            plugin_allow_changed = True
             messages.append("Included the bundled CRM plugin in plugins.allow")
+
+        expected_plugin_allow = (
+            None
+            if plugin_allow_original is None
+            else list(dict.fromkeys([*plugin_allow_original, PLUGIN_ID]))
+        )
+        if _read_plugin_allowlist(cli) != expected_plugin_allow:
+            if plugin_allow_original is None and plugin_allow_snapshot is not None:
+                plugin_allow_mutation_attempted = True
+                if not _restore_config_snapshot(cli, plugin_allow_snapshot):
+                    raise SetupConflict(
+                        "OpenClaw changed plugins.allow outside the exact setup policy"
+                    )
+                messages.append(
+                    "Preserved the previously absent global plugins.allow policy"
+                )
+            else:
+                raise SetupConflict(
+                    "OpenClaw changed plugins.allow outside the exact setup policy"
+                )
 
         create_actions = [
             action for action in initial_actions if action.argv[1:3] == ["agents", "add"]
         ]
         for action in create_actions:
+            crm_agent_creation_attempted = True
             result = _run_action(cli, action)
             if result.returncode != 0:
                 raise SetupConflict(
@@ -2287,10 +3370,6 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             raise SetupConflict(
                 f"OpenClaw did not expose the {options.agent_id} agent after creation"
             )
-        rollback = AgentRollback(
-            snapshot=_managed_agent_snapshot(refreshed_agent), changed_fields=[]
-        )
-
         actions = _config_actions(options, prefix)
         actions.extend(
             action
@@ -2327,21 +3406,27 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     workspace=options.workspace,
                     label=f"dedicated agent revalidation before {action.description}",
                 )
+            if targets_agent_config and rollback is not None:
+                field = action.argv[3][len(prefix) + 1 :]
+                if (
+                    field in {"skills", "tools", "sandbox"}
+                    and field not in rollback.changed_fields
+                ):
+                    rollback.changed_fields.append(field)
+            if (
+                action.argv[1:3] == ["config", "set"]
+                and action.argv[3] in config_snapshots
+                and action.argv[3] not in config_mutations
+            ):
+                config_mutations.append(action.argv[3])
+            if action.argv[1:3] == ["agents", "bind"]:
+                binding_mutation_attempted = True
+            if action.argv[1:3] == ["approvals", "allowlist"]:
+                approvals_mutation_attempted = True
             result = _run_action(cli, action)
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()
                 raise SetupConflict(f"{action.description} failed: {detail}")
-            if (
-                action.argv[1:3] == ["config", "set"]
-                and action.argv[3].startswith(f"{prefix}.")
-            ):
-                field = action.argv[3][len(prefix) + 1 :]
-                if field in {"skills", "tools", "sandbox"}:
-                    rollback.changed_fields.append(field)
-            if action.argv[1:4] == ["approvals", "allowlist", "add"]:
-                approval_added.add(action.argv[-1])
-            elif action.argv[1:4] == ["approvals", "allowlist", "remove"]:
-                approval_removed.add(action.argv[-1])
             messages.append(action.description)
 
         if token:
@@ -2372,6 +3457,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     "OpenClaw returned an unsupported legacy skill environment shape"
                 )
             if "OHI_API_TOKEN" in legacy_env:
+                legacy_token_mutation_attempted = True
                 unset = cli.run(
                     ["openclaw", "config", "unset", LEGACY_TOKEN_CONFIG_PATH],
                     mutate=True,
@@ -2428,6 +3514,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             _json(authoritative_tools, "authoritative dedicated-agent tools")
         )
 
+        _verify_contract_source_unchanged(contract_snapshot)
+        _verify_installed_contract(options.workspace, contract_snapshot.digest)
         installed_plugins = _run_required(
             cli,
             ["openclaw", "plugins", "list", "--json"],
@@ -2450,7 +3538,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             ],
             "openhouse-crm runtime inspection",
         )
-        hooks_enumerated = _validate_runtime_plugin(
+        _validate_runtime_plugin(
             _json(runtime_plugin, "openhouse-crm runtime inspection"),
             plugin_source,
         )
@@ -2502,15 +3590,55 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "deterministic daily-brief runner"
             )
 
+        diagnostic_root = Path(
+            tempfile.mkdtemp(prefix="openhouse-setup-probe-")
+        ).resolve(strict=True)
+        diagnostic_root.chmod(0o700)
+        diagnostic_workspace = diagnostic_root / "workspace"
+        diagnostic_workspace.mkdir(mode=0o700)
+        diagnostic_agent_creation_attempted = True
+        _create_diagnostic_agent(cli, diagnostic_agent_id, diagnostic_workspace)
+        _verify_diagnostic_agent_unbound(cli, diagnostic_agent_id)
+        diagnostic_validate = _run_required(
+            cli,
+            ["openclaw", "config", "validate", "--json"],
+            "diagnostic config validate --json",
+        )
+        _json(diagnostic_validate, "diagnostic config validate")
+
+        gateway_restart_attempted = True
         restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
         if restart.returncode != 0:
             raise SetupConflict(
                 f"Gateway restart failed: {(restart.stderr or restart.stdout).strip()}"
             )
-        gateway_restarted = True
-        _verify_client_tool_capability(cli, options.agent_id)
-        if not hooks_enumerated:
-            _verify_dashboard_tool_block(cli, options.agent_id)
+        _verify_contract_source_unchanged(contract_snapshot)
+        _verify_installed_contract(options.workspace, contract_snapshot.digest)
+        _verify_empty_effective_tools(cli, diagnostic_agent_id)
+        _verify_client_tool_capability(cli, diagnostic_agent_id)
+        _verify_dashboard_tool_block(
+            cli, options.agent_id, contract_snapshot.operations
+        )
+        if not _delete_agent_and_verify(
+            cli, diagnostic_agent_id, expected_workspace=diagnostic_workspace
+        ):
+            raise SetupConflict(
+                "Could not delete and verify absence of the setup diagnostic agent"
+            )
+        if not _remove_diagnostic_workspace(diagnostic_root):
+            raise SetupConflict("Could not remove the setup diagnostic workspace")
+        cleanup_restart = cli.run(
+            ["openclaw", "gateway", "restart"], mutate=True
+        )
+        if cleanup_restart.returncode != 0:
+            raise SetupConflict(
+                "Gateway restart after diagnostic-agent cleanup failed: "
+                + (cleanup_restart.stderr or cleanup_restart.stdout).strip()
+            )
+        if not _agent_is_absent(cli, diagnostic_agent_id):
+            raise SetupConflict(
+                "OpenClaw did not retain diagnostic-agent cleanup after restart"
+            )
         rollback = None
         if skill_rollback is not None:
             _discard_skill_snapshot(skill_rollback)
@@ -2518,7 +3646,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         messages.append(
             "Validated the native CRM tool, required CRM outcome hooks, dashboard "
             "tool block, request-scoped client tools, and restricted agent configuration, "
-            "then restarted the OpenClaw Gateway. Runtime CRM verification is still required: "
+            "then restarted the OpenClaw Gateway for validation and diagnostic cleanup. "
+            "Runtime CRM verification is still required: "
             "python scripts/doctor.py --live-agent --live-crm"
         )
         if not options.bind_discord:
@@ -2528,52 +3657,129 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         return SetupResult(True, messages)
     except (SetupConflict, OSError) as exc:
-        if rollback is not None and rollback.changed_fields:
-            rollback_errors = _restore_managed_agent_fields(
+        rollback_failed = False
+
+        # Reverse the disposable diagnostic state first. Its random ID and exact
+        # workspace are both checked before any destructive agent operation.
+        if diagnostic_agent_creation_attempted and diagnostic_agent_id is not None:
+            diagnostic_workspace = (
+                diagnostic_root / "workspace"
+                if diagnostic_root is not None
+                else Path("/__openhouse_missing_diagnostic_workspace__")
+            )
+            if not _delete_agent_and_verify(
                 cli,
-                agent_id=options.agent_id,
-                workspace=options.workspace,
-                snapshot=rollback.snapshot,
-                changed_fields=rollback.changed_fields,
-            )
-            if rollback_errors:
+                diagnostic_agent_id,
+                expected_workspace=diagnostic_workspace,
+            ):
+                rollback_failed = True
                 messages.append(
-                    "Could not fully restore the previous dedicated-agent "
-                    "configuration. Failed fields: " + ", ".join(rollback_errors)
+                    "Could not delete or verify absence of the setup diagnostic agent."
                 )
-            else:
+        if diagnostic_root is not None and not _remove_diagnostic_workspace(
+            diagnostic_root
+        ):
+            rollback_failed = True
+            messages.append("Could not remove the setup diagnostic workspace.")
+
+        agent_target_safe = True
+        if crm_agent_preexisting and (
+            rollback is not None
+            or config_mutations
+            or binding_mutation_attempted
+            or approvals_mutation_attempted
+            or legacy_token_mutation_attempted
+        ):
+            try:
+                current_roster = _read_agent_roster(
+                    cli, allow_missing=False, label="rollback ownership check"
+                )
+                current_agent = next(
+                    (
+                        record
+                        for record in current_roster.records
+                        if record.get("id") == options.agent_id
+                    ),
+                    None,
+                )
+                agent_target_safe = current_agent is not None and _same_workspace(
+                    current_agent.get("workspace")
+                    or current_agent.get("workspacePath"),
+                    options.workspace,
+                )
+            except (OSError, SetupConflict):
+                agent_target_safe = False
+            if not agent_target_safe:
+                rollback_failed = True
                 messages.append(
-                    "Restored the previous dedicated-agent configuration after "
-                    "setup failed."
+                    "Could not fully restore setup-owned CRM configuration because "
+                    "the dedicated-agent workspace changed during setup."
                 )
-        if approval_added or approval_removed:
-            approval_failures = _restore_approval_changes(
-                cli,
-                agent_id=options.agent_id,
-                added=approval_added,
-                removed=approval_removed,
-            )
-            if approval_failures:
-                messages.append(
-                    "Could not fully restore gateway executable approvals after setup failed."
+
+        if agent_target_safe:
+            if legacy_token_mutation_attempted:
+                snapshot = config_snapshots.get(LEGACY_TOKEN_CONFIG_PATH)
+                if snapshot is None or not _restore_config_snapshot(cli, snapshot):
+                    rollback_failed = True
+                    messages.append(
+                        "Could not restore the previous legacy CRM token setting."
+                    )
+            if approvals_mutation_attempted:
+                if _restore_exact_approvals(
+                    cli, agent_id=options.agent_id, original=approvals_original
+                ):
+                    messages.append(
+                        "Restored gateway executable approvals after setup failed."
+                    )
+                else:
+                    rollback_failed = True
+                    messages.append(
+                        "Could not fully restore gateway executable approvals after setup failed."
+                    )
+            if binding_mutation_attempted and binding_snapshot is not None:
+                if not _restore_config_snapshot(cli, binding_snapshot):
+                    rollback_failed = True
+                    messages.append("Could not restore the previous Discord bindings.")
+            for path in reversed(config_mutations):
+                snapshot = config_snapshots[path]
+                if not _restore_config_snapshot(cli, snapshot):
+                    rollback_failed = True
+                    messages.append(f"Could not restore the previous {path} value.")
+            if crm_agent_preexisting and rollback is not None and rollback.changed_fields:
+                rollback_errors = _restore_managed_agent_fields(
+                    cli,
+                    agent_id=options.agent_id,
+                    workspace=options.workspace,
+                    snapshot=rollback.snapshot,
+                    changed_fields=rollback.changed_fields,
                 )
-            else:
-                messages.append("Restored gateway executable approvals after setup failed.")
-        if plugin_allow_changed and plugin_allow_original is not None:
-            restored_allow = cli.run(
-                [
-                    "openclaw",
-                    "config",
-                    "set",
-                    "plugins.allow",
-                    json.dumps(plugin_allow_original),
-                    "--strict-json",
-                ],
-                mutate=True,
-            )
-            if restored_allow.returncode != 0:
+                if rollback_errors:
+                    rollback_failed = True
+                    messages.append(
+                        "Could not fully restore the previous dedicated-agent "
+                        "configuration. Failed fields: " + ", ".join(rollback_errors)
+                    )
+                else:
+                    messages.append(
+                        "Restored the previous dedicated-agent configuration after "
+                        "setup failed."
+                    )
+            elif not crm_agent_preexisting and crm_agent_creation_attempted:
+                if not _delete_agent_and_verify(
+                    cli,
+                    options.agent_id,
+                    expected_workspace=options.workspace,
+                ):
+                    rollback_failed = True
+                    messages.append(
+                        "Could not delete or verify absence of the newly created CRM agent."
+                    )
+
+        if plugin_allow_mutation_attempted and plugin_allow_snapshot is not None:
+            if not _restore_config_snapshot(cli, plugin_allow_snapshot):
+                rollback_failed = True
                 messages.append("Could not restore the previous plugins.allow value.")
-        if plugin_installed_this_run:
+        if plugin_install_attempted and not plugin_preexisting:
             removed_plugin = cli.run(
                 [
                     "openclaw",
@@ -2586,29 +3792,147 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 mutate=True,
             )
             if removed_plugin.returncode != 0:
-                messages.append("Could not remove the newly linked CRM plugin after setup failed.")
-        elif plugin_enabled_this_run:
-            disabled_plugin = cli.run(
-                ["openclaw", "plugins", "disable", PLUGIN_ID],
+                rollback_failed = True
+                messages.append(
+                    "Could not remove the newly linked CRM plugin after setup failed."
+                )
+        elif plugin_preexisting and (
+            plugin_install_attempted or plugin_enable_attempted
+        ):
+            if plugin_install_attempted:
+                if plugin_source is None:
+                    restored_source = CommandResult(1, "", "missing plugin source")
+                else:
+                    restored_source = cli.run(
+                        [
+                            "openclaw",
+                            "plugins",
+                            "install",
+                            "--link",
+                            str(plugin_source),
+                            "--force",
+                        ],
+                        mutate=True,
+                    )
+                if restored_source.returncode != 0:
+                    rollback_failed = True
+                    messages.append(
+                        "Could not restore the previous CRM plugin source link."
+                    )
+            restore_enablement = cli.run(
+                [
+                    "openclaw",
+                    "plugins",
+                    "enable" if plugin_previously_enabled else "disable",
+                    PLUGIN_ID,
+                ],
                 mutate=True,
             )
-            if disabled_plugin.returncode != 0:
+            if restore_enablement.returncode != 0:
+                rollback_failed = True
                 messages.append("Could not restore the previous CRM plugin enablement.")
+
+        if (
+            (plugin_install_attempted or plugin_enable_attempted)
+            and plugin_allow_snapshot is not None
+            and not _restore_config_snapshot(cli, plugin_allow_snapshot)
+        ):
+            rollback_failed = True
+            messages.append("Could not restore the exact previous plugins.allow value.")
+
+        if plugin_install_attempted and plugin_source is not None:
+            try:
+                inventory = _run_required(
+                    cli,
+                    ["openclaw", "plugins", "list", "--json"],
+                    "plugin rollback verification",
+                )
+                restored_present, restored_enabled = _inspect_plugin_inventory(
+                    _json(inventory, "plugin rollback verification"),
+                    plugin_source,
+                    require_present=plugin_preexisting,
+                )
+                if restored_present != plugin_preexisting or (
+                    restored_present and restored_enabled != plugin_previously_enabled
+                ):
+                    raise SetupConflict("plugin state did not match its snapshot")
+            except (OSError, SetupConflict):
+                rollback_failed = True
+                messages.append("Could not verify the previous CRM plugin state.")
+
         if skill_rollback is not None:
             if _restore_installed_skills(skill_rollback):
-                messages.append("Restored the previous installed CRM skills after setup failed.")
+                messages.append(
+                    "Restored the previous installed CRM skills after setup failed."
+                )
             else:
-                messages.append("Could not fully restore the previous installed CRM skills.")
-            _discard_skill_snapshot(skill_rollback)
-            skill_rollback = None
-        if gateway_restarted:
+                rollback_failed = True
+                messages.append(
+                    "Could not fully restore the previous installed CRM skills."
+                )
+        if gateway_env_snapshot is not None and not _restore_gateway_env(
+            gateway_env_snapshot
+        ):
+            rollback_failed = True
+            messages.append("Could not restore the OpenClaw gateway environment.")
+
+        # A nonzero restart can still have partially reloaded configuration, so
+        # restart after restoration whenever the first restart was attempted.
+        if gateway_restart_attempted:
             restored_gateway = cli.run(
                 ["openclaw", "gateway", "restart"], mutate=True
             )
             if restored_gateway.returncode != 0:
+                rollback_failed = True
                 messages.append(
                     "Could not restart the OpenClaw Gateway after restoring setup state."
                 )
+            elif (
+                skill_rollback is None
+                or plugin_source is None
+                or not _rollback_state_matches(
+                    cli,
+                    options=options,
+                    crm_agent_preexisting=crm_agent_preexisting,
+                    agent_snapshot=rollback.snapshot if rollback is not None else None,
+                    diagnostic_agent_id=diagnostic_agent_id,
+                    config_snapshots=[
+                        *config_snapshots.values(),
+                        *(
+                            [binding_snapshot]
+                            if binding_snapshot is not None
+                            else []
+                        ),
+                        *(
+                            [plugin_allow_snapshot]
+                            if plugin_allow_snapshot is not None
+                            else []
+                        ),
+                    ],
+                    approvals=approvals_original,
+                    plugin_source=plugin_source,
+                    plugin_preexisting=plugin_preexisting,
+                    plugin_enabled=plugin_previously_enabled,
+                    skill_snapshot=skill_rollback,
+                    gateway_env_snapshot=gateway_env_snapshot,
+                )
+            ):
+                rollback_failed = True
+                messages.append(
+                    "Could not verify restored setup state after restarting the OpenClaw Gateway."
+                )
+
+        if skill_rollback is not None:
+            if rollback_failed:
+                messages.append(
+                    f"Recovery backup retained at {skill_rollback.backup_root}"
+                )
+                messages.append(
+                    "Restore only after removing symlinks and verifying the target workspace."
+                )
+            else:
+                _discard_skill_snapshot(skill_rollback)
+            skill_rollback = None
         messages.append(str(exc))
         return SetupResult(False, messages)
 

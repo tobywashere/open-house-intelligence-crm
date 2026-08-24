@@ -31,6 +31,7 @@ TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
 TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
 LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
 LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
+CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
 
 
 OPENCLAW_SANDBOX_EXPLAIN_STABLE = {
@@ -136,6 +137,7 @@ class FakeCLI:
         plugin_runtime=None,
         client_tool_probe=None,
         dashboard_block_probe=None,
+        effective_tools=None,
     ):
         self.calls = []
         self.mutating_calls = []
@@ -150,8 +152,58 @@ class FakeCLI:
         self.plugin_runtime = plugin_runtime
         self.client_tool_probe = client_tool_probe
         self.dashboard_block_probe = dashboard_block_probe
+        self.effective_tools = [] if effective_tools is None else effective_tools
         self.client_tool_probe_calls = []
         self.dashboard_block_probe_calls = []
+        self.extra_agents = {}
+        self.bindings = set()
+
+    def _all_agents(self):
+        agents = [self.created_agent] if self.created_agent else []
+        return [*agents, *self.extra_agents.values()]
+
+    def _with_extra_agents(self, result):
+        if result.returncode != 0 or not self.extra_agents:
+            return result
+        payload = json.loads(result.stdout)
+        if isinstance(payload.get("agents"), list):
+            existing = {agent.get("id") for agent in payload["agents"]}
+            payload["agents"].extend(
+                agent
+                for agent in self.extra_agents.values()
+                if agent["id"] not in existing
+            )
+        elif isinstance(payload.get("list"), list):
+            existing = {agent.get("id") for agent in payload["list"]}
+            payload["list"].extend(
+                agent
+                for agent in self.extra_agents.values()
+                if agent["id"] not in existing
+            )
+        elif isinstance(payload.get("entries"), dict):
+            for agent_id, agent in self.extra_agents.items():
+                payload["entries"].setdefault(
+                    agent_id,
+                    {key: value for key, value in agent.items() if key != "id"},
+                )
+        return CommandResult(result.returncode, json.dumps(payload), result.stderr)
+
+    def _agent_for_config_path(self, path):
+        list_match = re.fullmatch(r"agents\.list\[(\d+)\]\.(.+)", path)
+        if list_match:
+            agents = self._all_agents()
+            index = int(list_match.group(1))
+            return (agents[index] if index < len(agents) else None), list_match.group(2)
+        entry_match = re.fullmatch(r'agents\.entries\["([^"]+)"\]\.(.+)', path)
+        if entry_match:
+            agent_id, field = entry_match.groups()
+            agent = (
+                self.created_agent
+                if self.created_agent and self.created_agent["id"] == agent_id
+                else self.extra_agents.get(agent_id)
+            )
+            return agent, field
+        return None, None
 
     def probe_client_tools(self, *, agent_id, nonce):
         self.client_tool_probe_calls.append({"agent_id": agent_id, "nonce": nonce})
@@ -209,10 +261,30 @@ class FakeCLI:
             return response
         if mutate:
             if args[1:3] == ["agents", "add"]:
-                self.created_agent = {
+                agent = {
                     "id": args[3],
                     "workspace": args[args.index("--workspace") + 1],
                 }
+                if args[3] == "openhouse-crm":
+                    self.created_agent = agent
+                else:
+                    self.extra_agents[args[3]] = agent
+            elif args[1:3] == ["agents", "delete"]:
+                agent_id = args[3]
+                if self.created_agent and self.created_agent["id"] == agent_id:
+                    self.created_agent = None
+                self.extra_agents.pop(agent_id, None)
+                self.bindings = {
+                    binding for binding in self.bindings if binding[0] != agent_id
+                }
+            elif args[1:3] == ["agents", "bind"]:
+                self.bindings.add(
+                    (args[args.index("--agent") + 1], args[args.index("--bind") + 1])
+                )
+            elif args[1:3] == ["agents", "unbind"]:
+                self.bindings.discard(
+                    (args[args.index("--agent") + 1], args[args.index("--bind") + 1])
+                )
             elif args[1:3] == ["config", "set"]:
                 path = args[3]
                 if "--ref-provider" in args:
@@ -238,22 +310,30 @@ class FakeCLI:
                                 "with tools.exec.security or tools.exec.ask",
                             )
                     self.config_values[path] = value
-                    match = re.fullmatch(
-                        r'agents\.(?:list\[\d+\]|entries\["[^\"]+"\])\.(.+)',
-                        path,
-                    )
-                    if match and self.created_agent is not None:
-                        self.created_agent[match.group(1)] = self.config_values[path]
+                    if path == LEGACY_TOKEN_CONFIG_PATH:
+                        self.legacy_token = value
+                    elif path == "bindings":
+                        self.bindings = {
+                            (
+                                binding["agentId"],
+                                binding["match"]["channel"]
+                                + ":"
+                                + binding["match"]["accountId"],
+                            )
+                            for binding in value
+                        }
+                    agent, field = self._agent_for_config_path(path)
+                    if agent is not None:
+                        agent[field] = self.config_values[path]
             elif args[1:3] == ["config", "unset"]:
                 if args[3] == LEGACY_TOKEN_CONFIG_PATH:
                     self.legacy_token = None
+                elif args[3] == "bindings":
+                    self.bindings.clear()
                 self.config_values.pop(args[3], None)
-                match = re.fullmatch(
-                    r'agents\.(?:list\[\d+\]|entries\["[^\"]+"\])\.(.+)',
-                    args[3],
-                )
-                if match and self.created_agent is not None:
-                    self.created_agent.pop(match.group(1), None)
+                agent, field = self._agent_for_config_path(args[3])
+                if agent is not None:
+                    agent.pop(field, None)
             elif args[1:3] == ["plugins", "install"]:
                 self.plugin_path = args[args.index("--link") + 1]
             elif args[1:3] == ["plugins", "enable"]:
@@ -268,22 +348,29 @@ class FakeCLI:
             elif args[1:4] == ["approvals", "allowlist", "remove"]:
                 self.approval_patterns.discard(args[-1])
         if response is not None:
+            if args in (
+                ["openclaw", "agents", "list", "--json"],
+                ["openclaw", "config", "get", "agents", "--json"],
+            ):
+                return self._with_extra_agents(response)
             return response
         if args[-1:] == ["--help"]:
             return CommandResult(
                 0,
                 "Commands:\n"
-                "  agents\n  add\n  list\n  bind\n  config\n  get\n  set\n"
+                "  agents\n  add\n  delete\n  list\n  bindings\n  bind\n  unbind\n"
+                "  config\n  get\n  set\n"
                 "  unset\n  file\n  validate\n  skills\n  check\n  approvals\n  allowlist\n"
                 "  plugins\n  install\n  inspect\n  enable\n  disable\n  uninstall\n  remove\n"
                 "  exec-policy\n  show\n  sandbox\n  explain\n  gateway\n"
-                "  restart\n"
+                "  restart\n  call\n"
                 "Options:\n"
                 "  --workspace PATH\n  --non-interactive\n  --json\n"
                 "  --agent ID\n  --bind TARGET\n  --strict-json VALUE\n"
                 "  --ref-provider NAME\n  --ref-source SOURCE\n  --ref-id ID\n"
                 "  --dry-run\n"
-                "  --gateway\n  --link\n  --force\n  --runtime\n  --keep-files",
+                "  --gateway\n  --link\n  --force\n  --runtime\n  --keep-files\n"
+                "  --params JSON\n  --timeout MS",
                 "",
             )
         if args == ["openclaw", "--version"]:
@@ -294,16 +381,24 @@ class FakeCLI:
             return CommandResult(0, f"{self.config_path}\n", "")
         if args == ["openclaw", "agents", "list", "--json"]:
             return CommandResult(
-                0, json.dumps({"agents": [self.created_agent] if self.created_agent else []}), ""
+                0, json.dumps({"agents": self._all_agents()}), ""
             )
         if args == ["openclaw", "config", "get", "agents", "--json"]:
             return CommandResult(
                 0,
                 json.dumps(
-                    {"defaults": {}, "list": [self.created_agent] if self.created_agent else []}
+                    {"defaults": {}, "list": self._all_agents()}
                 ),
                 "",
             )
+        if args == ["openclaw", "config", "get", "bindings", "--json"]:
+            if not self.bindings:
+                return CommandResult(1, "", "Config path not found: bindings")
+            bindings = [
+                {"agentId": agent_id, "match": {"channel": binding.split(":", 1)[0], "accountId": binding.split(":", 1)[1]}}
+                for agent_id, binding in sorted(self.bindings)
+            ]
+            return CommandResult(0, json.dumps(bindings), "")
         if args == ["openclaw", "plugins", "list", "--json"]:
             plugins = []
             if self.plugin_path is not None:
@@ -366,6 +461,10 @@ class FakeCLI:
             TOKEN_CONFIG_PATH,
             "--json",
         ]:
+            if TOKEN_CONFIG_PATH not in self.config_values:
+                return CommandResult(
+                    1, "", f"Config path not found: {TOKEN_CONFIG_PATH}"
+                )
             return CommandResult(
                 0, json.dumps(self.config_values.get(TOKEN_CONFIG_PATH)), ""
             )
@@ -391,6 +490,18 @@ class FakeCLI:
             if self.legacy_token is not None:
                 env["OHI_API_TOKEN"] = self.legacy_token
             return CommandResult(0, json.dumps(env), "")
+        if args == [
+            "openclaw",
+            "config",
+            "get",
+            LEGACY_TOKEN_CONFIG_PATH,
+            "--json",
+        ]:
+            if self.legacy_token is None:
+                return CommandResult(
+                    1, "", f"Config path not found: {LEGACY_TOKEN_CONFIG_PATH}"
+                )
+            return CommandResult(0, json.dumps(self.legacy_token), "")
         if (
             args[1:3] == ["config", "get"]
             and args[3].startswith("agents.")
@@ -398,6 +509,25 @@ class FakeCLI:
             and args[-1] == "--json"
         ):
             return CommandResult(0, json.dumps(self.config_values.get(args[3])), "")
+        if args[1:4] == ["gateway", "call", "tools.effective"]:
+            params = json.loads(args[args.index("--params") + 1])
+            agent_id = params["sessionKey"].split(":", 2)[1]
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "agentId": agent_id,
+                        "profile": "minimal",
+                        "found": [["core", self.effective_tools]],
+                    }
+                ),
+                "",
+            )
+        if args[1:3] == ["config", "get"] and args[-1] == "--json":
+            path = args[3]
+            if path not in self.config_values:
+                return CommandResult(1, "", f"Config path not found: {path}")
+            return CommandResult(0, json.dumps(self.config_values[path]), "")
         if args == ["openclaw", "skills", "check", "--agent", "openhouse-crm", "--json"]:
             return CommandResult(0, '{"eligible": ["crm-db-operations"]}', "")
         if args == ["openclaw", "sandbox", "explain", "--agent", "openhouse-crm", "--json"]:
@@ -415,13 +545,18 @@ class FakeCLI:
             ]
             payload = gateway_approval_payload(entries=entries)
             return CommandResult(0, json.dumps(payload), "")
-        if args[1:3] == ["agents", "add"] and self.created_agent is not None:
+        if args[1:3] == ["agents", "add"]:
+            agent = next(
+                (item for item in self._all_agents() if item["id"] == args[3]), None
+            )
+            if agent is None:
+                return CommandResult(1, "", "agent creation failed")
             return CommandResult(
                 0,
                 json.dumps(
                     {
-                        "agentId": self.created_agent["id"],
-                        "workspace": self.created_agent["workspace"],
+                        "agentId": agent["id"],
+                        "workspace": agent["workspace"],
                     }
                 ),
                 "",
@@ -472,7 +607,7 @@ class FreshRosterCLI(FakeCLI):
                         self.created_agent["id"]: custom,
                     },
                 }
-            return CommandResult(0, json.dumps(payload), "")
+            return self._with_extra_agents(CommandResult(0, json.dumps(payload), ""))
         return super().run(args, mutate=mutate)
 
 
@@ -576,7 +711,9 @@ class ReorderingLegacyCLI(FakeCLI):
         main = {"id": "main", "workspace": "/main"}
         if args == ["openclaw", "agents", "list", "--json"]:
             self.calls.append(args)
-            return CommandResult(0, json.dumps({"agents": [main, target]}), "")
+            return self._with_extra_agents(
+                CommandResult(0, json.dumps({"agents": [main, target]}), "")
+            )
         if args == ["openclaw", "config", "get", "agents", "--json"]:
             self.calls.append(args)
             self.roster_reads += 1
@@ -585,8 +722,8 @@ class ReorderingLegacyCLI(FakeCLI):
                 if self.roster_reads >= self.reorder_on_read
                 else [main, target]
             )
-            return CommandResult(
-                0, json.dumps({"defaults": {}, "list": records}), ""
+            return self._with_extra_agents(
+                CommandResult(0, json.dumps({"defaults": {}, "list": records}), "")
             )
         return super().run(args, mutate=mutate)
 
@@ -931,7 +1068,10 @@ def test_existing_agent_is_idempotent_for_each_roster_schema(tmp_path, schema):
 
     assert first.ok, first.render()
     assert second.ok, second.render()
-    assert not any(call[1:3] == ["agents", "add"] for call in cli.mutating_calls)
+    assert not any(
+        call[1:3] == ["agents", "add"] and call[3] == options.agent_id
+        for call in cli.mutating_calls
+    )
     assert f"{prefix}.tools" in " ".join(" ".join(call) for call in cli.calls)
 
 
@@ -1470,6 +1610,304 @@ def test_setup_rejects_unproven_client_tool_capability_and_rolls_back(
     assert cli.plugin_path is None
     assert cli.plugin_enabled is False
     assert "Validated the native CRM tool" not in result.render()
+
+
+def test_client_tool_probe_uses_deleted_zero_native_tool_diagnostic_agent(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert len(cli.client_tool_probe_calls) == 1
+    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    assert probe_agent != options.agent_id
+    assert probe_agent.startswith("openhouse-setup-probe-")
+    assert cli.extra_agents == {}
+    assert any(
+        call[1:4] == ["gateway", "call", "tools.effective"]
+        and probe_agent in call[call.index("--params") + 1]
+        for call in cli.calls
+    )
+    assert any(
+        call[1:3] == ["agents", "delete"] and call[3] == probe_agent
+        for call in cli.mutating_calls
+    )
+    assert cli.mutating_calls.count(["openclaw", "gateway", "restart"]) == 2
+
+
+def test_client_tool_probe_fails_before_inference_if_any_native_tool_is_effective(
+    tmp_path,
+):
+    cli = FakeCLI(effective_tools=["session_status"])
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "empty effective native-tool inventory" in result.render()
+    assert cli.client_tool_probe_calls == []
+    assert cli.extra_agents == {}
+
+
+def test_client_tool_probe_rejects_and_cleans_up_bound_diagnostic_agent(tmp_path):
+    class AutoBindingCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if (
+                mutate
+                and args[1:3] == ["agents", "add"]
+                and args[3].startswith("openhouse-setup-probe-")
+                and result.returncode == 0
+            ):
+                self.bindings.add((args[3], "discord:unexpected"))
+            return result
+
+    cli = AutoBindingCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "unbound" in result.render()
+    assert cli.client_tool_probe_calls == []
+    assert cli.extra_agents == {}
+    assert cli.bindings == set()
+
+
+def test_names_present_but_wrong_dashboard_block_behavior_is_rejected(tmp_path):
+    cli = FakeCLI(
+        dashboard_block_probe=CommandResult(
+            400,
+            '{"error":"unknown operation"}',
+            "",
+        )
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "dashboard CRM tool block" in result.render()
+    assert len(cli.dashboard_block_probe_calls) == 1
+
+
+def test_nonzero_gateway_restart_still_rolls_back_and_attempts_restored_restart(
+    tmp_path,
+):
+    cli = FakeCLI(
+        {
+            ("openclaw", "gateway", "restart"): CommandResult(
+                1, "", "partially reloaded before failing"
+            )
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.mutating_calls.count(["openclaw", "gateway", "restart"]) == 2
+    assert cli.created_agent is None
+    assert cli.extra_agents == {}
+
+
+def test_rollback_verifies_exact_state_after_restored_gateway_restart(tmp_path):
+    class RestartMutationCLI(FakeCLI):
+        def __init__(self):
+            super().__init__(
+                client_tool_probe=CommandResult(503, "", "provider unavailable")
+            )
+            self.restart_count = 0
+
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if mutate and args == ["openclaw", "gateway", "restart"]:
+                self.restart_count += 1
+                if self.restart_count == 2:
+                    self.config_values[CRM_URL_CONFIG_PATH] = "corrupted-after-restart"
+            return result
+
+    cli = RestartMutationCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.restart_count == 2
+    assert "Could not verify restored setup state" in result.render()
+    assert "Recovery backup retained at" in result.render()
+
+
+def test_rollback_reenables_previously_enabled_plugin_after_partial_failure(tmp_path):
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+
+    class PartialEnableFailureCLI(FakeCLI):
+        failed_once = False
+
+        def run(self, args, *, mutate=False):
+            if (
+                mutate
+                and args[1:3] == ["plugins", "enable"]
+                and not self.failed_once
+            ):
+                self.failed_once = True
+                self.calls.append(args)
+                self.mutating_calls.append(args)
+                self.plugin_enabled = False
+                return CommandResult(1, "", "partially disabled before failing")
+            return super().run(args, mutate=mutate)
+
+    cli = PartialEnableFailureCLI(
+        plugin_path=plugin_path,
+        plugin_enabled=True,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.plugin_path == plugin_path
+    assert cli.plugin_enabled is True
+
+
+def test_rollback_relinks_preexisting_plugin_after_partial_install_failure(tmp_path):
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+
+    class PartialInstallFailureCLI(FakeCLI):
+        failed_once = False
+
+        def run(self, args, *, mutate=False):
+            if (
+                mutate
+                and args[1:3] == ["plugins", "install"]
+                and not self.failed_once
+            ):
+                self.failed_once = True
+                self.calls.append(args)
+                self.mutating_calls.append(args)
+                self.plugin_path = None
+                self.plugin_enabled = False
+                return CommandResult(1, "", "partially unlinked before failing")
+            return super().run(args, mutate=mutate)
+
+    cli = PartialInstallFailureCLI(
+        plugin_path=plugin_path,
+        plugin_enabled=True,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.plugin_path == plugin_path
+    assert cli.plugin_enabled is True
+
+
+def test_rollback_restores_absent_plugin_allowlist_after_implicit_install_change(
+    tmp_path,
+):
+    class ImplicitAllowlistCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if mutate and args[1:3] == ["plugins", "install"]:
+                self.config_values["plugins.allow"] = ["openhouse-crm"]
+            return result
+
+    cli = ImplicitAllowlistCLI(
+        client_tool_probe=CommandResult(503, "", "provider unavailable")
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "plugins.allow" not in cli.config_values
+
+
+def test_setup_preserves_absent_allowlist_after_implicit_install_change(tmp_path):
+    class ImplicitAllowlistCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if mutate and args[1:3] == ["plugins", "install"]:
+                self.config_values["plugins.allow"] = ["openhouse-crm"]
+            return result
+
+    cli = ImplicitAllowlistCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert "plugins.allow" not in cli.config_values
+
+
+def test_fresh_late_failure_restores_every_setup_owned_mutation(
+    tmp_path, monkeypatch
+):
+    token = "new-crm-secret"
+    monkeypatch.setenv("OHI_API_TOKEN", token)
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    config_path = tmp_path / "state" / "openclaw.json"
+    config_path.parent.mkdir()
+    options = make_options(tmp_path, bind_discord="primary")
+    cli = FakeCLI(
+        config_path=config_path,
+        client_tool_probe=CommandResult(400, "", "unsupported tools"),
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert cli.created_agent is None
+    assert cli.extra_agents == {}
+    assert cli.plugin_path is None
+    assert cli.plugin_enabled is False
+    assert cli.approval_patterns == set()
+    assert cli.bindings == set()
+    assert CRM_URL_CONFIG_PATH not in cli.config_values
+    assert TOKEN_CONFIG_PATH not in cli.config_values
+    assert not (state_dir / ".env").exists()
+    assert not options.workspace.exists()
+
+
+def test_upgrade_late_failure_restores_env_global_config_binding_and_legacy_token(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OHI_API_TOKEN", "new-secret")
+    state_dir = Path(os.environ["OPENCLAW_STATE_DIR"])
+    state_dir.mkdir()
+    env_path = state_dir / ".env"
+    original_env = b"OTHER=preserved\nOHI_API_TOKEN=old-env-secret\n"
+    env_path.write_bytes(original_env)
+    env_path.chmod(0o640)
+    options = make_options(tmp_path, bind_discord="primary")
+    original_agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "skills": ["legacy-skill"],
+        "tools": {"allow": ["web_search"]},
+        "sandbox": {"mode": "on"},
+    }
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+    old_token_ref = {"source": "env", "provider": "old", "id": "OLD_TOKEN"}
+    cli = FakeCLI(
+        config_path=tmp_path / "openclaw.json",
+        plugin_path=plugin_path,
+        plugin_enabled=True,
+        legacy_token="old-plaintext-secret",
+        client_tool_probe=CommandResult(503, "", "provider unavailable"),
+    )
+    cli.created_agent = dict(original_agent)
+    cli.config_values[CRM_URL_CONFIG_PATH] = "http://old.example/api"
+    cli.config_values[TOKEN_CONFIG_PATH] = old_token_ref
+    cli.config_values["plugins.allow"] = ["discord", "openhouse-crm"]
+    cli.bindings = {(options.agent_id, "discord:existing")}
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert env_path.read_bytes() == original_env
+    assert env_path.stat().st_mode & 0o777 == 0o640
+    assert cli.config_values[CRM_URL_CONFIG_PATH] == "http://old.example/api"
+    assert cli.config_values[TOKEN_CONFIG_PATH] == old_token_ref
+    assert cli.legacy_token == "old-plaintext-secret"
+    assert cli.bindings == {(options.agent_id, "discord:existing")}
+    assert cli.created_agent == original_agent
+    assert cli.extra_agents == {}
+    assert cli.plugin_path == plugin_path
+    assert cli.plugin_enabled is True
 
 
 def test_post_copy_contract_digest_mismatch_rolls_back_existing_skill_tree(
@@ -2113,9 +2551,105 @@ def test_canonical_contract_digest_rejects_missing_malformed_and_duplicate_keys(
     with pytest.raises(SetupConflict, match="invalid JSON"):
         validate(repo)
 
+    contract.write_text('{"version":NaN,"operations":{}}\n')
+    with pytest.raises(SetupConflict, match="invalid JSON"):
+        validate(repo)
+
     source = REPO_ROOT / "skills" / "crm-db-operations" / "contract.json"
     contract.write_bytes(source.read_bytes())
     assert validate(repo) == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["operations"]["list_leads"].update(
+            {"unexpected": True}
+        ),
+        lambda payload: payload["operations"]["list_leads"]["arguments"].update(
+            {"format": "uri"}
+        ),
+        lambda payload: payload["operations"]["list_leads"]["arguments"].update(
+            {"minimum": 0}
+        ),
+        lambda payload: payload["operations"]["create_lead"]["arguments"][
+            "properties"
+        ]["name"].update({"anyOf": [{"required": ["name"]}]}),
+    ],
+)
+def test_canonical_contract_rejects_malformed_entries_and_schema_shapes(
+    tmp_path, mutate
+):
+    repo = tmp_path / "repo"
+    contract = repo / "skills" / "crm-db-operations" / "contract.json"
+    contract.parent.mkdir(parents=True)
+    payload = json.loads(
+        (REPO_ROOT / "skills" / "crm-db-operations" / "contract.json").read_text()
+    )
+    mutate(payload)
+    contract.write_text(json.dumps(payload))
+
+    with pytest.raises(SetupConflict, match="unsupported contract shape"):
+        setup_openclaw._canonical_contract_digest(repo)
+
+
+def test_canonical_contract_read_is_bounded_and_does_not_follow_parent_symlink(
+    tmp_path,
+):
+    huge_repo = tmp_path / "huge-repo"
+    huge_contract = huge_repo / "skills" / "crm-db-operations" / "contract.json"
+    huge_contract.parent.mkdir(parents=True)
+    with huge_contract.open("wb") as stream:
+        stream.seek(1024 * 1024)
+        stream.write(b"{}")
+    with pytest.raises(SetupConflict, match="unexpectedly large"):
+        setup_openclaw._canonical_contract_digest(huge_repo)
+
+    outside = tmp_path / "outside"
+    outside_contract = outside / "crm-db-operations" / "contract.json"
+    outside_contract.parent.mkdir(parents=True)
+    outside_contract.write_bytes(
+        (REPO_ROOT / "skills" / "crm-db-operations" / "contract.json").read_bytes()
+    )
+    linked_repo = tmp_path / "linked-repo"
+    linked_repo.mkdir()
+    (linked_repo / "skills").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SetupConflict, match="symlink"):
+        setup_openclaw._canonical_contract_digest(linked_repo)
+
+
+def test_contract_snapshot_detects_source_change_and_installs_captured_bytes(tmp_path):
+    repo = tmp_path / "repo"
+    shutil_source = REPO_ROOT / "skills"
+    setup_openclaw.shutil.copytree(shutil_source, repo / "skills")
+    contract = repo / "skills" / "crm-db-operations" / "contract.json"
+    original = contract.read_bytes()
+    snapshot = setup_openclaw._capture_canonical_contract(repo)
+    payload = json.loads(original)
+    payload["operations"]["list_leads"]["description"] = "Changed after capture."
+    contract.write_text(json.dumps(payload))
+
+    workspace = tmp_path / "workspace"
+    sync_skills(repo, workspace, dry_run=False, contract_snapshot=snapshot)
+
+    assert (
+        workspace / "skills" / "crm-db-operations" / "contract.json"
+    ).read_bytes() == original
+    with pytest.raises(SetupConflict, match="changed after validation"):
+        setup_openclaw._verify_contract_source_unchanged(snapshot)
+
+
+def test_fallback_refuses_sentinel_that_exists_in_captured_contract():
+    cli = FakeCLI()
+
+    with pytest.raises(SetupConflict, match="diagnostic sentinel"):
+        setup_openclaw._verify_dashboard_tool_block(
+            cli,
+            "openhouse-crm",
+            frozenset({"__openhouse_setup_probe__"}),
+        )
+
+    assert cli.dashboard_block_probe_calls == []
 
 
 def test_sync_skills_creates_a_missing_custom_workspace_parent(tmp_path):
@@ -2139,6 +2673,70 @@ def test_sync_skills_rejects_destination_symlinks(tmp_path):
         sync_skills(REPO_ROOT, workspace, dry_run=False)
 
     assert list(outside.iterdir()) == []
+
+
+def test_sync_skills_rejects_symlinked_workspace_ancestor_without_outside_changes(
+    tmp_path,
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("unchanged\n")
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(outside, target_is_directory=True)
+    workspace = linked_parent / "workspace"
+
+    with pytest.raises(SetupConflict, match="symlink"):
+        sync_skills(REPO_ROOT, workspace, dry_run=False)
+
+    assert marker.read_text() == "unchanged\n"
+    assert sorted(path.name for path in outside.iterdir()) == ["marker.txt"]
+
+
+def test_partial_skill_restore_retains_private_backup_and_reports_recovery_path(
+    tmp_path, monkeypatch
+):
+    options = make_options(tmp_path)
+    for name in setup_openclaw.SKILL_NAMES:
+        target = options.workspace / "skills" / name
+        target.mkdir(parents=True)
+        (target / "original.txt").write_text(f"original {name}\n")
+    real_copytree = setup_openclaw.shutil.copytree
+
+    def fail_restore_copy(source, target, *args, **kwargs):
+        if "rollback" in str(source) and Path(source).name == "crm-db-operations":
+            raise OSError("simulated restore failure")
+        return real_copytree(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(setup_openclaw.shutil, "copytree", fail_restore_copy)
+    cli = FakeCLI(client_tool_probe=CommandResult(503, "", "provider unavailable"))
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    match = re.search(r"Recovery backup retained at ([^\n]+)", result.render())
+    assert match is not None
+    backup = Path(match.group(1).rstrip("."))
+    assert backup.is_dir()
+    assert backup.stat().st_mode & 0o077 == 0
+    manifest_path = backup / "transaction-state.json"
+    assert manifest_path.stat().st_mode & 0o077 == 0
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["crmAgent"] == {
+        "id": options.agent_id,
+        "existed": False,
+        "snapshot": None,
+    }
+    assert manifest["diagnosticAgent"]["id"].startswith("openhouse-setup-probe-")
+    assert manifest["diagnosticAgent"]["existed"] is False
+    assert manifest["skills"]["existingNames"] == sorted(setup_openclaw.SKILL_NAMES)
+    assert manifest["skills"]["workspace"] == str(options.workspace)
+    assert {entry["path"] for entry in manifest["config"]} >= {
+        CRM_URL_CONFIG_PATH,
+        "bindings",
+        "plugins.allow",
+    }
+    assert "Restore only after removing symlinks" in result.render()
 
 
 def test_sync_skills_preflights_every_source_before_mutating(tmp_path):
@@ -2247,6 +2845,7 @@ def test_dry_run_describes_contract_cleanup_and_capability_checks_without_io(
     assert "operations.json" in rendered
     assert "request-scoped function tools" in rendered
     assert "required CRM outcome hooks" in rendered
+    assert "dashboard-block behavior diagnostic" in rendered
     assert (installed / "operations.json").read_bytes() == before
     assert cli.mutating_calls == []
     assert cli.client_tool_probe_calls == []
@@ -3321,7 +3920,7 @@ def test_preflight_rejects_deceptive_help_superstrings(
 def test_agents_bind_capability_is_required_only_when_requested(tmp_path):
     missing_bind_help = CommandResult(
         0,
-        "Commands:\n  add\n  list\nOptions:\n  --workspace\n"
+        "Commands:\n  add\n  delete\n  list\nOptions:\n  --workspace\n"
         "  --non-interactive\n  --json\n  --agent\n  --strict-json",
         "",
     )
@@ -3477,6 +4076,47 @@ def test_failed_existing_agent_repair_restores_managed_fields(tmp_path):
     assert "Restored the previous dedicated-agent configuration" in result.render()
 
 
+def test_existing_agent_rollback_requires_authoritative_exact_readback(tmp_path):
+    options = make_options(tmp_path)
+    original = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+        "skills": ["legacy-skill"],
+        "tools": {"allow": ["web_fetch"]},
+        "sandbox": {"mode": "on"},
+    }
+
+    class IgnoredRollbackCLI(PartialPolicyCLI):
+        def __init__(self):
+            super().__init__(dict(original))
+            self.probe_failed = False
+
+        def probe_client_tools(self, *, agent_id, nonce):
+            self.probe_failed = True
+            return CommandResult(503, "", "provider unavailable")
+
+        def run(self, args, *, mutate=False):
+            if (
+                self.probe_failed
+                and mutate
+                and args[1:3] in (["config", "set"], ["config", "unset"])
+                and args[3].startswith("agents.")
+            ):
+                self.calls.append(args)
+                self.mutating_calls.append(args)
+                return CommandResult(0, "", "")
+            return super().run(args, mutate=mutate)
+
+    cli = IgnoredRollbackCLI()
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "Could not fully restore" in result.render()
+    assert "Recovery backup retained at" in result.render()
+    assert cli.created_agent != original
+
+
 def test_rollback_stops_if_agent_workspace_changes(tmp_path):
     options = make_options(tmp_path)
     original = {
@@ -3495,6 +4135,7 @@ def test_rollback_stops_if_agent_workspace_changes(tmp_path):
         call
         for call in cli.calls[validate_index + 1 :]
         if call[1:3] in (["config", "set"], ["config", "unset"])
+        and call[3].startswith("agents.")
     ]
     assert not result.ok
     assert rollback_mutations == []
