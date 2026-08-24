@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from urllib.error import HTTPError
@@ -29,6 +30,7 @@ class FakeAPI:
             {"id": 1, "name": "Jordan Ellis", "status": "new"},
             {"id": 2, "name": "Alex Rivera", "status": "contacted"},
         ]
+        self.appointments: list[dict] = []
         self.pending: dict[int, dict] = {}
         self.pending_posts: list[int] = []
         self.denied: list[int] = []
@@ -52,6 +54,14 @@ class FakeAPI:
         self.delete_count = 6
         self.reviewed_reply_pending_id = 17
         self.concurrent_pending: dict | None = None
+        self.booking_reply_pending_id = 41
+        self.create_booking_pending = True
+        self.concurrent_booking_pending: dict | None = None
+        self.duplicate_booking_pending = False
+        self.fail_booking_deny = False
+        self.fail_booking_pending_snapshot = False
+        self.fail_booking_appointment_snapshot = False
+        self.fail_booking_appointment_snapshot_after_chat = False
 
     def request(self, method: str, path: str, payload: dict | None = None):
         self.request_calls.append((method, path, payload))
@@ -72,6 +82,10 @@ class FakeAPI:
             return {"status": self.crm_status, "crm_verified": self.crm_status == "crm_verified"}
         if path == "/leads" and method == "GET":
             return [dict(lead) for lead in self.leads]
+        if path == "/appointments" and method == "GET":
+            if self.fail_booking_appointment_snapshot:
+                raise acceptance.ApiError(503, "appointments unavailable")
+            return [dict(row) for row in self.appointments]
         if path == "/pending-changes?status=pending" and method == "GET":
             self.pending_get_calls += 1
             if (
@@ -85,7 +99,7 @@ class FakeAPI:
             return [dict(row) for row in self.pending.values()]
         if path.startswith("/pending-changes/") and path.endswith("/deny") and method == "POST":
             pending_id = int(path.split("/")[2])
-            if self.fail_deny:
+            if self.fail_deny or (self.fail_booking_deny and pending_id == 41):
                 raise acceptance.ApiError(503, "deny failed")
             row = self.pending.pop(pending_id)
             row["status"] = "denied"
@@ -147,6 +161,48 @@ class FakeAPI:
                     "reply": "Nothing was queued or changed. The CRM tool failed.",
                     "session_id": response_session,
                 }
+            if "BOOKING_MARKER=" in message:
+                marker = self._marker_from_message(message, "BOOKING_MARKER")
+                lead_id = int(self._marker_from_message(message, "LEAD_ID"))
+                start_ts = self._marker_from_message(message, "START_TS")
+                end_ts = self._marker_from_message(message, "END_TS")
+                location = self._marker_from_message(message, "LOCATION")
+                if self.create_booking_pending:
+                    self.pending[41] = {
+                        "id": 41,
+                        "operation": "book_appointment",
+                        "status": "pending",
+                        "payload": {
+                            "lead_id": lead_id,
+                            "start_ts": start_ts,
+                            "end_ts": end_ts,
+                            "location": location,
+                        },
+                        "summary": f"Book acceptance appointment {marker}",
+                    }
+                    self.pending_posts.append(41)
+                    if self.duplicate_booking_pending:
+                        duplicate = dict(self.pending[41])
+                        duplicate["id"] = 42
+                        self.pending[42] = duplicate
+                    if self.concurrent_booking_pending is not None:
+                        row = dict(self.concurrent_booking_pending)
+                        self.pending[row["id"]] = row
+                    if self.fail_booking_pending_snapshot:
+                        self.pending_get_failures = acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+                    if self.fail_booking_appointment_snapshot_after_chat:
+                        self.fail_booking_appointment_snapshot = True
+                    return {
+                        "reply": (
+                            f"Queued Pending approval #{self.booking_reply_pending_id}: "
+                            "Book appointment. Status: pending; the change has not been applied."
+                        ),
+                        "session_id": response_session,
+                    }
+                return {
+                    "reply": "Nothing was queued or changed. The CRM tool failed.",
+                    "session_id": response_session,
+                }
             return {
                 "reply": (
                     f"{self.directory_count} leads total. Showing 2 (offset 0): "
@@ -170,6 +226,10 @@ class FakeAPI:
         marker = "NAME="
         return message.split(marker, 1)[1].split("\n", 1)[0].strip()
 
+    @staticmethod
+    def _marker_from_message(message: str, marker: str) -> str:
+        return message.split(f"{marker}=", 1)[1].split("\n", 1)[0].strip()
+
     def _add_pending(self, pending_id: int, name: str) -> None:
         self.pending[pending_id] = {
             "id": pending_id,
@@ -181,7 +241,41 @@ class FakeAPI:
         self.pending_posts.append(pending_id)
 
 
-def run(api: FakeAPI, *, allow_test_write: bool = False) -> dict:
+def setup_evidence(
+    *,
+    revision: str = "abc1234",
+    exits: tuple[int, ...] = (0, 0),
+    probe_exits: tuple[int, ...] | None = None,
+    state_hashes: tuple[str, ...] | None = None,
+) -> dict:
+    probe_exits = probe_exits or tuple(0 for _ in exits)
+    state_hashes = state_hashes or tuple("a" * 64 for _ in exits)
+    return {
+        "schema_version": 1,
+        "revision": revision,
+        "setup_command": ["python3", "scripts/setup_openclaw.py"],
+        "runs": [
+            {
+                "sequence": sequence,
+                "run_id": f"00000000-0000-4000-8000-{sequence:012d}",
+                "exit_code": exit_code,
+                "started_at": f"2026-08-24T12:0{sequence}:00Z",
+                "finished_at": f"2026-08-24T12:0{sequence}:30Z",
+                "sanitized_log_sha256": str(sequence) * 64,
+                "state_probe_exit_code": probe_exits[sequence - 1],
+                "sanitized_state_sha256": state_hashes[sequence - 1],
+            }
+            for sequence, exit_code in enumerate(exits, start=1)
+        ],
+    }
+
+
+def run(
+    api: FakeAPI,
+    *,
+    allow_test_write: bool = False,
+    evidence: object | None = None,
+) -> dict:
     return acceptance.run_acceptance(
         api,
         allow_test_write=allow_test_write,
@@ -191,6 +285,7 @@ def run(api: FakeAPI, *, allow_test_write: bool = False) -> dict:
         session_id="openhouse-acceptance-test-session",
         test_id="fixed123",
         briefing_date="2099-12-31",
+        setup_evidence=setup_evidence() if evidence is None else evidence,
     )
 
 
@@ -205,11 +300,12 @@ def test_discord_binding_inspection_uses_the_runtime_agent_id(monkeypatch):
 
     result = acceptance.run_acceptance(
         FakeAPI(),
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=None,
         session_id="accept-agent-env",
         test_id="agent-env",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 0
@@ -231,11 +327,12 @@ def test_discord_binding_inspection_loads_agent_id_from_repo_env(
 
     result = acceptance.run_acceptance(
         FakeAPI(),
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=None,
         session_id="accept-agent-file",
         test_id="agent-file",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 0
@@ -256,11 +353,12 @@ def test_discord_binding_inspection_defaults_only_when_agent_id_is_absent(
 
     result = acceptance.run_acceptance(
         FakeAPI(),
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=None,
         session_id="accept-agent-default",
         test_id="agent-default",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 0
@@ -283,11 +381,12 @@ def test_discord_binding_inspection_rejects_explicit_invalid_environment_agent_i
     result = acceptance.run_acceptance(
         api,
         allow_test_write=True,
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=None,
         session_id="accept-agent-invalid-env",
         test_id="agent-invalid-env",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 1
@@ -315,11 +414,12 @@ def test_discord_binding_inspection_rejects_explicit_invalid_repo_agent_id(
 
     result = acceptance.run_acceptance(
         FakeAPI(),
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=None,
         session_id="accept-agent-invalid-file",
         test_id="agent-invalid-file",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 1
@@ -342,11 +442,12 @@ def test_explicit_discord_status_cannot_bypass_invalid_runtime_agent_id(
     result = acceptance.run_acceptance(
         api,
         allow_test_write=True,
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=discord_bound,
         session_id="accept-agent-invalid-explicit-binding",
         test_id="agent-invalid-explicit-binding",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 1
@@ -367,11 +468,12 @@ def test_explicit_discord_status_keeps_absent_agent_id_default_valid(
 
     result = acceptance.run_acceptance(
         FakeAPI(),
-        revision="abc123",
+        revision="abc1234",
         dependencies=DEPENDENCIES,
         discord_bound=discord_bound,
         session_id="accept-agent-default-explicit-binding",
         test_id="agent-default-explicit-binding",
+        setup_evidence=setup_evidence(revision="abc1234"),
     )
 
     assert acceptance.exit_code(result) == 0
@@ -464,7 +566,7 @@ def test_read_only_acceptance_captures_revision_dependencies_and_verified_reads(
     assert by_name(result, "Briefing truthfulness")["level"] == "PASS"
     assert by_name(result, "Invalid write")["level"] == "SKIP"
     assert by_name(result, "Reviewed write")["level"] == "SKIP"
-    assert by_name(result, "Discord")["level"] == "SKIP"
+    assert by_name(result, "Discord delivery (manual hardware)")["level"] == "SKIP"
     assert api.pending_posts == []
     assert api.deleted_sessions == ["openhouse-acceptance-test-session"]
     assert acceptance.exit_code(result) == 0
@@ -662,7 +764,7 @@ def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
         "denied": True,
         "absent_after_denial": True,
     }
-    assert api.denied == [17]
+    assert api.denied == [17, 41]
     assert all("OHI ACCEPTANCE" not in lead["name"] for lead in api.leads)
     assert cleanup_by_name(result, "Deny disposable proposal")["level"] == "PASS"
     assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
@@ -700,7 +802,7 @@ def test_concurrent_user_proposal_is_ignored_and_never_denied():
     result = run(api, allow_test_write=True)
 
     assert by_name(result, "Reviewed write")["level"] == "PASS"
-    assert api.denied == [17]
+    assert api.denied == [17, 41]
     assert 18 in api.pending
     assert api.pending[18]["operation"] == "update_lead"
 
@@ -873,9 +975,316 @@ def test_http_boundary_never_forwards_the_api_token_through_a_redirect(monkeypat
 def test_discord_unbound_is_skip_not_pass():
     result = run(FakeAPI())
 
-    assert by_name(result, "Discord") == {
+    assert by_name(result, "Discord delivery (manual hardware)") == {
         "level": "SKIP",
-        "name": "Discord",
+        "name": "Discord delivery (manual hardware)",
         "detail": "no Discord account is bound to the CRM agent",
-        "evidence": {"bound": False},
+        "evidence": {"bound": False, "automated_delivery_proof": False},
     }
+
+
+def test_two_successful_setup_runs_are_a_required_machine_verified_prerequisite():
+    result = run(FakeAPI())
+
+    assert by_name(result, "Setup twice") == {
+        "level": "PASS",
+        "name": "Setup twice",
+        "detail": "two setup runs succeeded at the tested revision",
+        "evidence": {
+            "runs": 2,
+            "both_succeeded": True,
+            "idempotent": True,
+            "revision_matches": True,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_detail"),
+    [
+        (None, "setup evidence was not provided"),
+        (setup_evidence(exits=(0,)), "setup evidence did not contain two runs"),
+        (setup_evidence(exits=(0, 1)), "one or more setup runs failed"),
+        (
+            setup_evidence(probe_exits=(0, 1)),
+            "setup state verification failed",
+        ),
+        (
+            setup_evidence(state_hashes=("a" * 64, "b" * 64)),
+            "setup reruns were not idempotent",
+        ),
+        (setup_evidence(revision="def5678"), "setup evidence revision did not match"),
+    ],
+)
+def test_setup_evidence_missing_incomplete_failed_or_wrong_revision_fails(
+    evidence, expected_detail
+):
+    api = FakeAPI()
+    result = acceptance.run_acceptance(
+        api,
+        revision="abc1234",
+        dependencies=DEPENDENCIES,
+        discord_bound=False,
+        session_id="setup-evidence-failure",
+        test_id="setup-evidence-failure",
+        briefing_date="2099-12-31",
+        setup_evidence=evidence,
+    )
+
+    check = by_name(result, "Setup twice")
+    assert check["level"] == "FAIL"
+    assert check["detail"] == expected_detail
+    assert acceptance.exit_code(result) == 1
+
+
+def test_setup_evidence_is_strict_and_never_echoes_paths_urls_or_secrets(monkeypatch):
+    secret = "setup-secret-token"
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", secret)
+    evidence = setup_evidence()
+    evidence["notes"] = (
+        f"claimed success at {Path.home()}/private/setup.log "
+        f"http://127.0.0.1:18789/?token={secret}"
+    )
+
+    result = run(FakeAPI(), evidence=evidence)
+    rendered = acceptance.render_report(result, as_json=True)
+
+    assert by_name(result, "Setup twice")["level"] == "FAIL"
+    assert secret not in rendered
+    assert str(Path.home()) not in rendered
+    assert "127.0.0.1" not in rendered
+
+
+def test_setup_evidence_capture_runs_setup_twice_and_writes_only_sanitized_logs(
+    monkeypatch, tmp_path
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    secret = "capture-secret"
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", secret)
+    outputs = [
+        (0, f"first {Path.home()}/workspace {secret}", 0, "stable state"),
+        (0, "second http://127.0.0.1:18789/private", 0, "stable state"),
+    ]
+    calls: list[int] = []
+
+    def runner(sequence: int):
+        calls.append(sequence)
+        return outputs[sequence - 1]
+
+    manifest_path = tmp_path / "openhouse-setup-evidence.json"
+    result = capture.capture_setup_evidence(
+        manifest_path,
+        revision="a" * 40,
+        runner=runner,
+    )
+
+    assert calls == [1, 2]
+    assert result["revision"] == "a" * 40
+    assert [run["exit_code"] for run in result["runs"]] == [0, 0]
+    assert [run["state_probe_exit_code"] for run in result["runs"]] == [0, 0]
+    assert result["runs"][0]["sanitized_state_sha256"] == result["runs"][1][
+        "sanitized_state_sha256"
+    ]
+    saved = json.loads(manifest_path.read_text())
+    assert saved == result
+    for sequence in (1, 2):
+        text = (tmp_path / f"openhouse-setup-run-{sequence}.log").read_text()
+        assert secret not in text
+        assert str(Path.home()) not in text
+        assert "127.0.0.1" not in text
+
+
+def test_setup_evidence_state_fingerprint_covers_differences_after_long_prefix(
+    tmp_path,
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    prefix = "same" * 200
+    outputs = [
+        (0, "first", 0, prefix + " first-state"),
+        (0, "second", 0, prefix + " second-state"),
+    ]
+
+    manifest = capture.capture_setup_evidence(
+        tmp_path / "openhouse-setup-evidence.json",
+        revision="a" * 40,
+        runner=lambda sequence: outputs[sequence - 1],
+    )
+
+    assert manifest["runs"][0]["sanitized_state_sha256"] != manifest["runs"][1][
+        "sanitized_state_sha256"
+    ]
+    assert capture._evidence_succeeded(manifest) is False
+
+
+def test_setup_evidence_capture_preflights_all_output_files_before_running_setup(
+    tmp_path,
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    (tmp_path / "openhouse-setup-run-2.log").write_text("existing")
+    calls: list[int] = []
+
+    with pytest.raises(FileExistsError):
+        capture.capture_setup_evidence(
+            tmp_path / "openhouse-setup-evidence.json",
+            revision="a" * 40,
+            runner=lambda sequence: calls.append(sequence) or (0, "", 0, "state"),
+        )
+
+    assert calls == []
+
+
+def test_natural_language_booking_is_pending_unapplied_denied_and_absent():
+    api = FakeAPI()
+
+    result = run(api, allow_test_write=True)
+
+    check = by_name(result, "Reviewed booking")
+    assert check["level"] == "PASS"
+    assert check["evidence"]["pending_id"] == 41
+    assert check["evidence"]["operation"] == "book_appointment"
+    assert check["evidence"]["applied_before_denial"] is False
+    assert check["evidence"]["applied_after_denial"] is False
+    assert check["evidence"]["acceptance_pending_after_cleanup"] == 0
+    assert api.denied == [17, 41]
+    assert api.appointments == []
+    assert cleanup_by_name(result, "Deny booking proposal")["level"] == "PASS"
+
+
+def test_booking_fabricated_existing_pending_id_is_never_denied():
+    api = FakeAPI()
+    api.pending[5] = {
+        "id": 5,
+        "operation": "book_appointment",
+        "status": "pending",
+        "payload": {
+            "lead_id": 1,
+            "start_ts": "2030-01-01T10:00:00",
+            "end_ts": "2030-01-01T10:30:00",
+            "location": "Real customer home",
+        },
+        "summary": "Real customer appointment",
+    }
+    api.booking_reply_pending_id = 5
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "FAIL"
+    assert api.denied == [17, 41]
+    assert 5 in api.pending
+
+
+def test_booking_ignores_concurrent_unrelated_proposal():
+    api = FakeAPI()
+    api.concurrent_booking_pending = {
+        "id": 44,
+        "operation": "schedule_followup",
+        "status": "pending",
+        "payload": {"lead_id": 2, "due_ts": "2031-01-01T09:00:00", "note": "Call"},
+        "summary": "Follow up with Alex",
+    }
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "PASS"
+    assert 44 in api.pending
+    assert api.denied == [17, 41]
+
+
+def test_booking_duplicate_matching_proposals_make_ownership_unknown_and_are_not_denied():
+    api = FakeAPI()
+    api.duplicate_booking_pending = True
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "FAIL"
+    cleanup = cleanup_by_name(result, "Deny booking proposal")
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"]["ownership"] == "ambiguous"
+    assert api.denied == [17]
+    assert {41, 42}.issubset(api.pending)
+
+
+def test_booking_fails_honestly_when_no_existing_lead_is_available():
+    api = FakeAPI()
+    api.leads = []
+    api.directory_count = 0
+
+    result = run(api, allow_test_write=True)
+
+    check = by_name(result, "Reviewed booking")
+    assert check["level"] == "FAIL"
+    assert "existing lead" in check["detail"]
+    assert 41 not in api.pending_posts
+    assert acceptance.exit_code(result) == 1
+
+
+def test_booking_sends_no_write_when_appointment_baseline_cannot_be_established():
+    api = FakeAPI()
+    api.fail_booking_appointment_snapshot = True
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "FAIL"
+    assert 41 not in api.pending_posts
+    assert api.denied == [17]
+
+
+def test_booking_snapshot_uncertainty_is_cleanup_failure_and_never_guesses_ownership():
+    api = FakeAPI()
+    api.fail_booking_pending_snapshot = True
+
+    result = run(api, allow_test_write=True)
+
+    check = cleanup_by_name(result, "Deny booking proposal")
+    assert check["level"] == "FAIL"
+    assert check["evidence"]["ownership"] == "unknown"
+    assert api.denied == [17]
+    assert 41 in api.pending
+    assert acceptance.exit_code(result) == 1
+
+
+def test_booking_post_write_appointment_snapshot_failure_is_reported_after_safe_denial():
+    api = FakeAPI()
+    api.fail_booking_appointment_snapshot_after_chat = True
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "FAIL"
+    cleanup = cleanup_by_name(result, "Deny booking proposal")
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["detail"] == "booking cleanup could not be fully verified"
+    assert api.denied == [17, 41]
+    assert 41 not in api.pending
+
+
+def test_booking_cleanup_failure_is_required_and_chat_cleanup_still_runs():
+    api = FakeAPI()
+    api.fail_booking_deny = True
+
+    result = run(api, allow_test_write=True)
+
+    assert cleanup_by_name(result, "Deny booking proposal")["level"] == "FAIL"
+    assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
+    assert 41 in api.pending
+    assert acceptance.exit_code(result) == 1
+
+
+def test_bound_discord_is_never_reported_pass_without_manual_delivery_evidence():
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc1234",
+        dependencies=DEPENDENCIES,
+        discord_bound=True,
+        session_id="bound-discord",
+        test_id="bound-discord",
+        briefing_date="2099-12-31",
+        setup_evidence=setup_evidence(),
+    )
+
+    check = by_name(result, "Discord delivery (manual hardware)")
+    assert check["level"] == "WARN"
+    assert check["evidence"] == {
+        "bound": True,
+        "automated_delivery_proof": False,
+    }
+    assert "manually verify" in check["detail"]

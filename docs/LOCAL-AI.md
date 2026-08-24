@@ -246,20 +246,31 @@ same application checks. It does not include tokens, environment values, CRM
 records, chat content, model responses, or home-directory paths. Inspect any
 file yourself before sharing it.
 
-After the read-only doctor reports `crm_verified`, the automated CRM chat
-acceptance proves an audited CRM read and exact lead count, an invalid-write
-safety attempt, truthful briefing behavior, one disposable create-lead proposal
-that is never approved and is denied and cleaned up, and session cleanup. It
-does not automate booking, voice, or Discord delivery.
+For a supported-hardware report, create setup evidence before running the app.
+The helper runs setup twice and records machine-verifiable evidence tied to the
+tested revision. It also compares a read-only final-state fingerprint after
+each run. The JSON report names this prerequisite `Setup twice`.
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json
-python3 scripts/acceptance_openclaw.py --json --allow-test-write
+python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
-The first form remains read-only. The second explicitly authorizes the disposable
-proposal. It does not approve a write and does not ask you to edit OpenClaw
-configuration between checks.
+After the read-only doctor reports `crm_verified`, the automated CRM chat
+acceptance proves an audited CRM read, exact lead count, invalid-write safety,
+truthful briefing, one disposable create-lead proposal, one natural-language
+booking proposal, and session cleanup. Neither proposal is approved. Both are
+denied and cleaned up. It does not automate voice or Discord delivery.
+
+```bash
+python3 scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json
+python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+```
+
+The first form remains read-only. The second explicitly authorizes the two
+disposable proposal attempts. Neither command approves a write or edits
+OpenClaw configuration between checks. If there is no suitable existing lead,
+the booking row fails honestly because the write-enabled result cannot prove
+booking.
 
 Status meanings:
 
@@ -298,6 +309,12 @@ The reply lists each retained Pending proposal ID, each verified direct write,
 and any definite or uncertain failure. An uncertain result blocks later writes
 in the same run, while reads remain available, and the reply tells you when
 additional outcomes were omitted by the safety bound.
+
+Discord delivery is a manual hardware test. Binding alone is not a pass. A
+bound tester must confirm it lists the real CRM lead count and that a disposable
+write appears in Pending approvals. Merge waits for this manual evidence when
+Discord is in scope. The automated report records only whether a binding was
+found and never changes that into a delivery PASS.
 
 ## Voice notes
 
@@ -427,29 +444,32 @@ account. Fill them in only after a person records a real run.
 - [ ] Sanitized JSON report inspected and attached:
 
 Verify required dashboard behavior and truthful briefing first. Then record
-optional providers in this order. Steps 5 and 7 through 10 are conditional and
+optional providers in this order. Steps 6 and 8 through 11 are conditional and
 may be recorded as SKIP when those optional providers or accounts are not
 configured:
 
-- [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
-- [ ] 2. Automated CRM chat acceptance with
-  `python3 scripts/acceptance_openclaw.py --json --allow-test-write` has its
+- [ ] 1. `Setup twice` is PASS from `openhouse-setup-evidence.json` at this
+  tested revision.
+- [ ] 2. `--live-agent --live-crm` reports `CRM verified`.
+- [ ] 3. Automated CRM chat acceptance with
+  `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` has its
   report inspected and attached.
-- [ ] 3. Dashboard chat lists real CRM leads.
-- [ ] 4. Dashboard chat proposes a reviewed CRM write that appears in Pending
+- [ ] 4. Dashboard chat lists real CRM leads.
+- [ ] 5. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.
-- [ ] 5. Voice (optional): when a transcription provider is configured, a note
+- [ ] 6. Voice (optional): when a transcription provider is configured, a note
   reaches the review screen without creating a lead; otherwise record
   SKIP (not configured).
-- [ ] 6. Daily briefing uses stored CRM facts and leaves missing market
+- [ ] 7. Daily briefing uses stored CRM facts and leaves missing market
    information unavailable.
-- [ ] 7. Optional Discord binding: if bound, it lists the same real CRM leads
+- [ ] 8. Optional Discord binding: if bound, manually verify it lists the same
+  real CRM leads
   through the dedicated agent; otherwise record SKIP.
-- [ ] 8. If Discord is bound, it proposes a disposable write that appears in the
+- [ ] 9. If Discord is bound, manually verify it proposes a disposable write that appears in the
   same Pending approvals; otherwise record SKIP.
-- [ ] 9. With live integrations enabled, approve one disposable booking and
+- [ ] 10. With live integrations enabled, approve one disposable booking and
   verify one Google Calendar event; otherwise record SKIP.
-- [ ] 10. With live integrations enabled, approve one disposable lead with an
+- [ ] 11. With live integrations enabled, approve one disposable lead with an
   email and verify one Calendar call block plus one Gmail draft; otherwise
   record SKIP.
 

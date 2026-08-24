@@ -100,15 +100,24 @@ python3 scripts/doctor.py --live-agent --live-crm --json \
 Inspect the file before sharing it. The report is designed to omit tokens, CRM
 records, chat content, model responses, and your home-directory path.
 
-After the read-only check reports `crm_verified`, the automated CRM chat
-acceptance proves an audited CRM read and exact lead count, an invalid-write
-safety attempt, truthful briefing behavior, one disposable create-lead proposal
-that is never approved and is denied and cleaned up, and session cleanup. It
-does not automate booking, voice, or Discord delivery. Run it only when you are
-comfortable authorizing that disposable proposal:
+For a hardware acceptance report, create explicit setup evidence first. The
+helper runs setup twice and records machine-verifiable evidence tied to the
+tested revision. It also compares a read-only final-state fingerprint after
+each run. The report names this prerequisite `Setup twice`.
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write
+python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+```
+
+After the read-only check reports `crm_verified`, the automated CRM chat
+acceptance proves an audited CRM read, exact lead count, invalid-write safety,
+truthful briefing, one disposable create-lead proposal, one natural-language
+booking proposal, and session cleanup. Neither proposal is approved. Both are
+denied and cleaned up. It does not automate voice or Discord delivery. Run it
+only when you are comfortable authorizing those disposable proposals:
+
+```bash
+python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 ## 4. Check the visible behavior
@@ -163,6 +172,11 @@ still proposed for review in the dashboard before they apply. A multi-write
 Discord reply preserves each retained proposal ID or verified result and reports
 failures; an uncertain result blocks later writes in that request.
 
+Discord delivery is a manual hardware test. Binding alone is not a pass. A
+bound tester must confirm it lists the real CRM lead count and that a disposable
+write appears in Pending approvals. Merge waits for this manual evidence when
+Discord is in scope.
+
 ## 7. Recovery
 
 - **Endpoint disabled / 404:** repeat step 2 and restart OpenClaw.
@@ -187,13 +201,16 @@ Do not check these boxes until someone has completed the run on this machine.
 - [ ] Memory:
 - [ ] Date and operator:
 - [ ] Product revision from the compatibility report:
+- [ ] `Setup twice` PASS for the tested revision in
+  `openhouse-setup-evidence.json`
 - [ ] `--live-agent --live-crm` reports CRM capability verified
 - [ ] Automated CRM chat acceptance with
-  `python3 scripts/acceptance_openclaw.py --json --allow-test-write`
+  `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json`
   report inspected and attached
+- [ ] Natural-language booking proposal stayed unapplied and was denied
 - [ ] Dashboard chat proposes a reviewed CRM write
 - [ ] Voice (optional): PASS with a configured provider, or SKIP (not configured)
-- [ ] Optional Discord binding, if used, reaches the same agent
+- [ ] Optional Discord binding, if used, has manual read and reviewed-write evidence
 - [ ] Sanitized compatibility report inspected and attached
 
 For private-network access, advanced configuration, or further troubleshooting,

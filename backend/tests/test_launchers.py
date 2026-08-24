@@ -170,13 +170,21 @@ def test_beginner_guides_share_setup_readiness_and_acceptance_commands():
     normal_setup = "python3 scripts/setup_openclaw.py"
     serve = "bash scripts/serve.sh"
     readiness = "python3 scripts/doctor.py --live-agent --live-crm"
-    acceptance = "python3 scripts/acceptance_openclaw.py --json --allow-test-write"
+    setup_evidence = (
+        "python3 scripts/capture_setup_evidence.py "
+        "--output openhouse-setup-evidence.json"
+    )
+    acceptance = (
+        "python3 scripts/acceptance_openclaw.py --json --allow-test-write "
+        "--setup-evidence openhouse-setup-evidence.json"
+    )
 
     for path in BEGINNER_GUIDES:
         text = path.read_text()
         assert normal_setup in text, path
         assert serve in text, path
         assert readiness in text, path
+        assert setup_evidence in text, path
         assert acceptance in text, path
         assert text.index(normal_setup) < text.index(serve) < text.index(readiness), path
 
@@ -250,10 +258,11 @@ def test_acceptance_scope_is_accurate_in_every_beginner_guide():
         "invalid-write safety",
         "truthful briefing",
         "disposable create-lead proposal",
-        "never approved",
+        "natural-language booking proposal",
+        "Neither proposal is approved",
         "denied and cleaned up",
         "session cleanup",
-        "does not automate booking, voice, or Discord delivery",
+        "does not automate voice or Discord delivery",
     )
     misleading = re.compile(r"\b(?:full|complete) acceptance\b|\bsupported full test\b")
 
@@ -289,6 +298,59 @@ def test_discord_is_optional_and_follows_dashboard_acceptance_everywhere():
         assert expected in _normalized(path.read_text()), path
 
 
+def test_discord_delivery_is_a_manual_hardware_gate_not_an_automated_pass():
+    required = (
+        "Discord delivery is a manual hardware test",
+        "binding alone is not a pass",
+        "lists the real CRM lead count",
+        "disposable write appears in Pending approvals",
+        "merge waits for this manual evidence when Discord is in scope",
+    )
+    for path in BEGINNER_GUIDES:
+        text = _normalized(path.read_text()).casefold()
+        for phrase in required:
+            assert phrase.casefold() in text, (path, phrase)
+
+
+def test_setup_evidence_is_explicit_and_tied_to_the_tested_revision_everywhere():
+    required = (
+        "runs setup twice",
+        "tested revision",
+        "openhouse-setup-evidence.json",
+        "Setup twice",
+    )
+    for path in BEGINNER_GUIDES:
+        text = _normalized(path.read_text())
+        for phrase in required:
+            assert phrase in text, (path, phrase)
+
+
+def test_generated_hardware_acceptance_artifacts_are_not_tracked_by_default():
+    ignored = (REPO / ".gitignore").read_text().splitlines()
+
+    assert "openhouse-setup-evidence.json" in ignored
+    assert "openhouse-setup-run-*.log" in ignored
+    assert "openhouse-acceptance.json" in ignored
+
+
+def test_approved_design_matches_automated_and_manual_hardware_gates():
+    design = _normalized(
+        (REPO / "docs/superpowers/specs/2026-08-22-verified-dashboard-crm-chat-design.md")
+        .read_text()
+    ).casefold()
+
+    for phrase in (
+        "two explicit setup runs",
+        "machine-verifiable setup evidence",
+        "natural-language booking proposal",
+        "never approves",
+        "Discord delivery remains a manual hardware test",
+        "binding alone is not proof",
+        "merge waits for the manual Discord evidence when Discord is in scope",
+    ):
+        assert phrase.casefold() in design, phrase
+
+
 def test_local_ai_acceptance_checklist_has_one_numbered_sequence():
     text = (REPO / "docs/LOCAL-AI.md").read_text()
     section = text[text.index("## Target hardware and live acceptance record") : text.index(
@@ -298,8 +360,8 @@ def test_local_ai_acceptance_checklist_has_one_numbered_sequence():
         int(value)
         for value in re.findall(r"^- \[ \] (\d+)\.", section, flags=re.MULTILINE)
     ]
-    assert numbers == list(range(1, 11))
-    assert "Steps 5 and 7 through 10 are conditional" in _normalized(section)
+    assert numbers == list(range(1, 12))
+    assert "Steps 6 and 8 through 11 are conditional" in _normalized(section)
 
 
 def test_local_ai_explains_evidence_statuses_without_equating_chat_and_crm():

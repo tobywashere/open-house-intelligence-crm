@@ -295,6 +295,17 @@ cannot perform the same mutation before the backend's verified invoke. Discord
 uses the same strict native tool and a run-scoped delivery guard for reviewed
 write receipts.
 
+Supported-hardware acceptance consumes strict revision-tied evidence produced
+by two explicit setup runs. Its read-only mode verifies audited reads, exact
+lead counts, and briefing truthfulness without proposing a change. Its explicit
+write mode proposes one disposable lead and one natural-language booking for an
+existing lead. It takes Pending and appointment baselines, accepts only an
+exact acceptance-owned proposal ID and payload, never approves, denies that
+proposal, and proves the lead or appointment was not applied. Snapshot,
+ownership, denial, or cleanup uncertainty is a required failure. Discord
+binding is reported separately; channel delivery remains a manual hardware
+test and cannot become PASS from configuration alone.
+
 **Audit reality (corrected 2026-07-27, refined 2026-07-28 — the previous
 "every tool call MUST write an audit_log row" claim here was false):** every
 **write** made through the REST layer is audited, with exactly one

@@ -776,13 +776,15 @@ git commit -m "fix: verify CRM chat orchestration capabilities"
 
 **Files:**
 - Create: `scripts/acceptance_openclaw.py`
+- Create: `scripts/capture_setup_evidence.py`
 - Create: `backend/tests/test_acceptance_openclaw.py`
 - Modify: `scripts/doctor.py`
 - Modify: `backend/tests/test_doctor.py`
 
 **Interfaces:**
-- Produces: `python3 scripts/acceptance_openclaw.py --json` for read-only checks.
-- Produces: `python3 scripts/acceptance_openclaw.py --json --allow-test-write` for one disposable reviewed-write test.
+- Produces: `python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json` for two explicit revision-tied setup runs.
+- Produces: `python3 scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json` for read-only checks.
+- Produces: `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` for disposable reviewed create-lead and booking tests.
 - Output schema: `{schema_version:1, revision, checks:[{level,name,detail,evidence}], cleanup:[...], warnings:[...]}` with secrets and local home paths removed.
 
 - [ ] **Step 1: Write failing acceptance-runner tests**
@@ -801,6 +803,13 @@ Use a fake HTTP boundary and temporary report path. Cover:
 - sanitized URL, token, exception, and filesystem output;
 - nonzero exit on any required failure;
 - Discord marked `SKIP` when unbound rather than `PASS`.
+- two strict setup results and matching read-only final-state fingerprints at
+  the tested revision, with missing, failed, mismatched, or malformed evidence
+  rejected;
+- natural-language booking against an existing lead, exact Pending ownership,
+  appointment nonapplication, denial, and post-cleanup absence;
+- bound Discord delivery retained as a manual hardware check, never automated
+  PASS from a binding.
 
 ```python
 def test_write_acceptance_requires_explicit_flag(fake_api):
@@ -824,7 +833,7 @@ Call the running application's health, agent-check, crm-check, leads, chat, summ
 
 - [ ] **Step 4: Implement the explicit disposable-write path**
 
-Generate a unique clearly marked test name. Ask dashboard chat to create it, require a real pending ID in the verified reply, confirm the lead does not exist, deny that exact pending proposal, confirm absence again, and delete the acceptance chat session. Never approve the proposal.
+Generate a unique clearly marked test name. Ask dashboard chat to create it, require a real pending ID in the verified reply, confirm the lead does not exist, deny that exact pending proposal, confirm absence again, and delete the acceptance chat session. Then use one suitable existing lead and a unique future time/address marker for an ordinary natural-language booking. Require the exact new `book_appointment` proposal, prove no appointment was applied, deny only the acceptance-owned proposal, and prove it remains unapplied with no owned Pending proposal left. Never approve either proposal.
 
 Use `try/finally` cleanup. If proposal creation succeeded but a later assertion failed, deny it during cleanup. Report a cleanup failure separately and exit nonzero.
 
@@ -844,7 +853,7 @@ pytest tests/test_acceptance_openclaw.py tests/test_doctor.py -q
 - [ ] **Step 7: Commit**
 
 ```bash
-git add scripts/acceptance_openclaw.py scripts/doctor.py backend/tests/test_acceptance_openclaw.py backend/tests/test_doctor.py
+git add scripts/acceptance_openclaw.py scripts/capture_setup_evidence.py scripts/doctor.py backend/tests/test_acceptance_openclaw.py backend/tests/test_doctor.py
 git commit -m "test: add one-command OpenClaw acceptance"
 ```
 
@@ -873,7 +882,7 @@ Extend existing launcher/documentation tests to require:
 - `python3 scripts/setup_openclaw.py` as the only normal OpenClaw setup command;
 - `bash scripts/serve.sh` as the serve command;
 - `python3 scripts/doctor.py --live-agent --live-crm` as the read-only readiness command;
-- `python3 scripts/acceptance_openclaw.py --json --allow-test-write` as the explicit full acceptance command;
+- `python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` as the explicit write-enabled acceptance command;
 - plain-language explanation that writes wait for review;
 - no instructions to edit `agents.list`, global tool profiles, exec policy, or plugin files manually;
 - Mac mini 16 GB minimum and WSL/Linux compatibility language;
@@ -952,11 +961,18 @@ git commit -m "docs: explain verified local CRM chat"
 git push origin codex/openclaw-setup-compat
 ```
 
-Ask the external tester to pull the exact pushed revision, run setup twice,
-start the app, then run:
+Ask the external tester to pull the exact pushed revision and use the evidence
+helper to run setup twice:
+
+```bash
+python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+```
+
+Then start the app and run:
 
 ```bash
 python3 scripts/acceptance_openclaw.py --json --allow-test-write \
+  --setup-evidence openhouse-setup-evidence.json \
   | tee openhouse-acceptance.json
 ```
 

@@ -60,14 +60,23 @@ CRM, not merely that a generic assistant answered. Setup installs the
 repair OpenClaw agent, tool, exec, profile, or plugin settings by hand. Rerun
 the same setup command if it reports a partial installation.
 
-The automated CRM chat acceptance proves an audited CRM read and exact lead
-count, an invalid-write safety attempt, truthful briefing behavior, one
-disposable create-lead proposal that is never approved and is denied and
-cleaned up, and session cleanup. It does not automate booking, voice, or
-Discord delivery. To authorize that disposable proposal, run:
+For a hardware acceptance report, first capture two explicit setup runs. This
+helper runs setup twice and saves machine-verifiable evidence tied to the
+tested revision. It also compares a read-only final-state fingerprint after
+each run. The acceptance report shows it as `Setup twice`:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write
+python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+```
+
+The automated CRM chat acceptance proves an audited CRM read, exact lead
+count, invalid-write safety, truthful briefing, one disposable create-lead
+proposal, one natural-language booking proposal, and session cleanup. Neither
+proposal is approved. Both are denied and cleaned up. It does not automate
+voice or Discord delivery. To authorize those disposable proposals, run:
+
+```bash
+python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 This command never approves the test proposal. Inspect its JSON before sharing
@@ -124,6 +133,11 @@ If one Discord request attempts several writes, its final reply lists every
 verified proposal or applied result it retained, plus any failure. An uncertain
 result blocks later writes in that request and tells you to inspect the CRM and
 Pending approvals before retrying.
+
+Discord delivery is a manual hardware test. Binding alone is not a pass. A
+bound tester must confirm it lists the real CRM lead count and that a disposable
+write appears in Pending approvals. Merge waits for this manual evidence when
+Discord is in scope.
 
 ## Help and privacy
 

@@ -152,16 +152,25 @@ openclaw config validate
 Follow the restart instruction OpenClaw prints. Confirm OpenClaw can still
 answer a normal prompt before continuing.
 
-## 6. Run setup twice and save the output
-
-The first run creates or repairs the dedicated CRM agent. The second proves the
-same setup is safe to repeat. `pipefail` keeps a failed setup from looking
-successful just because `tee` saved its output.
+For ordinary use, the normal setup command is:
 
 ```bash
-set -o pipefail
-python3 scripts/setup_openclaw.py 2>&1 | tee openhouse-setup.txt
-python3 scripts/setup_openclaw.py 2>&1 | tee -a openhouse-setup.txt
+python3 scripts/setup_openclaw.py
+```
+
+For a formal hardware acceptance, skip that one run and use the two-run evidence
+helper in the next section instead.
+
+## 6. Run setup twice and save evidence
+
+The evidence helper runs setup twice. The first run creates or repairs the
+dedicated CRM agent. The second proves the same setup is safe to repeat. It
+saves two sanitized logs, compares a read-only final-state fingerprint after
+each run, and records machine-verifiable evidence tied to the tested revision.
+The later report names this prerequisite `Setup twice`.
+
+```bash
+python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
 
 Setup links the bundled `openhouse_crm` plugin, verifies that OpenClaw really
@@ -169,7 +178,7 @@ registered the tool, installs the `crm-db-operations` guidance for
 the `AGENT_ID` selected in `.env`, and leaves only the deterministic daily brief
 on the exec allowlist. Do not manually edit the agent's plugin, exec host, mode,
 security, or global `tools.exec` settings between runs. If setup fails, stop here
-and keep `openhouse-setup.txt` for the maintainer.
+and keep the evidence file and sanitized run logs for the maintainer.
 
 ## 7. Start the product
 
@@ -200,14 +209,14 @@ include tokens, environment values, CRM rows, chat content, model responses, or
 home-directory paths. Inspect the file yourself before sharing it.
 
 After that read-only check reports `crm_verified`, the automated CRM chat
-acceptance proves an audited CRM read and exact lead count, an invalid-write
-safety attempt, truthful briefing behavior, one disposable create-lead proposal
-that is never approved and is denied and cleaned up, and session cleanup. It
-does not automate booking, voice, or Discord delivery. Run it only if you want
-to authorize that disposable proposal:
+acceptance proves an audited CRM read, exact lead count, invalid-write safety,
+truthful briefing, one disposable create-lead proposal, one natural-language
+booking proposal, and session cleanup. Neither proposal is approved. Both are
+denied and cleaned up. It does not automate voice or Discord delivery. Run it
+only if you want to authorize those disposable proposals:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write
+python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
 ## 9. Check the visible behavior
@@ -247,18 +256,25 @@ proposal ID or verified result and reports failures. If an outcome is uncertain,
 later writes in that run are blocked until you inspect the CRM and Pending
 approvals.
 
+Discord delivery is a manual hardware test. Binding alone is not a pass. A
+bound tester must confirm it lists the real CRM lead count and that a disposable
+write appears in Pending approvals. Merge waits for this manual evidence when
+Discord is in scope.
+
 ## 10. Send one complete test bundle
 
 Return these items together so maintainers do not need to ask for one command
 at a time:
 
-- `openhouse-setup.txt`, containing the first and second setup runs
+- `openhouse-setup-evidence.json` and both sanitized setup run logs
 - `openhouse-compatibility.json`
+- `openhouse-acceptance.json` from the write-enabled command
 - Pass or fail for dashboard CRM read
 - Pass or fail for the reviewed disposable write
+- Pass or fail for the reviewed natural-language booking
 - Voice review: PASS with a configured provider, or SKIP (not configured)
 - Pass or fail for the truthful daily briefing state
-- Optional Discord result
+- Manual Discord read and reviewed-write result when Discord is in scope
 
 Do not include `.env`, OpenClaw configuration files, tokens, CRM databases,
 recordings, or screenshots containing client information.

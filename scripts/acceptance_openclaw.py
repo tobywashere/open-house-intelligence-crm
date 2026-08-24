@@ -4,17 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -45,6 +48,24 @@ MAX_TEXT = 500
 POST_WRITE_SNAPSHOT_ATTEMPTS = 3
 PENDING_RE = re.compile(r"\bQueued Pending approval #(\d+)\b")
 DIRECTORY_RE = re.compile(r"^\s*(\d+) leads total\.", re.IGNORECASE)
+REVISION_RE = re.compile(r"^[0-9a-f]{7,40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SETUP_EVIDENCE_KEYS = {
+    "revision",
+    "runs",
+    "schema_version",
+    "setup_command",
+}
+SETUP_RUN_KEYS = {
+    "exit_code",
+    "finished_at",
+    "run_id",
+    "sanitized_log_sha256",
+    "sanitized_state_sha256",
+    "sequence",
+    "started_at",
+    "state_probe_exit_code",
+}
 FORBIDDEN_BRIEFING_KEYS = {
     "ai_insights",
     "citations",
@@ -162,6 +183,174 @@ def _capture_dependencies() -> dict[str, str]:
         ),
         "ollama": doctor._command_version(["ollama", "--version"]) or "not found",
     }
+
+
+def _load_setup_evidence(path: Path) -> object:
+    """Read one small regular JSON evidence file without following its leaf."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError("setup evidence could not be read") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 64 * 1024:
+            raise ValueError("setup evidence was not a bounded regular file")
+        raw = os.read(descriptor, 64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            raise ValueError("setup evidence exceeded the safe size limit")
+    finally:
+        os.close(descriptor)
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("setup evidence was not valid JSON") from exc
+
+
+def _parse_evidence_time(value: object) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError("setup evidence timestamp was malformed")
+    parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    if parsed.tzinfo is None:
+        raise ValueError("setup evidence timestamp was malformed")
+    return parsed
+
+
+def _setup_evidence_entry(evidence: object, revision: str) -> dict:
+    base_evidence = {
+        "runs": 0,
+        "both_succeeded": False,
+        "idempotent": False,
+        "revision_matches": False,
+    }
+    if evidence is None:
+        return _entry(
+            "FAIL", "Setup twice", "setup evidence was not provided", base_evidence
+        )
+    if not isinstance(evidence, dict) or set(evidence) != SETUP_EVIDENCE_KEYS:
+        return _entry(
+            "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
+        )
+    evidence_revision = evidence.get("revision")
+    command = evidence.get("setup_command")
+    runs = evidence.get("runs")
+    if (
+        evidence.get("schema_version") != 1
+        or not isinstance(evidence_revision, str)
+        or REVISION_RE.fullmatch(evidence_revision) is None
+        or command != ["python3", "scripts/setup_openclaw.py"]
+        or not isinstance(runs, list)
+    ):
+        return _entry(
+            "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
+        )
+    base_evidence["runs"] = len(runs)
+    if len(runs) != 2:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "setup evidence did not contain two runs",
+            base_evidence,
+        )
+    valid_runs = True
+    run_ids: set[str] = set()
+    previous_finish: datetime | None = None
+    exits: list[int] = []
+    probe_exits: list[int] = []
+    state_hashes: list[str] = []
+    for expected_sequence, run in enumerate(runs, start=1):
+        if not isinstance(run, dict) or set(run) != SETUP_RUN_KEYS:
+            valid_runs = False
+            break
+        try:
+            run_id = str(uuid.UUID(run["run_id"])).lower()
+            started = _parse_evidence_time(run["started_at"])
+            finished = _parse_evidence_time(run["finished_at"])
+        except (KeyError, TypeError, ValueError):
+            valid_runs = False
+            break
+        exit_code = run.get("exit_code")
+        probe_exit_code = run.get("state_probe_exit_code")
+        if (
+            run.get("sequence") != expected_sequence
+            or not isinstance(exit_code, int)
+            or isinstance(exit_code, bool)
+            or not isinstance(probe_exit_code, int)
+            or isinstance(probe_exit_code, bool)
+            or not isinstance(run.get("sanitized_log_sha256"), str)
+            or SHA256_RE.fullmatch(run["sanitized_log_sha256"]) is None
+            or not isinstance(run.get("sanitized_state_sha256"), str)
+            or SHA256_RE.fullmatch(run["sanitized_state_sha256"]) is None
+            or run_id in run_ids
+            or finished < started
+            or (previous_finish is not None and started < previous_finish)
+        ):
+            valid_runs = False
+            break
+        run_ids.add(run_id)
+        previous_finish = finished
+        exits.append(exit_code)
+        probe_exits.append(probe_exit_code)
+        state_hashes.append(run["sanitized_state_sha256"])
+    if not valid_runs:
+        return _entry(
+            "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
+        )
+    both_succeeded = exits == [0, 0]
+    state_verified = probe_exits == [0, 0]
+    state_matches = len(set(state_hashes)) == 1
+    revision_matches = (
+        REVISION_RE.fullmatch(revision) is not None
+        and (
+            evidence_revision.startswith(revision)
+            or revision.startswith(evidence_revision)
+        )
+    )
+    base_evidence.update(
+        {
+            "both_succeeded": both_succeeded,
+            "idempotent": (
+                both_succeeded
+                and state_verified
+                and state_matches
+                and revision_matches
+            ),
+            "revision_matches": revision_matches,
+        }
+    )
+    if not both_succeeded:
+        return _entry(
+            "FAIL", "Setup twice", "one or more setup runs failed", base_evidence
+        )
+    if not state_verified:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "setup state verification failed",
+            base_evidence,
+        )
+    if not revision_matches:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "setup evidence revision did not match",
+            base_evidence,
+        )
+    if not state_matches:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "setup reruns were not idempotent",
+            base_evidence,
+        )
+    return _entry(
+        "PASS",
+        "Setup twice",
+        "two setup runs succeeded at the tested revision",
+        base_evidence,
+    )
 
 
 def _runtime_agent_id() -> str:
@@ -299,6 +488,111 @@ def _post_write_owned_proposals(
             continue
         return _owned_proposals(snapshot, baseline_ids, expected_name), attempt
     raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
+
+
+def _appointment_snapshot(api: ApiBoundary) -> dict[int, dict]:
+    rows = _request_list(api, "GET", "/appointments")
+    snapshot: dict[int, dict] = {}
+    for row in rows:
+        appointment_id = row.get("id")
+        lead_id = row.get("lead_id")
+        if (
+            not isinstance(appointment_id, int)
+            or isinstance(appointment_id, bool)
+            or appointment_id <= 0
+            or appointment_id in snapshot
+            or not isinstance(lead_id, int)
+            or isinstance(lead_id, bool)
+            or lead_id <= 0
+            or not isinstance(row.get("start_ts"), str)
+            or not row["start_ts"].strip()
+            or not isinstance(row.get("end_ts"), str)
+            or not row["end_ts"].strip()
+            or not (
+                row.get("location") is None
+                or isinstance(row.get("location"), str)
+            )
+        ):
+            raise ValueError("appointment snapshot was malformed")
+        snapshot[appointment_id] = row
+    return snapshot
+
+
+def _suitable_lead(leads: list[dict]) -> dict | None:
+    candidates = [
+        lead
+        for lead in leads
+        if isinstance(lead.get("id"), int)
+        and not isinstance(lead.get("id"), bool)
+        and lead["id"] > 0
+        and isinstance(lead.get("name"), str)
+        and bool(lead["name"].strip())
+    ]
+    return min(candidates, key=lambda lead: lead["id"]) if candidates else None
+
+
+def _owned_booking_proposals(
+    snapshot: dict[int, dict],
+    baseline_ids: set[int],
+    expected_payload: dict,
+) -> dict[int, dict]:
+    return {
+        pending_id: row
+        for pending_id, row in snapshot.items()
+        if pending_id not in baseline_ids
+        and row.get("operation") == "book_appointment"
+        and row.get("payload") == expected_payload
+    }
+
+
+def _post_write_owned_booking_proposals(
+    api: ApiBoundary,
+    baseline_ids: set[int],
+    expected_payload: dict,
+) -> tuple[dict[int, dict], int]:
+    for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
+        try:
+            snapshot = _pending_snapshot(api)
+        except Exception:
+            continue
+        return (
+            _owned_booking_proposals(snapshot, baseline_ids, expected_payload),
+            attempt,
+        )
+    raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
+
+
+def _booking_applied(
+    snapshot: dict[int, dict],
+    baseline_ids: set[int],
+    expected_payload: dict,
+) -> bool:
+    for appointment_id, row in snapshot.items():
+        if appointment_id in baseline_ids:
+            continue
+        same_slot = (
+            row.get("lead_id") == expected_payload["lead_id"]
+            and row.get("start_ts") == expected_payload["start_ts"]
+            and row.get("end_ts") == expected_payload["end_ts"]
+        )
+        marker_present = row.get("location") == expected_payload["location"]
+        if same_slot or marker_present:
+            return True
+    return False
+
+
+def _booking_window(test_id: str) -> tuple[datetime, datetime]:
+    marker = int.from_bytes(
+        hashlib.sha256(test_id.encode("utf-8")).digest()[:4], "big"
+    )
+    start = (datetime.now(UTC) + timedelta(days=3650 + marker % 365)).replace(
+        hour=13 + marker % 7,
+        minute=marker % 60,
+        second=0,
+        microsecond=0,
+        tzinfo=None,
+    )
+    return start, start + timedelta(minutes=30)
 
 
 def _deny_pending(api: ApiBoundary, pending_id: int, reason: str) -> None:
@@ -603,7 +897,7 @@ def _run_reviewed_write(
     *,
     session_id: str,
     test_id: str,
-) -> None:
+) -> bool:
     name = f"OHI ACCEPTANCE TEST {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
@@ -735,6 +1029,234 @@ def _run_reviewed_write(
             },
         )
     )
+    return passed
+
+
+def _run_reviewed_booking(
+    api: ApiBoundary,
+    checks: list[dict],
+    cleanup: list[dict],
+    *,
+    session_id: str,
+    test_id: str,
+) -> bool:
+    marker = f"OHI-ACCEPTANCE-BOOKING-{test_id}"
+    location = f"{marker}, 1 Review Queue Way"
+    baseline_pending_ids: set[int] | None = None
+    baseline_appointments: dict[int, dict] | None = None
+    expected_payload: dict | None = None
+    owned: dict[int, dict] = {}
+    reported_pending_id: int | None = None
+    pending_id: int | None = None
+    denied = False
+    applied_before = False
+    applied_after = False
+    pending_after: int | str = "unknown"
+    error: str | None = None
+    write_sent = False
+    ownership_known = False
+    ownership_ambiguous = False
+    snapshot_attempts = 0
+
+    try:
+        try:
+            leads = _request_list(api, "GET", "/leads")
+            lead = _suitable_lead(leads)
+            if lead is None:
+                raise ValueError("no suitable existing lead was available for booking")
+            baseline_pending_ids = set(_pending_snapshot(api))
+            baseline_appointments = _appointment_snapshot(api)
+        except Exception as exc:
+            error = _safe_error(exc)
+            if isinstance(exc, ValueError) and "existing lead" in str(exc):
+                error = str(exc)
+            lead = None
+
+        if (
+            lead is not None
+            and baseline_pending_ids is not None
+            and baseline_appointments is not None
+        ):
+            start, end = _booking_window(test_id)
+            expected_payload = {
+                "lead_id": lead["id"],
+                "start_ts": start.isoformat(),
+                "end_ts": end.isoformat(),
+                "location": location,
+            }
+            if _booking_applied(
+                baseline_appointments, set(), expected_payload
+            ):
+                error = "acceptance booking marker already existed"
+            else:
+                write_sent = True
+                reply = ""
+                try:
+                    reply = _chat(
+                        api,
+                        session_id,
+                        (
+                            "Book exactly one appointment in natural language for the existing "
+                            f"CRM lead {lead['name']} (lead ID {lead['id']}). Use exactly "
+                            f"{expected_payload['start_ts']} through {expected_payload['end_ts']} "
+                            f"at {location}. The booking must wait for human review.\n"
+                            f"BOOKING_MARKER={marker}\n"
+                            f"LEAD_ID={lead['id']}\n"
+                            f"START_TS={expected_payload['start_ts']}\n"
+                            f"END_TS={expected_payload['end_ts']}\n"
+                            f"LOCATION={location}"
+                        ),
+                    )
+                except Exception as exc:
+                    error = error or _safe_error(exc)
+                match = PENDING_RE.search(reply)
+                if match:
+                    reported_pending_id = int(match.group(1))
+                try:
+                    owned, snapshot_attempts = _post_write_owned_booking_proposals(
+                        api, baseline_pending_ids, expected_payload
+                    )
+                    ownership_known = True
+                except ProposalOwnershipUnknown as exc:
+                    snapshot_attempts = exc.attempts
+                    error = error or "proposal ownership unknown"
+
+                if ownership_known:
+                    try:
+                        if len(owned) > 1:
+                            ownership_ambiguous = True
+                            raise ValueError(
+                                "multiple matching booking proposals made ownership ambiguous"
+                            )
+                        if len(owned) != 1 or reported_pending_id not in owned:
+                            raise ValueError(
+                                "chat did not return exactly one real booking proposal ID"
+                            )
+                        pending_id = reported_pending_id
+                        applied_before = _booking_applied(
+                            _appointment_snapshot(api),
+                            set(baseline_appointments),
+                            expected_payload,
+                        )
+                        if applied_before:
+                            raise ValueError("booking was applied before review")
+                    except Exception as exc:
+                        error = error or _safe_error(exc)
+    finally:
+        cleanup_level = "SKIP"
+        cleanup_detail = (
+            "write request was not sent"
+            if not write_sent
+            else "verified snapshot contained no acceptance-owned booking proposal"
+        )
+        cleanup_evidence: dict = {"pending_id": pending_id, "failed": []}
+        if write_sent and not ownership_known:
+            cleanup_level = "FAIL"
+            cleanup_detail = (
+                "booking proposal ownership could not be established after the write request"
+            )
+            cleanup_evidence = {
+                "ownership": "unknown",
+                "snapshot_attempts": snapshot_attempts,
+            }
+        elif write_sent and ownership_ambiguous:
+            cleanup_level = "FAIL"
+            cleanup_detail = (
+                "multiple matching booking proposals made safe cleanup ambiguous"
+            )
+            cleanup_evidence = {
+                "ownership": "ambiguous",
+                "candidate_count": len(owned),
+            }
+        elif write_sent:
+            failures: list[int] = []
+            for candidate in sorted(owned):
+                try:
+                    _deny_pending(
+                        api, candidate, "Automated disposable acceptance booking"
+                    )
+                    if candidate == pending_id and pending_id is not None:
+                        denied = True
+                except Exception:
+                    failures.append(candidate)
+            try:
+                if expected_payload is None or baseline_pending_ids is None:
+                    raise ValueError("booking cleanup context was incomplete")
+                remaining = _owned_booking_proposals(
+                    _pending_snapshot(api), baseline_pending_ids, expected_payload
+                )
+                pending_after = len(remaining)
+                if remaining:
+                    failures.extend(
+                        candidate
+                        for candidate in remaining
+                        if candidate not in failures
+                    )
+            except Exception:
+                pending_after = "unknown"
+                error = error or "booking cleanup snapshot failed"
+                cleanup_level = "FAIL"
+                cleanup_detail = "booking cleanup could not be fully verified"
+            if baseline_appointments is not None and expected_payload is not None:
+                try:
+                    applied_after = _booking_applied(
+                        _appointment_snapshot(api),
+                        set(baseline_appointments),
+                        expected_payload,
+                    )
+                except Exception as exc:
+                    error = error or _safe_error(exc)
+                    cleanup_level = "FAIL"
+                    cleanup_detail = "booking cleanup could not be fully verified"
+            if failures:
+                cleanup_level = "FAIL"
+                cleanup_detail = "booking proposal cleanup failed"
+            elif cleanup_level != "FAIL" and owned:
+                cleanup_level = "PASS"
+                cleanup_detail = "booking proposal was denied and no owned proposal remains"
+            cleanup_evidence = {
+                "pending_id": pending_id,
+                "failed": sorted(set(failures)),
+                "acceptance_pending_after_cleanup": pending_after,
+            }
+        cleanup.append(
+            _entry(
+                cleanup_level,
+                "Deny booking proposal",
+                cleanup_detail,
+                cleanup_evidence,
+            )
+        )
+
+    passed = (
+        error is None
+        and pending_id is not None
+        and set(owned) == {pending_id}
+        and not applied_before
+        and denied
+        and not applied_after
+        and pending_after == 0
+    )
+    checks.append(
+        _entry(
+            "PASS" if passed else "FAIL",
+            "Reviewed booking",
+            (
+                "booking proposal stayed unapplied, was denied, and left no owned pending proposal"
+                if passed
+                else error or "booking acceptance was not fully verified"
+            ),
+            {
+                "pending_id": pending_id,
+                "operation": "book_appointment",
+                "applied_before_denial": applied_before,
+                "denied": denied,
+                "applied_after_denial": applied_after,
+                "acceptance_pending_after_cleanup": pending_after,
+            },
+        )
+    )
+    return passed
 
 
 def run_acceptance(
@@ -747,6 +1269,7 @@ def run_acceptance(
     session_id: str | None = None,
     test_id: str | None = None,
     briefing_date: str | None = None,
+    setup_evidence: object | None = None,
 ) -> dict:
     revision = revision or _capture_revision()
     dependencies = dict(dependencies or _capture_dependencies())
@@ -784,6 +1307,7 @@ def run_acceptance(
             {"revision": revision},
         )
     )
+    checks.append(_setup_evidence_entry(setup_evidence, revision))
     required_missing = [
         name
         for name in ("python", "node", "npm", "openclaw")
@@ -819,9 +1343,14 @@ def run_acceptance(
                 ),
                 _entry(
                     "SKIP",
-                    "Discord",
+                    "Reviewed booking",
+                    "skipped because CRM agent configuration is invalid",
+                ),
+                _entry(
+                    "SKIP",
+                    "Discord delivery (manual hardware)",
                     "binding inspection skipped because CRM agent configuration is invalid",
-                    {"bound": None},
+                    {"bound": None, "automated_delivery_proof": False},
                 ),
             ]
         )
@@ -861,6 +1390,12 @@ def run_acceptance(
                         "skipped until all required read-only checks pass",
                         {"failed_checks": read_failures},
                     ),
+                    _entry(
+                        "SKIP",
+                        "Reviewed booking",
+                        "skipped until all required prerequisites and read-only checks pass",
+                        {"failed_checks": read_failures},
+                    ),
                 ]
             )
         elif allow_test_write:
@@ -872,21 +1407,46 @@ def run_acceptance(
                 test_id=test_id,
             )
             if invalid_passed:
-                _run_reviewed_write(
+                reviewed_passed = _run_reviewed_write(
                     tracked_api,
                     checks,
                     cleanup,
                     session_id=session_id,
                     test_id=test_id,
                 )
-            else:
-                checks.append(
-                    _entry(
-                        "SKIP",
-                        "Reviewed write",
-                        "skipped because the invalid-write safety check failed",
-                        {},
+                if reviewed_passed:
+                    _run_reviewed_booking(
+                        tracked_api,
+                        checks,
+                        cleanup,
+                        session_id=session_id,
+                        test_id=test_id,
                     )
+                else:
+                    checks.append(
+                        _entry(
+                            "SKIP",
+                            "Reviewed booking",
+                            "skipped because the disposable create-lead safety check failed",
+                            {},
+                        )
+                    )
+            else:
+                checks.extend(
+                    [
+                        _entry(
+                            "SKIP",
+                            "Reviewed write",
+                            "skipped because the invalid-write safety check failed",
+                            {},
+                        ),
+                        _entry(
+                            "SKIP",
+                            "Reviewed booking",
+                            "skipped because the invalid-write safety check failed",
+                            {},
+                        ),
+                    ]
                 )
         else:
             checks.extend(
@@ -900,6 +1460,12 @@ def run_acceptance(
                     _entry(
                         "SKIP",
                         "Reviewed write",
+                        "requires --allow-test-write",
+                        {"authorized": False},
+                    ),
+                    _entry(
+                        "SKIP",
+                        "Reviewed booking",
                         "requires --allow-test-write",
                         {"authorized": False},
                     ),
@@ -949,18 +1515,18 @@ def run_acceptance(
         checks.append(
             _entry(
                 "SKIP",
-                "Discord",
+                "Discord delivery (manual hardware)",
                 "no Discord account is bound to the CRM agent",
-                {"bound": False},
+                {"bound": False, "automated_delivery_proof": False},
             )
         )
     elif discord_bound is True:
         checks.append(
             _entry(
                 "WARN",
-                "Discord",
-                "binding detected; verify channel delivery after dashboard acceptance",
-                {"bound": True},
+                "Discord delivery (manual hardware)",
+                "binding detected; manually verify Discord read and reviewed-write delivery",
+                {"bound": True, "automated_delivery_proof": False},
             )
         )
         warnings.append("Discord is bound but this local command cannot prove channel delivery.")
@@ -968,9 +1534,9 @@ def run_acceptance(
         checks.append(
             _entry(
                 "WARN",
-                "Discord",
+                "Discord delivery (manual hardware)",
                 "Discord binding status could not be determined",
-                {"bound": None},
+                {"bound": None, "automated_delivery_proof": False},
             )
         )
 
@@ -983,7 +1549,7 @@ def run_acceptance(
     }
 
 
-def _sanitize_text(value: str) -> str:
+def _sanitize_text(value: str, *, limit: int = MAX_TEXT) -> str:
     text = value
     home = str(Path.home())
     if home and home != os.path.sep:
@@ -999,7 +1565,7 @@ def _sanitize_text(value: str) -> str:
     text = re.sub(r"https?://[^\s\"']+", "<url>", text, flags=re.IGNORECASE)
     text = re.sub(r"(?<![A-Za-z0-9_.-])/(?:[^\s/]+/)+[^\s]+", "<path>", text)
     text = re.sub(r"\b[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s]+", "<path>", text)
-    return text[:MAX_TEXT]
+    return text[:limit]
 
 
 def _sanitize(value: object, *, depth: int = 0) -> object:
@@ -1065,8 +1631,16 @@ def main() -> int:
         "--allow-test-write",
         action="store_true",
         help=(
-            "authorize one invalid-write check and one disposable Pending proposal; "
-            "the proposal is denied, never approved"
+            "authorize one invalid-write check plus disposable lead and booking "
+            "Pending proposals; both proposals are denied, never approved"
+        ),
+    )
+    parser.add_argument(
+        "--setup-evidence",
+        type=Path,
+        help=(
+            "machine-readable evidence from two explicit setup runs, created by "
+            "scripts/capture_setup_evidence.py"
         ),
     )
     parser.add_argument(
@@ -1076,9 +1650,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    setup_evidence: object | None = None
+    if args.setup_evidence is not None:
+        try:
+            setup_evidence = _load_setup_evidence(args.setup_evidence)
+        except ValueError:
+            setup_evidence = {"invalid_setup_evidence": True}
+
     result = run_acceptance(
         HttpAPI(args.base_url, timeout=args.timeout),
         allow_test_write=args.allow_test_write,
+        setup_evidence=setup_evidence,
     )
     print(render_report(result, as_json=args.json))
     return exit_code(result)

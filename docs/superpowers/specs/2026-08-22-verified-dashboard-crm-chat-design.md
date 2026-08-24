@@ -395,25 +395,49 @@ production build.
 ### 14.2 One-command live acceptance
 
 Add an explicit acceptance command for supported hardware. Its default mode is
-read-only. A separate `--allow-test-write` flag authorizes one disposable
-reviewed-write test.
+read-only. A separate `--allow-test-write` flag authorizes disposable reviewed
+create-lead and booking proposals. It never approves either proposal.
+
+Setup is an explicit prerequisite, not a hidden acceptance-runner mutation. A
+separate evidence helper performs two explicit setup runs and records strict,
+machine-verifiable setup evidence tied to the tested revision. The acceptance
+runner validates that evidence and reports whether both runs succeeded and were
+idempotent by comparing a read-only final-state fingerprint after each run.
+Missing, incomplete, failed, malformed, mismatched-state, or wrong-revision
+evidence is a required failure. Shared JSON includes no raw logs, local paths,
+home data, or secrets.
 
 The sanitized report records:
 
 - revision and dependency versions;
-- setup rerun success;
+- two setup runs, revision match, and idempotence evidence;
 - chat endpoint result;
 - direct audited CRM capability result;
 - ordinary natural-language lead count with the API count beside it;
 - ordinary natural-language pending write with its pending ID;
 - proof that the disposable lead was never applied;
 - denial and cleanup of the disposable proposal;
+- an ordinary natural-language booking proposal for an existing lead, with a
+  unique future time and address marker;
+- the exact booking pending ID and `book_appointment` operation;
+- proof that no appointment was applied before or after denial and that no
+  acceptance-owned booking proposal remains Pending;
 - truthful missing-briefing behavior;
-- optional Discord read and pending-write results when an account is bound;
+- Discord binding status, labeled only as a manual-hardware prerequisite;
 - cleanup results and any remaining warnings.
 
 The command exits nonzero when a required capability fails. It must not ask a
 tester to edit OpenClaw configuration or application source between checks.
+Read-only mode does not attempt proposals. Write mode first establishes strict
+Pending and appointment baselines, owns proposals only by exact unique payload,
+never approves, and fails closed when ownership or cleanup cannot be proved.
+
+Discord delivery remains a manual hardware test because binding inspection is
+not authoritative delivery evidence. Binding alone is not proof. When Discord
+is in scope, a bound tester must verify that Discord lists the real CRM lead
+count and that a disposable write appears in dashboard Pending approvals while
+remaining unapplied. Merge waits for the manual Discord evidence when Discord
+is in scope.
 
 ## 15. Scope Boundaries
 
@@ -441,18 +465,27 @@ Not included:
 
 ## 16. Completion Criteria
 
-The change is complete only when a clean supported-hardware run proves all of
-the following without manual repair:
+The change is complete only when a clean supported-hardware run and its
+sanitized evidence prove all of the following without manual repair:
 
-1. setup succeeds twice;
+1. two explicit setup runs succeed at the tested revision and the acceptance
+   report validates their machine-verifiable setup evidence as idempotent;
 2. the doctor records an audited direct CRM call;
 3. dashboard chat reports the exact real lead count;
 4. dashboard chat queues a natural-language disposable write and names the
    real pending proposal;
 5. a deliberately invalid write reports that nothing changed;
 6. the disposable proposal is not applied and can be denied;
-7. an ordinary natural-language booking queues exactly one reviewed proposal;
+7. the automated runner uses an existing lead and an ordinary
+   natural-language booking proposal to queue exactly one real
+   `book_appointment` pending ID, proves that no appointment is applied, denies
+   exactly the acceptance-owned proposal, and proves it remains unapplied with
+   no acceptance-owned proposal left Pending;
 8. missing briefing sources produce no fabricated content;
-9. Discord, when bound, lists real leads and cannot falsely report a failed
-   write as pending;
+9. Discord, when bound and in scope, has manual hardware evidence that it lists
+   the real CRM lead count and routes a disposable reviewed write into dashboard
+   Pending approvals without falsely reporting a failed write as pending;
 10. all automated suites and the dashboard build pass.
+
+Automated tests and a binding/configuration check cannot satisfy item 9. No
+tracked file contains fabricated passing hardware output.
