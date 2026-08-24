@@ -12,6 +12,8 @@ const INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis";
 const SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability";
 const SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard";
 const SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__";
+const PRODUCTION_PROBE_OPERATION = "__openhouse_behavior_probe_status__";
+const PRODUCTION_PROBE_QUERY_PREFIX = "__openhouse_behavior_probe__:";
 const SETUP_MARKER_TOOL = "openhouse_setup_marker_probe";
 const SETUP_NONCE_PATTERN = /^[a-f0-9]{32}$/;
 const TOOL_BLOCKED_CHANNELS = new Set([
@@ -119,6 +121,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       const crmAgentId = configuredAgentId(api.pluginConfig);
       const setupProbe = configuredSetupProbe(api.pluginConfig);
       const setupProbeState = new Map();
+      const productionProbeState = new Set();
       api.on(
         "before_tool_call",
         (event, context) => {
@@ -161,6 +164,43 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
               };
             }
             setupProbeState.set(params.channel, "marker_missing");
+          }
+          if (
+            event.toolName === TOOL_NAME
+            && context.agentId === crmAgentId
+            && context.requester?.channel === SETUP_CAPABILITY_CHANNEL
+            && event.params?.operation === PRODUCTION_PROBE_OPERATION
+          ) {
+            const nonce = event.params?.arguments?.nonce;
+            const channel = event.params?.arguments?.channel;
+            const key = `${channel}:${nonce}`;
+            const protectedChannel = (
+              typeof nonce === "string"
+              && SETUP_NONCE_PATTERN.test(nonce)
+              && TOOL_BLOCKED_CHANNELS.has(channel)
+              && productionProbeState.has(key)
+            );
+            return {
+              block: true,
+              blockReason: protectedChannel
+                ? `Production CRM channel ${channel} nonce ${nonce} is protected.`
+                : "Fresh production CRM channel protection was not proven.",
+            };
+          }
+          if (
+            event.toolName === TOOL_NAME
+            && context.agentId === crmAgentId
+            && TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
+            && event.params?.operation === "search_leads"
+          ) {
+            const query = event.params?.arguments?.query;
+            const nonce = typeof query === "string"
+              && query.startsWith(PRODUCTION_PROBE_QUERY_PREFIX)
+              ? query.slice(PRODUCTION_PROBE_QUERY_PREFIX.length)
+              : undefined;
+            if (typeof nonce === "string" && SETUP_NONCE_PATTERN.test(nonce)) {
+              productionProbeState.add(`${context.requester.channel}:${nonce}`);
+            }
           }
           if (
             context.requester?.channel === SETUP_AGENT_GUARD_CHANNEL
@@ -237,6 +277,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       api.on("gateway_stop", () => {
         outcomeGuard.clear();
         setupProbeState.clear();
+        productionProbeState.clear();
       });
 
       api.registerTool(

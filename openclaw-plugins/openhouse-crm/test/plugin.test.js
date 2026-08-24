@@ -161,6 +161,60 @@ test("before-tool hook blocks every native tool on analysis and verified dashboa
 });
 
 
+test("production channel proof is fresh, agent-bound, and cleared on gateway stop", () => {
+  const { hooks } = registerPlugin(undefined, { agentId: "portable-crm" });
+  const beforeToolCall = hooks.get("before_tool_call").handler;
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const statusEvent = {
+    toolName: "openhouse_crm",
+    params: {
+      operation: "__openhouse_behavior_probe_status__",
+      arguments: { channel: "openhouse-dashboard", nonce },
+    },
+  };
+  const statusContext = {
+    agentId: "portable-crm",
+    requester: { channel: "openhouse-setup-capability" },
+  };
+
+  assert.match(
+    beforeToolCall(statusEvent, statusContext).blockReason,
+    /not proven/i,
+  );
+  const blocked = beforeToolCall(
+    {
+      toolName: "openhouse_crm",
+      params: {
+        operation: "search_leads",
+        arguments: { query: `__openhouse_behavior_probe__:${nonce}` },
+      },
+    },
+    {
+      agentId: "portable-crm",
+      requester: { channel: "openhouse-dashboard" },
+    },
+  );
+  assert.equal(blocked.block, true);
+  assert.equal(
+    beforeToolCall(statusEvent, statusContext).blockReason,
+    `Production CRM channel openhouse-dashboard nonce ${nonce} is protected.`,
+  );
+  assert.equal(
+    beforeToolCall(statusEvent, {
+      ...statusContext,
+      agentId: "another-agent",
+    }),
+    undefined,
+  );
+
+  hooks.get("gateway_stop").handler();
+  assert.match(
+    beforeToolCall(statusEvent, statusContext).blockReason,
+    /not proven/i,
+  );
+});
+
+
 test("setup probe registers one config-gated marker tool without changing normal inventory", () => {
   const normal = registerPlugin();
   assert.deepEqual(normal.registrations.map(([, metadata]) => metadata.name), [

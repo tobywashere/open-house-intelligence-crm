@@ -294,7 +294,14 @@ def _capture_repository_state(
     )
     if result.returncode != 0:
         raise RuntimeError("could not verify that the tested worktree is clean")
-    material = _material_head_state(REPO)
+    material = _material_head_state(
+        REPO,
+        deadline_check=(
+            None
+            if deadline is None
+            else lambda: _remaining_time(deadline, clock)
+        ),
+    )
     return revision, not bool(result.stdout), material["material_tree_sha256"]
 
 
@@ -495,29 +502,51 @@ class _PrivateArtifact:
 
 
 def _write_private_verified(
-    path: Path, content: bytes, *, retain: bool = False
+    path: Path,
+    content: bytes,
+    *,
+    retain: bool = False,
+    deadline_check: Callable[[], float] | None = None,
 ) -> tuple[int, int] | _PrivateArtifact:
+    if deadline_check is not None:
+        deadline_check()
     absolute, parent_fd = _private_parent(path)
     descriptor = -1
     identity: tuple[int, int] | None = None
     try:
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(absolute.name, flags, 0o600, dir_fd=parent_fd)
+        if deadline_check is not None:
+            deadline_check()
         node = os.fstat(descriptor)
         if not stat.S_ISREG(node.st_mode):
             raise OSError("evidence destination was not a regular file")
         identity = (node.st_dev, node.st_ino)
         view = memoryview(content)
         while view:
+            if deadline_check is not None:
+                deadline_check()
             written = os.write(descriptor, view)
             if written <= 0:
                 raise OSError("evidence write did not make progress")
             view = view[written:]
+        if deadline_check is not None:
+            deadline_check()
         os.fsync(descriptor)
+        if deadline_check is not None:
+            deadline_check()
         os.fsync(parent_fd)
+        if deadline_check is not None:
+            deadline_check()
         _verify_private_file(descriptor, content, identity)
+        if deadline_check is not None:
+            deadline_check()
         _verify_private_leaf(parent_fd, absolute.name, content, identity)
+        if deadline_check is not None:
+            deadline_check()
         _parent_identity_matches_path(absolute, parent_fd)
+        if deadline_check is not None:
+            deadline_check()
         if retain:
             artifact = _PrivateArtifact(descriptor, parent_fd, identity)
             descriptor = -1
@@ -658,7 +687,10 @@ def capture_setup_evidence(
     try:
         for log_path, content in logs:
             artifact = _write_private_verified(
-                log_path, content.encode("utf-8"), retain=True
+                log_path,
+                content.encode("utf-8"),
+                retain=True,
+                deadline_check=lambda: _remaining_time(deadline, clock),
             )
             if not isinstance(artifact, _PrivateArtifact):
                 raise OSError("evidence writer did not retain its verified descriptor")
@@ -666,7 +698,12 @@ def capture_setup_evidence(
         manifest_bytes = (
             json.dumps(artifact_envelope, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
-        artifact = _write_private_verified(output, manifest_bytes, retain=True)
+        artifact = _write_private_verified(
+            output,
+            manifest_bytes,
+            retain=True,
+            deadline_check=lambda: _remaining_time(deadline, clock),
+        )
         if not isinstance(artifact, _PrivateArtifact):
             raise OSError("evidence writer did not retain its verified descriptor")
         written.append(artifact)

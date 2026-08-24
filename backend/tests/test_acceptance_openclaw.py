@@ -65,7 +65,15 @@ class FakeAPI:
         self.fail_booking_appointment_snapshot = False
         self.fail_booking_appointment_snapshot_after_chat = False
 
-    def request(self, method: str, path: str, payload: dict | None = None):
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ):
+        del timeout
         self.request_calls.append((method, path, payload))
         if path == "/health" and method == "GET":
             if self.health_error:
@@ -424,6 +432,9 @@ def state_digest(state: dict) -> str:
     return hashlib.sha256(
         json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+_REAL_CAPTURE_CURRENT_SETUP_STATE = acceptance._capture_current_setup_state
 
 
 @pytest.fixture(autouse=True)
@@ -1040,7 +1051,14 @@ class LateProposalAPI(FakeAPI):
         self._settling_polls = 0
         self._settling_active = False
 
-    def request(self, method: str, path: str, payload: dict | None = None):
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ):
         if (
             method == "POST"
             and path == "/chat"
@@ -1060,7 +1078,7 @@ class LateProposalAPI(FakeAPI):
                 self.pending[row["id"]] = row
             if self._settling_polls >= 3:
                 self._settling_active = False
-        return super().request(method, path, payload)
+        return super().request(method, path, payload, timeout=timeout)
 
 
 def test_invalid_write_catches_late_unattributed_proposal_without_denial():
@@ -1117,7 +1135,14 @@ def test_reviewed_write_remembers_transient_unattributed_proposal():
             self._reviewed_settling_poll = 0
             self._reviewed_settling = False
 
-        def request(self, method: str, path: str, payload: dict | None = None):
+        def request(
+            self,
+            method: str,
+            path: str,
+            payload: dict | None = None,
+            *,
+            timeout: float | None = None,
+        ):
             if (
                 method == "POST"
                 and path == "/chat"
@@ -1142,7 +1167,7 @@ def test_reviewed_write_remembers_transient_unattributed_proposal():
                     }
                 elif self._reviewed_settling_poll == 2:
                     self.pending.pop(18, None)
-            return super().request(method, path, payload)
+            return super().request(method, path, payload, timeout=timeout)
 
     api = TransientProposalAPI()
 
@@ -1172,13 +1197,14 @@ class _PendingSequenceAPI:
         self.responses = list(responses)
         self.calls = 0
 
-    def request(self, method, path, payload=None):
+    def request(self, method, path, payload=None, *, timeout=None):
         assert (method, path, payload) == (
             "GET",
             "/pending-changes?status=pending",
             None,
         )
         self.calls += 1
+        self.last_timeout = timeout
         response = self.responses.pop(0) if self.responses else []
         if isinstance(response, Exception):
             raise response
@@ -1269,6 +1295,24 @@ def test_settling_exhaustion_after_observation_gaps_is_ownership_unknown():
     assert clock.now == 3.0
 
 
+def test_pending_read_that_returns_after_the_settle_deadline_is_unknown():
+    clock = _SettlingClock()
+
+    class SlowPendingAPI(_PendingSequenceAPI):
+        def request(self, method, path, payload=None, *, timeout=None):
+            result = super().request(method, path, payload, timeout=timeout)
+            clock.now = 3.0
+            return result
+
+    api = SlowPendingAPI([[]])
+
+    with pytest.raises(acceptance.ProposalOwnershipUnknown) as error:
+        _settle(api, clock, settle_timeout=2.0, clean_window=1.0)
+
+    assert error.value.attempts == 1
+    assert api.last_timeout == 2.0
+
+
 def test_final_settling_snapshot_catches_a_last_moment_unattributed_race():
     clock = _SettlingClock()
     owned = _owned_pending()
@@ -1282,6 +1326,89 @@ def test_final_settling_snapshot_catches_a_last_moment_unattributed_race():
     assert proposals == {17: owned}
     assert unattributed == [18]
     assert attempts == api.calls == 4
+
+
+@pytest.mark.parametrize(
+    ("phase", "pending_id", "cleanup_name"),
+    (
+        ("invalid", 29, "Invalid-write proposal cleanup"),
+        ("reviewed", 18, "Deny disposable proposal"),
+        ("booking", 42, "Deny booking proposal"),
+    ),
+)
+def test_pending_snapshot_after_later_business_read_catches_new_proposal(
+    phase, pending_id, cleanup_name
+):
+    class LaterReadProposalAPI(FakeAPI):
+        def __init__(self):
+            super().__init__()
+            self.active_phase = None
+            self.inserted = False
+            self.later_read_count = 0
+
+        def request(
+            self,
+            method,
+            path,
+            payload=None,
+            *,
+            timeout=None,
+        ):
+            if method == "POST" and path == "/chat" and isinstance(payload, dict):
+                message = payload.get("message", "")
+                if "unsupported arguments" in message:
+                    detected = "invalid"
+                elif "Create exactly one disposable" in message:
+                    detected = "reviewed"
+                elif "Book exactly one appointment" in message:
+                    detected = "booking"
+                else:
+                    detected = None
+                if detected == phase:
+                    self.active_phase = detected
+            later_read = (
+                self.active_phase in {"invalid", "reviewed"}
+                and method == "GET"
+                and path == "/leads"
+            ) or (
+                self.active_phase == "booking"
+                and method == "GET"
+                and path == "/appointments"
+            )
+            if later_read:
+                self.later_read_count += 1
+            target_read = 1 if phase == "invalid" else 2
+            if (
+                later_read
+                and self.later_read_count == target_read
+                and not self.inserted
+            ):
+                self.inserted = True
+                self.pending[pending_id] = {
+                    "id": pending_id,
+                    "operation": "update_lead",
+                    "status": "pending",
+                    "payload": {"lead_id": 1, "area": "late external proposal"},
+                    "summary": "Late external proposal",
+                }
+            return super().request(
+                method, path, payload, timeout=timeout
+            )
+
+    api = LaterReadProposalAPI()
+    result = run(api, allow_test_write=True)
+
+    cleanup = cleanup_by_name(result, cleanup_name)
+    check_name = {
+        "invalid": "Invalid write",
+        "reviewed": "Reviewed write",
+        "booking": "Reviewed booking",
+    }[phase]
+    assert by_name(result, check_name)["level"] == "FAIL"
+    assert cleanup["level"] == "FAIL"
+    assert pending_id in cleanup["evidence"]["unattributed_ids"]
+    assert pending_id in api.pending
+    assert pending_id not in api.denied
 
 
 def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
@@ -1606,7 +1733,7 @@ def test_worktree_check_allows_only_the_named_evidence_artifacts(monkeypatch, tm
     monkeypatch.setattr(
         acceptance,
         "_material_head_state",
-        lambda _repo: {"material_tree_sha256": "a" * 64},
+        lambda _repo, **_kwargs: {"material_tree_sha256": "a" * 64},
     )
 
     def status(*_args, **_kwargs):
@@ -1764,6 +1891,36 @@ def test_setup_evidence_reports_live_state_capture_failure_without_private_detai
     assert check["level"] == "FAIL"
     assert check["detail"] == "current installed state could not be verified"
     assert secret not in rendered
+
+
+def test_live_state_recapture_does_not_reuse_serialized_behavioral_proof(
+    monkeypatch,
+):
+    state = installed_state()
+    calls = []
+
+    def fresh_capture(options, cli):
+        calls.append((options.agent_id, cli))
+        return state
+
+    monkeypatch.setattr(acceptance, "_parse_args", lambda *_args, **_kwargs: type(
+        "Options", (), {"agent_id": "openhouse-crm"}
+    )())
+    monkeypatch.setattr(acceptance, "OpenClawCLI", lambda: object())
+    monkeypatch.setattr(acceptance, "capture_installed_state", fresh_capture)
+    monkeypatch.setattr(
+        acceptance,
+        "_material_head_state",
+        lambda _repo, **_kwargs: {"material_tree_sha256": "a" * 64},
+    )
+
+    captured, material = _REAL_CAPTURE_CURRENT_SETUP_STATE(
+        state["plugin"]["runtime_verification"]
+    )
+
+    assert captured == state
+    assert material == "a" * 64
+    assert len(calls) == 1
 
 
 def test_setup_evidence_is_strict_and_never_echoes_paths_urls_or_secrets(monkeypatch):
@@ -2051,6 +2208,30 @@ def test_private_evidence_write_completes_partial_os_writes(monkeypatch, tmp_pat
     capture._write_private_verified(path, b"complete durable content")
 
     assert path.read_bytes() == b"complete durable content"
+
+
+def test_private_evidence_write_checks_deadline_during_local_io(tmp_path):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    path = tmp_path / "evidence.json"
+    checks = 0
+
+    def deadline_check():
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            raise RuntimeError("setup evidence time limit expired")
+        return 1.0
+
+    with pytest.raises(RuntimeError, match="time limit"):
+        capture._write_private_verified(
+            path,
+            b"bounded durable content",
+            deadline_check=deadline_check,
+        )
+
+    assert path.exists()
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_bytes() == b""
 
 
 def test_private_evidence_write_scrubs_its_partial_file_on_verify_failure(

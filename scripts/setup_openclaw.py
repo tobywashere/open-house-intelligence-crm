@@ -314,6 +314,13 @@ class OpenClawCLI:
             return None
         return remaining if cap is None else min(remaining, cap)
 
+    def require_time(self) -> float:
+        """Return the current phase budget or fail before local blocking work."""
+        remaining = self._remaining_timeout()
+        if remaining is None:
+            raise SetupConflict(self._timeout_result().stderr)
+        return remaining
+
     def run(self, args: list[str], *, mutate: bool = False) -> CommandResult:
         del mutate
         command = args if args and args[0] == "openclaw" else ["openclaw", *args]
@@ -386,26 +393,42 @@ class OpenClawCLI:
         return CommandResult(status_code, rendered, "")
 
     def probe_client_tools(
-        self, *, agent_id: str, nonce: str, tools: list[dict[str, Any]]
+        self,
+        *,
+        agent_id: str,
+        nonce: str,
+        tools: list[dict[str, Any]],
+        production: bool = False,
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
         except SetupConflict as exc:
             return CommandResult(503, "", str(exc))
         chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
+        if production:
+            system_content = (
+                f"First call the native {PLUGIN_TOOL} tool with operation search_leads "
+                f"and arguments containing only query "
+                f"__openhouse_behavior_probe__:{nonce}. After that attempt is blocked, "
+                "call finish_crm_response exactly once with classification "
+                "needs_clarification, the nonce as its message, and an empty "
+                "evidence_call_ids array."
+            )
+        else:
+            system_content = (
+                f"First call the native {SETUP_MARKER_TOOL} tool with action "
+                f"attempt, channel {DASHBOARD_CHANNEL}, and the exact nonce. "
+                "After that attempt is blocked, call finish_crm_response exactly "
+                "once with classification needs_clarification, the nonce as its "
+                "message, and an empty evidence_call_ids array."
+            )
         payload = {
             "model": f"openclaw/{agent_id}",
             "user": f"setup-capability:{nonce}",
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        f"First call the native {SETUP_MARKER_TOOL} tool with action "
-                        f"attempt, channel {DASHBOARD_CHANNEL}, and the exact nonce. "
-                        "After that attempt is blocked, call finish_crm_response exactly "
-                        "once with classification needs_clarification, the nonce as its "
-                        "message, and an empty evidence_call_ids array."
-                    ),
+                    "content": system_content,
                 },
                 {"role": "user", "content": f"Capability nonce: {nonce}"},
             ],
@@ -418,24 +441,34 @@ class OpenClawCLI:
         )
 
     def probe_analysis_tool_block(
-        self, *, agent_id: str, nonce: str
+        self, *, agent_id: str, nonce: str, production: bool = False
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
         except SetupConflict as exc:
             return CommandResult(503, "", str(exc))
         chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
+        content = (
+            (
+                f"Call the native {PLUGIN_TOOL} tool with operation search_leads and "
+                "arguments containing only query "
+                f"__openhouse_behavior_probe__:{nonce}. Then reply briefly after the "
+                "attempt is blocked."
+            )
+            if production
+            else (
+                f"Call the native {SETUP_MARKER_TOOL} tool with action attempt, "
+                f"channel {INTERNAL_ANALYSIS_CHANNEL}, and nonce {nonce}. Then "
+                "reply briefly after the attempt is blocked."
+            )
+        )
         payload = {
             "model": f"openclaw/{agent_id}",
             "user": f"setup-analysis-capability:{nonce}",
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        f"Call the native {SETUP_MARKER_TOOL} tool with action attempt, "
-                        f"channel {INTERNAL_ANALYSIS_CHANNEL}, and nonce {nonce}. Then "
-                        "reply briefly after the attempt is blocked."
-                    ),
+                    "content": content,
                 }
             ],
             "tools": [],
@@ -479,6 +512,23 @@ class OpenClawCLI:
         }
         return self._post_gateway_json(
             "/tools/invoke", payload, channel=SETUP_AGENT_GUARD_CHANNEL
+        )
+
+    def probe_production_channel_guard(
+        self, *, agent_id: str, nonce: str, channel: str
+    ) -> CommandResult:
+        payload = {
+            "tool": PLUGIN_TOOL,
+            "args": {
+                "operation": "__openhouse_behavior_probe_status__",
+                "arguments": {"nonce": nonce, "channel": channel},
+            },
+            "agentId": agent_id,
+            "sessionKey": f"production-status:setup-capability:{nonce}:{channel}",
+            "idempotencyKey": f"production-status:{nonce}:{channel}",
+        }
+        return self._post_gateway_json(
+            "/tools/invoke", payload, channel=SETUP_CAPABILITY_CHANNEL
         )
 
 
@@ -1418,9 +1468,15 @@ def _snapshot_installed_skills(workspace: Path) -> SkillRollback:
     )
 
 
-def _restore_installed_skills(snapshot: SkillRollback) -> bool:
+def _restore_installed_skills(
+    snapshot: SkillRollback,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> bool:
     skills_root = snapshot.workspace / "skills"
     try:
+        if deadline_check is not None:
+            deadline_check()
         _validate_no_symlink_components(
             snapshot.workspace, "OpenClaw workspace", leaf_directory=True
         )
@@ -1429,6 +1485,8 @@ def _restore_installed_skills(snapshot: SkillRollback) -> bool:
         )
         skills_root.mkdir(parents=True, exist_ok=True)
         for name in SKILL_NAMES:
+            if deadline_check is not None:
+                deadline_check()
             target = skills_root / name
             if name in snapshot.existing_names:
                 with tempfile.TemporaryDirectory(
@@ -1438,24 +1496,38 @@ def _restore_installed_skills(snapshot: SkillRollback) -> bool:
                     staged = staging_root / name
                     quarantine = staging_root / f"current-{name}"
                     shutil.copytree(snapshot.backup_root / name, staged)
+                    if deadline_check is not None:
+                        deadline_check()
                     _validate_skill_tree(staged, "staged restored skill directory")
                     _validate_no_symlink_components(
                         target, "installed skill directory", leaf_directory=True
                     )
+                    if deadline_check is not None:
+                        deadline_check()
                     if target.exists():
                         target.rename(quarantine)
                     staged.rename(target)
                     if quarantine.exists():
                         _remove_installed_tree(quarantine)
-                if not _skill_trees_match(snapshot.backup_root / name, target):
+                    if deadline_check is not None:
+                        deadline_check()
+                if not _skill_trees_match(
+                    snapshot.backup_root / name,
+                    target,
+                    deadline_check=deadline_check,
+                ):
                     return False
             elif target.exists() or target.is_symlink():
                 _validate_no_symlink_components(
                     target, "installed skill directory", leaf_directory=True
                 )
                 _remove_installed_tree(target)
+                if deadline_check is not None:
+                    deadline_check()
                 if target.exists() or target.is_symlink():
                     return False
+        if deadline_check is not None:
+            deadline_check()
         if (
             not snapshot.skills_root_existed
             and skills_root.exists()
@@ -1474,13 +1546,22 @@ def _restore_installed_skills(snapshot: SkillRollback) -> bool:
         return False
 
 
-def _skill_trees_match(left: Path, right: Path) -> bool:
+def _skill_trees_match(
+    left: Path,
+    right: Path,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> bool:
     def manifest(root: Path) -> dict[str, tuple[str, int, bytes]]:
         result: dict[str, tuple[str, int, bytes]] = {}
+        if deadline_check is not None:
+            deadline_check()
         _validate_skill_tree(root, "skill restoration verification tree")
         root_node = os.lstat(root)
         result["."] = ("directory", stat.S_IMODE(root_node.st_mode), b"")
         for path in sorted(root.rglob("*")):
+            if deadline_check is not None:
+                deadline_check()
             relative = path.relative_to(root).as_posix()
             node = os.lstat(path)
             if stat.S_ISDIR(node.st_mode):
@@ -1594,7 +1675,12 @@ def _canonical_json_bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _read_regular_file_digest(path: Path, label: str) -> tuple[int, str]:
+def _read_regular_file_digest(
+    path: Path,
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> tuple[int, str]:
     """Hash one regular file without following its leaf or accepting a race."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -1602,12 +1688,16 @@ def _read_regular_file_digest(path: Path, label: str) -> tuple[int, str]:
     except OSError as exc:
         raise SetupConflict(f"could not inspect {label}") from exc
     try:
+        if deadline_check is not None:
+            deadline_check()
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise SetupConflict(f"{label} must contain only regular files")
         digest = hashlib.sha256()
         size = 0
         while True:
+            if deadline_check is not None:
+                deadline_check()
             chunk = os.read(descriptor, 1024 * 1024)
             if not chunk:
                 break
@@ -1635,13 +1725,22 @@ def _normalized_git_mode(node_mode: int) -> str:
     return "100755" if node_mode & 0o111 else "100644"
 
 
-def _git_bytes(repo: Path, argv: list[str], label: str) -> bytes:
+def _git_bytes(
+    repo: Path,
+    argv: list[str],
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> bytes:
+    timeout = 30.0
+    if deadline_check is not None:
+        timeout = min(timeout, deadline_check())
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *argv],
             capture_output=True,
             check=False,
-            timeout=30,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SetupConflict(f"could not inspect {label}") from exc
@@ -1651,10 +1750,16 @@ def _git_bytes(repo: Path, argv: list[str], label: str) -> bytes:
 
 
 def _filesystem_material_files(
-    repo: Path, roots: tuple[Path, ...], label: str
+    repo: Path,
+    roots: tuple[Path, ...],
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
 ) -> dict[str, Path]:
     files: dict[str, Path] = {}
     for relative_root in roots:
+        if deadline_check is not None:
+            deadline_check()
         if relative_root.is_absolute() or ".." in relative_root.parts:
             raise SetupConflict(f"could not inspect {label}")
         root = repo / relative_root
@@ -1670,6 +1775,8 @@ def _filesystem_material_files(
         if not stat.S_ISDIR(node.st_mode):
             raise SetupConflict(f"{label} must contain only regular files and directories")
         for current, directory_names, file_names in os.walk(root, followlinks=False):
+            if deadline_check is not None:
+                deadline_check()
             current_path = Path(current)
             for name in list(directory_names):
                 child = current_path / name
@@ -1680,7 +1787,9 @@ def _filesystem_material_files(
                 if stat.S_ISLNK(child_node.st_mode) or not stat.S_ISDIR(child_node.st_mode):
                     raise SetupConflict(f"{label} must contain only real directories")
                 if name == "__pycache__":
-                    _validate_inert_pycache(child, label)
+                    _validate_inert_pycache(
+                        child, label, deadline_check=deadline_check
+                    )
                     directory_names.remove(name)
             for name in file_names:
                 child = current_path / name
@@ -1697,7 +1806,12 @@ def _filesystem_material_files(
     return files
 
 
-def _validate_inert_pycache(path: Path, label: str) -> None:
+def _validate_inert_pycache(
+    path: Path,
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> None:
     """Accept only bounded regular bytecode files that this process never loads."""
     try:
         entries = list(path.iterdir())
@@ -1706,6 +1820,8 @@ def _validate_inert_pycache(path: Path, label: str) -> None:
     if len(entries) > MAX_MATERIAL_ENTRIES:
         raise SetupConflict(f"{label} cache contains too many files")
     for entry in entries:
+        if deadline_check is not None:
+            deadline_check()
         try:
             node = os.lstat(entry)
         except OSError as exc:
@@ -1731,6 +1847,7 @@ def _tracked_head_manifest(
     label: str,
     *,
     paths_relative_to: Path | None = None,
+    deadline_check: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """Return a HEAD-authoritative manifest and reject every non-HEAD filesystem entry."""
     pathspecs = [root.as_posix() for root in roots]
@@ -1738,6 +1855,7 @@ def _tracked_head_manifest(
         repo,
         ["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *pathspecs],
         label,
+        deadline_check=deadline_check,
     )
     tracked: dict[str, tuple[str, str]] = {}
     for record in raw.split(b"\0"):
@@ -1754,7 +1872,9 @@ def _tracked_head_manifest(
         tracked[relative] = (mode, object_id)
     if not tracked or len(tracked) > MAX_MATERIAL_ENTRIES:
         raise SetupConflict(f"{label} did not resolve to a bounded tracked tree")
-    filesystem = _filesystem_material_files(repo, roots, label)
+    filesystem = _filesystem_material_files(
+        repo, roots, label, deadline_check=deadline_check
+    )
     extras = sorted(set(filesystem) - set(tracked))
     missing = sorted(set(tracked) - set(filesystem))
     if extras:
@@ -1763,14 +1883,23 @@ def _tracked_head_manifest(
         raise SetupConflict(f"{label} is missing a tracked HEAD file")
     entries: list[dict[str, Any]] = []
     for relative in sorted(tracked):
+        if deadline_check is not None:
+            deadline_check()
         expected_mode, object_id = tracked[relative]
         path = filesystem[relative]
         node = os.lstat(path)
         actual_mode = _normalized_git_mode(node.st_mode)
         if actual_mode != expected_mode:
             raise SetupConflict(f"{label} file mode does not match HEAD")
-        contents = _git_bytes(repo, ["cat-file", "blob", object_id], label)
-        size, digest = _read_regular_file_digest(path, label)
+        contents = _git_bytes(
+            repo,
+            ["cat-file", "blob", object_id],
+            label,
+            deadline_check=deadline_check,
+        )
+        size, digest = _read_regular_file_digest(
+            path, label, deadline_check=deadline_check
+        )
         if size != len(contents) or digest != hashlib.sha256(contents).hexdigest():
             raise SetupConflict(f"{label} contents do not match HEAD")
         display_path = relative
@@ -1788,24 +1917,48 @@ def _tracked_head_manifest(
     }
 
 
-def _tracked_head_tree(repo: Path, relative_root: Path, label: str) -> dict[str, Any]:
+def _tracked_head_tree(
+    repo: Path,
+    relative_root: Path,
+    label: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> dict[str, Any]:
     return _tracked_head_manifest(
         repo,
         (relative_root,),
         label,
         paths_relative_to=relative_root,
+        deadline_check=deadline_check,
     )
 
 
-def _material_head_state(repo: Path) -> dict[str, Any]:
+def _material_head_state(
+    repo: Path, *, deadline_check: Callable[[], float] | None = None
+) -> dict[str, Any]:
+    if deadline_check is not None:
+        deadline_check()
     skills = {
-        name: _tracked_head_tree(repo, Path("skills") / name, f"shipped {name} skill")
+        name: _tracked_head_tree(
+            repo,
+            Path("skills") / name,
+            f"shipped {name} skill",
+            deadline_check=deadline_check,
+        )
         for name in SKILL_NAMES
     }
     plugin = _tracked_head_tree(
-        repo, Path("openclaw-plugins") / PLUGIN_ID, "bundled OpenClaw CRM plugin"
+        repo,
+        Path("openclaw-plugins") / PLUGIN_ID,
+        "bundled OpenClaw CRM plugin",
+        deadline_check=deadline_check,
     )
-    shared = _tracked_head_manifest(repo, MATERIAL_SHARED_PATHS, "shared setup sources")
+    shared = _tracked_head_manifest(
+        repo,
+        MATERIAL_SHARED_PATHS,
+        "shared setup sources",
+        deadline_check=deadline_check,
+    )
     material = {"skills": skills, "plugin": plugin, "shared": shared}
     return {
         **material,
@@ -3449,7 +3602,9 @@ def capture_installed_state(
     """Capture the complete, canonical, secret-free state established by setup."""
     _validate_requested_agent_id(options.agent_id)
     repo = Path(__file__).resolve().parents[1]
-    sources = _material_head_state(repo)
+    sources = _material_head_state(
+        repo, deadline_check=getattr(cli, "require_time", None)
+    )
     source_skills = sources["skills"]
     installed_skills = {
         name: _installed_tree_manifest(
@@ -3484,16 +3639,12 @@ def capture_installed_state(
             options.agent_id
         )
     else:
-        if runtime_verification is None:
-            raise SetupConflict("OpenClaw runtime hook inventory is unavailable")
-        current_runtime_verification = _validate_runtime_verification(
-            runtime_verification, options.agent_id
+        del runtime_verification
+        contract = _capture_canonical_contract(repo)
+        tools = _capture_dashboard_client_tools(repo, contract).tools
+        current_runtime_verification = _fresh_production_behavioral_verification(
+            cli, options.agent_id, tools
         )
-        if current_runtime_verification["mode"] != "production_behavioral":
-            raise SetupConflict(
-                "OpenClaw runtime hook inventory is unavailable and no successful "
-                "production behavioral proof was supplied"
-            )
 
     plugin_allow = _read_plugin_allowlist(cli)
     plugin_config = _read_config_snapshot(cli, PLUGIN_CONFIG_PATH)
@@ -3878,8 +4029,15 @@ def _request_client_tool_capability(
     agent_id: str,
     nonce: str,
     tools: list[dict[str, Any]],
+    *,
+    production: bool = False,
 ) -> CommandResult:
-    result = cli.probe_client_tools(agent_id=agent_id, nonce=nonce, tools=tools)
+    result = cli.probe_client_tools(
+        agent_id=agent_id,
+        nonce=nonce,
+        tools=tools,
+        production=production,
+    )
     if result.returncode == 400:
         raise SetupConflict(
             "unsupported OpenClaw installation: Chat Completions rejected the full "
@@ -3937,9 +4095,15 @@ def _verify_client_tool_completion(result: CommandResult, nonce: str) -> None:
 
 
 def _request_analysis_completion(
-    cli: OpenClawCLI, agent_id: str, nonce: str
+    cli: OpenClawCLI,
+    agent_id: str,
+    nonce: str,
+    *,
+    production: bool = False,
 ) -> CommandResult:
-    result = cli.probe_analysis_tool_block(agent_id=agent_id, nonce=nonce)
+    result = cli.probe_analysis_tool_block(
+        agent_id=agent_id, nonce=nonce, production=production
+    )
     if result.returncode in {401, 403}:
         raise SetupConflict(
             "OpenClaw internal-analysis channel capability was not proven because "
@@ -4070,6 +4234,45 @@ def _verify_configured_agent_guard(cli: OpenClawCLI, agent_id: str) -> None:
             "agent is protected by the bundled plugin; no supported CRM operation "
             "was executed"
         )
+
+
+def _verify_production_channel_guard(
+    cli: OpenClawCLI, agent_id: str, nonce: str, channel: str
+) -> None:
+    result = cli.probe_production_channel_guard(
+        agent_id=agent_id, nonce=nonce, channel=channel
+    )
+    expected = f"Production CRM channel {channel} nonce {nonce} is protected."
+    response = f"{result.stdout}\n{result.stderr}"
+    if result.returncode != 403 or expected not in response:
+        raise SetupConflict(
+            "fresh production CRM channel protection could not be proven for the "
+            f"configured agent on {channel}"
+        )
+
+
+def _fresh_production_behavioral_verification(
+    cli: OpenClawCLI,
+    agent_id: str,
+    tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    nonce = secrets.token_hex(16)
+    dashboard = _request_client_tool_capability(
+        cli, agent_id, nonce, tools, production=True
+    )
+    _verify_client_tool_completion(dashboard, nonce)
+    _verify_production_channel_guard(
+        cli, agent_id, nonce, DASHBOARD_CHANNEL
+    )
+    analysis = _request_analysis_completion(
+        cli, agent_id, nonce, production=True
+    )
+    _verify_analysis_completion(analysis)
+    _verify_production_channel_guard(
+        cli, agent_id, nonce, INTERNAL_ANALYSIS_CHANNEL
+    )
+    _verify_configured_agent_guard(cli, agent_id)
+    return _behavioral_runtime_verification(agent_id)
 
 
 def _restore_approval_changes(
@@ -5074,6 +5277,15 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             plugin_source,
         )
         _verify_plugin_agent_config(cli, options.agent_id)
+        runtime_verification = (
+            _inventory_runtime_verification(options.agent_id)
+            if final_has_hook_inventory
+            else _fresh_production_behavioral_verification(
+                cli,
+                options.agent_id,
+                client_tools_snapshot.tools,
+            )
+        )
         if skill_rollback is not None:
             if not _discard_skill_snapshot(skill_rollback):
                 skill_snapshot_cleanup_failed = True
@@ -5096,11 +5308,6 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Optional Discord binding: openclaw agents bind --agent "
                 f"{options.agent_id} --bind discord:ACCOUNT --json"
             )
-        runtime_verification = (
-            _inventory_runtime_verification(options.agent_id)
-            if final_has_hook_inventory
-            else _behavioral_runtime_verification(options.agent_id)
-        )
         return SetupResult(True, messages, runtime_verification)
     except (SetupConflict, OSError) as exc:
         rollback_failed = skill_snapshot_cleanup_failed
@@ -5332,7 +5539,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 messages.append("Could not verify the previous CRM plugin state.")
 
         if skill_rollback is not None:
-            if _restore_installed_skills(skill_rollback):
+            if _restore_installed_skills(
+                skill_rollback,
+                deadline_check=getattr(cli, "require_time", None),
+            ):
                 messages.append(
                     "Restored the previous installed CRM skills after setup failed."
                 )
@@ -5505,7 +5715,9 @@ def main(argv: list[str] | None = None) -> int:
     options = _parse_args(argv)
     cli = OpenClawCLI()
     try:
-        _material_head_state(Path(__file__).resolve().parents[1])
+        _material_head_state(
+            Path(__file__).resolve().parents[1], deadline_check=cli.require_time
+        )
     except SetupConflict as exc:
         print(_redact_api_token(str(exc)), file=sys.stderr)
         return 1

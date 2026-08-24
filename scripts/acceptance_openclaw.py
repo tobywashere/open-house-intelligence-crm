@@ -303,7 +303,12 @@ class ProposalOwnershipUnknown(RuntimeError):
 
 class ApiBoundary(Protocol):
     def request(
-        self, method: str, path: str, payload: dict | None = None
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
     ) -> object: ...
 
 
@@ -313,13 +318,18 @@ class _SessionTrackingAPI:
         self.used_sessions: set[str] = set()
 
     def request(
-        self, method: str, path: str, payload: dict | None = None
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
     ) -> object:
         if method == "POST" and path == "/chat" and isinstance(payload, dict):
             session_id = payload.get("session_id")
             if isinstance(session_id, str):
                 self.used_sessions.add(session_id)
-        return self.delegate.request(method, path, payload)
+        return self.delegate.request(method, path, payload, timeout=timeout)
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -334,7 +344,12 @@ class HttpAPI:
         self.opener = urllib.request.build_opener(_NoRedirectHandler())
 
     def request(
-        self, method: str, path: str, payload: dict | None = None
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
     ) -> object:
         headers = {"Accept": "application/json"}
         token = os.environ.get("OHI_API_TOKEN")
@@ -351,7 +366,10 @@ class HttpAPI:
             headers=headers,
         )
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
+            request_timeout = self.timeout if timeout is None else min(
+                self.timeout, timeout
+            )
+            with self.opener.open(request, timeout=request_timeout) as response:
                 raw = response.read(MAX_BODY_BYTES + 1)
                 if len(raw) > MAX_BODY_BYTES:
                     raise ApiError(response.status, "response exceeded the safe size limit")
@@ -763,16 +781,15 @@ def _setup_evidence_entry(
 
 
 def _capture_current_setup_state(
-    runtime_verification: dict[str, Any],
+    _runtime_verification: dict[str, Any],
 ) -> tuple[dict, str]:
     """Recapture installed state, then independently rescan current HEAD material."""
     options = _parse_args([], repo=REPO)
-    state = capture_installed_state(
-        options,
-        OpenClawCLI(),
-        runtime_verification=runtime_verification,
+    cli = OpenClawCLI()
+    state = capture_installed_state(options, cli)
+    material = _material_head_state(
+        REPO, deadline_check=getattr(cli, "require_time", None)
     )
-    material = _material_head_state(REPO)
     return state, material["material_tree_sha256"]
 
 
@@ -832,8 +849,14 @@ def _request_dict(
     return value
 
 
-def _request_list(api: ApiBoundary, method: str, path: str) -> list[dict]:
-    value = api.request(method, path)
+def _request_list(
+    api: ApiBoundary,
+    method: str,
+    path: str,
+    *,
+    timeout: float | None = None,
+) -> list[dict]:
+    value = api.request(method, path, timeout=timeout)
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise ValueError("expected a JSON array of objects")
     return value
@@ -863,8 +886,15 @@ def _lead_exists(leads: list[dict], name: str) -> bool:
     )
 
 
-def _pending_snapshot(api: ApiBoundary) -> dict[int, dict]:
-    rows = _request_list(api, "GET", "/pending-changes?status=pending")
+def _pending_snapshot(
+    api: ApiBoundary, *, timeout: float | None = None
+) -> dict[int, dict]:
+    rows = _request_list(
+        api,
+        "GET",
+        "/pending-changes?status=pending",
+        timeout=timeout,
+    )
     snapshot: dict[int, dict] = {}
     for row in rows:
         pending_id = row.get("id")
@@ -952,21 +982,23 @@ def _settle_pending_ownership(
 
     def observe() -> bool:
         nonlocal attempts
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise ProposalOwnershipUnknown(attempts)
         attempts += 1
         try:
-            snapshot = _pending_snapshot(api)
+            snapshot = _pending_snapshot(api, timeout=remaining)
         except Exception:
             return False
-        owned = select_owned(snapshot)
-        new_ids = set(snapshot) - baseline_ids
-        observed_unattributed.update(new_ids - set(owned))
-        observed_owned.update(
-            (pending_id, row)
-            for pending_id, row in owned.items()
-            if pending_id not in observed_unattributed
+        if monotonic() >= deadline:
+            raise ProposalOwnershipUnknown(attempts)
+        _accumulate_pending_observation(
+            snapshot,
+            baseline_ids,
+            select_owned,
+            observed_owned,
+            observed_unattributed,
         )
-        for pending_id in observed_unattributed:
-            observed_owned.pop(pending_id, None)
         return True
 
     while True:
@@ -995,6 +1027,45 @@ def _settle_pending_ownership(
         if remaining <= 0:
             raise ProposalOwnershipUnknown(attempts)
         sleep(min(poll_interval, remaining))
+
+
+def _accumulate_pending_observation(
+    snapshot: dict[int, dict],
+    baseline_ids: set[int],
+    select_owned: Callable[[dict[int, dict]], dict[int, dict]],
+    observed_owned: dict[int, dict],
+    observed_unattributed: set[int],
+) -> None:
+    """Retain every post-baseline ID and never promote a disputed proposal."""
+    owned = select_owned(snapshot)
+    new_ids = set(snapshot) - baseline_ids
+    observed_unattributed.update(new_ids - set(owned))
+    observed_owned.update(
+        (pending_id, row)
+        for pending_id, row in owned.items()
+        if pending_id not in observed_unattributed
+    )
+    for pending_id in observed_unattributed:
+        observed_owned.pop(pending_id, None)
+
+
+def _refresh_pending_observation(
+    api: ApiBoundary,
+    baseline_ids: set[int],
+    select_owned: Callable[[dict[int, dict]], dict[int, dict]],
+    observed_owned: dict[int, dict],
+    observed_unattributed: list[int],
+) -> tuple[list[int], dict[int, dict]]:
+    snapshot = _pending_snapshot(api)
+    unattributed = set(observed_unattributed)
+    _accumulate_pending_observation(
+        snapshot,
+        baseline_ids,
+        select_owned,
+        observed_owned,
+        unattributed,
+    )
+    return sorted(unattributed), snapshot
 
 
 def _appointment_snapshot(api: ApiBoundary) -> dict[int, dict]:
@@ -1399,8 +1470,18 @@ def _run_invalid_write(
                 lead_applied = _lead_exists(
                     _request_list(api, "GET", "/leads"), name
                 )
+                unattributed_ids, _ = _refresh_pending_observation(
+                    api,
+                    baseline_ids,
+                    lambda snapshot: _owned_proposals(
+                        snapshot, baseline_ids, name
+                    ),
+                    owned,
+                    unattributed_ids,
+                )
             except Exception as exc:
                 error = error or _safe_error(exc)
+                ownership_known = False
     truthful = "nothing was queued or changed" in reply.casefold()
     passed = (
         error is None
@@ -1548,6 +1629,19 @@ def _run_reviewed_write(
                     )
                     if not absent_before:
                         raise ValueError("disposable lead was applied before review")
+                    unattributed_ids, _ = _refresh_pending_observation(
+                        api,
+                        baseline_ids,
+                        lambda snapshot: _owned_proposals(
+                            snapshot, baseline_ids, name
+                        ),
+                        owned,
+                        unattributed_ids,
+                    )
+                    if unattributed_ids:
+                        raise ValueError(
+                            "unexpected post-baseline proposals could not be safely attributed"
+                        )
                 except Exception as exc:
                     error = error or _safe_error(exc)
     finally:
@@ -1579,7 +1673,18 @@ def _run_reviewed_write(
                 try:
                     if baseline_ids is None:
                         raise ValueError("proposal cleanup context was incomplete")
-                    final_snapshot = _pending_snapshot(api)
+                    absent_after = not _lead_exists(
+                        _request_list(api, "GET", "/leads"), name
+                    )
+                    unattributed_ids, final_snapshot = _refresh_pending_observation(
+                        api,
+                        baseline_ids,
+                        lambda snapshot: _owned_proposals(
+                            snapshot, baseline_ids, name
+                        ),
+                        owned,
+                        unattributed_ids,
+                    )
                     remaining = _owned_proposals(
                         final_snapshot, baseline_ids, name
                     )
@@ -1588,13 +1693,6 @@ def _run_reviewed_write(
                         candidate
                         for candidate in remaining
                         if candidate not in failures
-                    )
-                    unattributed_ids = sorted(
-                        set(unattributed_ids)
-                        | (
-                            (set(final_snapshot) - baseline_ids)
-                            - set(remaining)
-                        )
                     )
                 except Exception:
                     verification_failed = True
@@ -1636,12 +1734,13 @@ def _run_reviewed_write(
                     },
                 )
             )
-        try:
-            absent_after = not _lead_exists(
-                _request_list(api, "GET", "/leads"), name
-            )
-        except Exception as exc:
-            error = error or _safe_error(exc)
+        if not (write_sent and ownership_known):
+            try:
+                absent_after = not _lead_exists(
+                    _request_list(api, "GET", "/leads"), name
+                )
+            except Exception as exc:
+                error = error or _safe_error(exc)
 
     passed = (
         error is None
@@ -1786,6 +1885,19 @@ def _run_reviewed_booking(
                         )
                         if applied_before:
                             raise ValueError("booking was applied before review")
+                        unattributed_ids, _ = _refresh_pending_observation(
+                            api,
+                            baseline_pending_ids,
+                            lambda snapshot: _owned_booking_proposals(
+                                snapshot, baseline_pending_ids, expected_payload
+                            ),
+                            owned,
+                            unattributed_ids,
+                        )
+                        if unattributed_ids:
+                            raise ValueError(
+                                "unexpected post-baseline proposals could not be safely attributed"
+                            )
                         if len(owned) > 1:
                             ownership_ambiguous = True
                             raise ValueError(
@@ -1851,40 +1963,36 @@ def _run_reviewed_booking(
             try:
                 if expected_payload is None or baseline_pending_ids is None:
                     raise ValueError("booking cleanup context was incomplete")
-                final_snapshot = _pending_snapshot(api)
+                if baseline_appointments is None:
+                    raise ValueError("booking cleanup context was incomplete")
+                applied_after = _booking_applied(
+                    _appointment_snapshot(api),
+                    set(baseline_appointments),
+                    expected_payload,
+                )
+                unattributed_ids, final_snapshot = _refresh_pending_observation(
+                    api,
+                    baseline_pending_ids,
+                    lambda snapshot: _owned_booking_proposals(
+                        snapshot, baseline_pending_ids, expected_payload
+                    ),
+                    owned,
+                    unattributed_ids,
+                )
                 remaining = _owned_booking_proposals(
                     final_snapshot, baseline_pending_ids, expected_payload
                 )
-                unattributed_ids = sorted(
-                    set(unattributed_ids)
-                    | (
-                        (set(final_snapshot) - baseline_pending_ids)
-                        - set(remaining)
-                    )
-                )
                 pending_after = len(remaining)
-                if remaining:
-                    failures.extend(
-                        candidate
-                        for candidate in remaining
-                        if candidate not in failures
-                    )
-            except Exception:
+                failures.extend(
+                    candidate
+                    for candidate in remaining
+                    if candidate not in failures
+                )
+            except Exception as exc:
                 pending_after = "unknown"
-                error = error or "booking cleanup snapshot failed"
+                error = error or _safe_error(exc)
                 cleanup_level = "FAIL"
                 cleanup_detail = "booking cleanup could not be fully verified"
-            if baseline_appointments is not None and expected_payload is not None:
-                try:
-                    applied_after = _booking_applied(
-                        _appointment_snapshot(api),
-                        set(baseline_appointments),
-                        expected_payload,
-                    )
-                except Exception as exc:
-                    error = error or _safe_error(exc)
-                    cleanup_level = "FAIL"
-                    cleanup_detail = "booking cleanup could not be fully verified"
             if failures:
                 cleanup_level = "FAIL"
                 cleanup_detail = "booking proposal cleanup failed"

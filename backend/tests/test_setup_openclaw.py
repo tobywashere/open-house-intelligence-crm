@@ -161,6 +161,7 @@ class FakeCLI:
         configured_agent_guard_probe=None,
         analysis_tool_probe=None,
         channel_probe_statuses=None,
+        production_channel_guard_probe=None,
         effective_tools=None,
         primary_agent_id="openhouse-crm",
     ):
@@ -179,12 +180,15 @@ class FakeCLI:
         self.configured_agent_guard_probe = configured_agent_guard_probe
         self.analysis_tool_probe = analysis_tool_probe
         self.channel_probe_statuses = dict(channel_probe_statuses or {})
+        self.production_channel_guard_probe = production_channel_guard_probe
         self.primary_agent_id = primary_agent_id
         self.effective_tools = effective_tools
         self.client_tool_probe_calls = []
         self.configured_agent_guard_probe_calls = []
         self.analysis_tool_probe_calls = []
         self.channel_probe_status_calls = []
+        self.production_channel_guard_probe_calls = []
+        self.gateway_restart_count = 0
         self.extra_agents = {}
         self.bindings = set()
 
@@ -235,10 +239,13 @@ class FakeCLI:
             return agent, field
         return None, None
 
-    def probe_client_tools(self, *, agent_id, nonce, tools=None):
-        self.client_tool_probe_calls.append(
-            {"agent_id": agent_id, "nonce": nonce, "tools": tools}
-        )
+    def probe_client_tools(
+        self, *, agent_id, nonce, tools=None, production=False
+    ):
+        call = {"agent_id": agent_id, "nonce": nonce, "tools": tools}
+        if production:
+            call["production"] = True
+        self.client_tool_probe_calls.append(call)
         if self.client_tool_probe is not None:
             return self.client_tool_probe
         if tools is not None:
@@ -299,8 +306,13 @@ class FakeCLI:
             "",
         )
 
-    def probe_analysis_tool_block(self, *, agent_id, nonce):
-        self.analysis_tool_probe_calls.append({"agent_id": agent_id, "nonce": nonce})
+    def probe_analysis_tool_block(
+        self, *, agent_id, nonce, production=False
+    ):
+        call = {"agent_id": agent_id, "nonce": nonce}
+        if production:
+            call["production"] = True
+        self.analysis_tool_probe_calls.append(call)
         if self.analysis_tool_probe is not None:
             return self.analysis_tool_probe
         return CommandResult(
@@ -347,12 +359,31 @@ class FakeCLI:
             f"Configured CRM agent {agent_id} is protected.",
         )
 
+    def probe_production_channel_guard(self, *, agent_id, nonce, channel):
+        self.production_channel_guard_probe_calls.append(
+            {
+                "agent_id": agent_id,
+                "nonce": nonce,
+                "channel": channel,
+                "gateway_restart_count": self.gateway_restart_count,
+            }
+        )
+        if self.production_channel_guard_probe is not None:
+            return self.production_channel_guard_probe
+        return CommandResult(
+            403,
+            "",
+            f"Production CRM channel {channel} nonce {nonce} is protected.",
+        )
+
     def run(self, args, *, mutate=False):
         self.calls.append(args)
         key = tuple(args)
         response = self.responses.get(key)
         if mutate:
             self.mutating_calls.append(args)
+            if args == ["openclaw", "gateway", "restart"]:
+                self.gateway_restart_count += 1
         if response is not None and response.returncode != 0:
             return response
         if mutate:
@@ -1626,7 +1657,7 @@ def test_installed_state_snapshot_fails_when_installed_skill_differs_from_source
         setup_openclaw.capture_installed_state(options, cli)
 
 
-def test_installed_state_snapshot_requires_runtime_hook_inventory(tmp_path):
+def test_installed_state_snapshot_reproves_behavior_without_hook_inventory(tmp_path):
     options = make_options(tmp_path)
     cli = FakeCLI()
     result = configure_openclaw(options, cli=cli)
@@ -1642,8 +1673,16 @@ def test_installed_state_snapshot_requires_runtime_hook_inventory(tmp_path):
         "diagnostics": [],
     }
 
-    with pytest.raises(SetupConflict, match="hook inventory"):
-        setup_openclaw.capture_installed_state(options, cli)
+    before = len(cli.production_channel_guard_probe_calls)
+    state = setup_openclaw.capture_installed_state(options, cli)
+
+    proof = state["plugin"]["runtime_verification"]
+    assert proof["mode"] == "production_behavioral"
+    assert proof["agent_id"] == options.agent_id
+    assert proof["capabilities"] == sorted(
+        setup_openclaw.BEHAVIORAL_RUNTIME_CAPABILITIES
+    )
+    assert len(cli.production_channel_guard_probe_calls) == before + 2
 
 
 def test_installed_state_snapshot_never_contains_gateway_or_crm_secrets(
@@ -1954,8 +1993,10 @@ def test_runtime_without_authoritative_hook_inventory_uses_bounded_chat_path_pro
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
     assert result.ok, result.render()
-    assert len(cli.client_tool_probe_calls) == 1
-    assert len(cli.analysis_tool_probe_calls) == 1
+    assert len(cli.client_tool_probe_calls) == 2
+    assert len(cli.analysis_tool_probe_calls) == 2
+    assert cli.client_tool_probe_calls[-1]["production"] is True
+    assert cli.analysis_tool_probe_calls[-1]["production"] is True
     assert [call["channel"] for call in cli.channel_probe_status_calls] == [
         "openhouse-dashboard",
         "openhouse-analysis",
@@ -2001,6 +2042,80 @@ def test_behavioral_hook_fallback_is_carried_into_custom_agent_state(tmp_path):
     assert state["agent"]["id"] == "custom-crm"
     assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
     assert state["agent"]["sandbox"] == setup_openclaw.DESIRED_SANDBOX
+
+
+def test_behavioral_fallback_is_reproven_on_production_agent_after_final_restart(
+    tmp_path,
+):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = FakeCLI(
+        primary_agent_id="custom-crm",
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+            },
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        },
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.gateway_restart_count == 2
+    assert [
+        call["agent_id"] for call in cli.client_tool_probe_calls
+    ][-1] == "custom-crm"
+    assert [
+        call["agent_id"] for call in cli.analysis_tool_probe_calls
+    ][-1] == "custom-crm"
+    assert [
+        (call["agent_id"], call["channel"], call["gateway_restart_count"])
+        for call in cli.production_channel_guard_probe_calls
+    ] == [
+        ("custom-crm", "openhouse-dashboard", 2),
+        ("custom-crm", "openhouse-analysis", 2),
+    ]
+    assert cli.configured_agent_guard_probe_calls[-1]["agent_id"] == "custom-crm"
+
+
+def test_installed_state_reproves_behavior_instead_of_trusting_serialized_label(
+    tmp_path,
+):
+    options = make_options(tmp_path)
+    runtime = {
+        "plugin": {
+            "id": "openhouse-crm",
+            "enabled": True,
+            "toolNames": ["openhouse_crm"],
+        },
+        "tools": [{"names": ["openhouse_crm"], "optional": False}],
+        "diagnostics": [],
+    }
+    failing_cli = FakeCLI(
+        plugin_runtime=runtime,
+        production_channel_guard_probe=CommandResult(
+            503, "", "fresh production proof unavailable"
+        ),
+    )
+    result = configure_openclaw(options, cli=failing_cli)
+    assert not result.ok
+
+    cli = FakeCLI(plugin_runtime=runtime)
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    cli.production_channel_guard_probe = CommandResult(
+        503, "", "fresh production proof unavailable"
+    )
+
+    with pytest.raises(SetupConflict, match="fresh production"):
+        setup_openclaw.capture_installed_state(
+            options,
+            cli,
+            runtime_verification=result.runtime_verification,
+        )
 
 
 @pytest.mark.parametrize(
@@ -4555,6 +4670,55 @@ def test_setup_main_starts_its_deadline_before_material_validation(
     assert events == ["deadline", "material"]
 
 
+def test_material_scan_checks_the_shared_setup_deadline_between_files(tmp_path):
+    repo = _committed_material_checkout(tmp_path)
+    checks = 0
+
+    def deadline_check():
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise SetupConflict("OpenClaw setup time limit expired")
+        return 1.0
+
+    with pytest.raises(SetupConflict, match="setup time limit"):
+        setup_openclaw._material_head_state(
+            repo, deadline_check=deadline_check
+        )
+
+    assert checks == 3
+
+
+def test_local_skill_rollback_stops_on_expiry_and_retains_backup(tmp_path):
+    workspace = tmp_path / "workspace"
+    installed = workspace / "skills" / "crm-db-operations"
+    installed.mkdir(parents=True)
+    (installed / "current.txt").write_text("current\n")
+    backup = tmp_path / "private-backup"
+    original = backup / "crm-db-operations"
+    original.mkdir(parents=True)
+    (original / "original.txt").write_text("original\n")
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=workspace,
+        backup_root=backup,
+        existing_names={"crm-db-operations"},
+        workspace_existed=True,
+        skills_root_existed=True,
+        missing_parent_dirs=[],
+    )
+
+    def expired():
+        raise SetupConflict("OpenClaw rollback time limit expired")
+
+    assert setup_openclaw._restore_installed_skills(
+        snapshot, deadline_check=expired
+    ) is False
+    assert (backup / "crm-db-operations" / "original.txt").read_text() == (
+        "original\n"
+    )
+    assert (installed / "current.txt").read_text() == "current\n"
+
+
 def test_setup_fails_closed_when_plugin_agent_config_readback_is_wrong(tmp_path):
     class WrongPluginConfigCLI(FakeCLI):
         configured_once = False
@@ -5788,7 +5952,9 @@ def test_existing_agent_rollback_requires_authoritative_exact_readback(tmp_path)
             super().__init__(dict(original))
             self.probe_failed = False
 
-        def probe_client_tools(self, *, agent_id, nonce, tools):
+        def probe_client_tools(
+            self, *, agent_id, nonce, tools, production=False
+        ):
             del tools
             self.probe_failed = True
             return CommandResult(503, "", "provider unavailable")
