@@ -112,7 +112,7 @@ def _meeting_brief(value: object) -> bool:
     return (
         _positive_int(value.get("appointment_id"))
         and _positive_int(value.get("lead_id"))
-        and _text(value.get("name"))
+        and _text(value.get("name"), empty=True)
         and _text(value.get("area"), optional=True, empty=True)
         and (budget is None or _strict_int(budget))
         and _text(value.get("timeline"), optional=True, empty=True)
@@ -132,10 +132,10 @@ def _suggested_action(value: object) -> bool:
     evidence = value.get("evidence")
     return (
         _positive_int(value.get("lead_id"))
-        and _text(value.get("name"))
+        and _text(value.get("name"), empty=True)
         and value.get("channel") in {"email", "call", "text"}
         and _text(value.get("action"))
-        and _text(value.get("reason"))
+        and _text(value.get("reason"), empty=True)
         and isinstance(evidence, dict)
         and set(evidence) == {"kind", "id"}
         and evidence.get("kind") in {"reminder", "lead"}

@@ -372,6 +372,18 @@ def test_briefing_accepts_valid_empty_optional_crm_text_and_advice():
     assert by_name(result, "Briefing truthfulness")["level"] == "PASS"
 
 
+def test_briefing_acceptance_preserves_api_permitted_whitespace_facts():
+    api = FakeAPI()
+    api.briefing_payload = canonical_briefing()
+    api.briefing_payload["meeting_briefs"][0]["name"] = "   "
+    api.briefing_payload["suggested_actions"][0]["name"] = "   "
+    api.briefing_payload["suggested_actions"][0]["reason"] = "   "
+
+    result = run(api)
+
+    assert by_name(result, "Briefing truthfulness")["level"] == "PASS"
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
