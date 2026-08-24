@@ -125,9 +125,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       const productionProbeState = new Map();
       const markProductionProbeExecuted = (params, context) => {
         if (
-          context?.agentId !== crmAgentId
-          || !TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
-          || params?.operation !== PRODUCTION_PROBE_READ_OPERATION
+          params?.operation !== PRODUCTION_PROBE_READ_OPERATION
         ) return;
         const args = params?.arguments;
         const nonce = args?.probe_nonce;
@@ -139,9 +137,25 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
           || typeof nonce !== "string"
           || !SETUP_NONCE_PATTERN.test(nonce)
         ) return;
-        const key = `${context.requester.channel}:${nonce}`;
-        const record = productionProbeState.get(key);
-        if (record) productionProbeState.set(key, { ...record, executed: true });
+        if (
+          context?.agentId === crmAgentId
+          && TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
+        ) {
+          const key = `${context.requester.channel}:${nonce}`;
+          const record = productionProbeState.get(key);
+          if (record) productionProbeState.set(key, { ...record, executed: true });
+          return;
+        }
+        const active = [...productionProbeState.entries()].filter(([, record]) => (
+          record.agentId === crmAgentId
+          && record.nonce === nonce
+          && record.attempted === true
+          && record.blocked === true
+          && record.executed === false
+        ));
+        if (active.length !== 1) return;
+        const [key, record] = active[0];
+        productionProbeState.set(key, { ...record, executed: true });
       };
       api.on(
         "before_tool_call",

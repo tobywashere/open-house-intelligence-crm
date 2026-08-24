@@ -2,6 +2,7 @@ import importlib.util
 from contextlib import contextmanager
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import os
 from pathlib import Path
@@ -4182,8 +4183,91 @@ def test_setup_never_claims_an_unverified_recovery_backup_is_retained(
     result = configure_openclaw(make_options(tmp_path), cli=FakeCLI())
 
     assert not result.ok
-    assert "recovery backup could not be revalidated" in result.render().lower()
+    assert (
+        "initial private recovery backup did not match its captured anchors"
+        in result.render().lower()
+    )
     assert "Recovery backup retained at" not in result.render()
+
+
+def _configured_recovery_snapshot(tmp_path, monkeypatch):
+    options = make_options(tmp_path)
+    original = options.workspace / "skills" / "crm-db-operations" / "original.txt"
+    original.parent.mkdir(parents=True)
+    original.write_text("original recovery bytes\n")
+    captured = []
+    real_snapshot = setup_openclaw._snapshot_installed_skills
+
+    def capture_snapshot(*args, **kwargs):
+        snapshot = real_snapshot(*args, **kwargs)
+        captured.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(
+        setup_openclaw,
+        "_snapshot_installed_skills",
+        capture_snapshot,
+    )
+    result = configure_openclaw(options, cli=FakeCLI())
+    assert result.ok, result.render()
+    assert len(captured) == 1
+    return captured[0]
+
+
+def test_recovery_completeness_rejects_valid_transaction_manifest_tampering(
+    tmp_path, monkeypatch
+):
+    snapshot = _configured_recovery_snapshot(tmp_path, monkeypatch)
+    manifest_path = snapshot.backup_root / "transaction-state.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["unexpectedButValid"] = True
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")))
+    manifest_path.chmod(0o600)
+
+    assert setup_openclaw._recovery_snapshot_is_complete(
+        snapshot,
+        deadline_check=lambda: 5.0,
+    ) is False
+
+
+def test_recovery_completeness_rejects_truncated_but_valid_skill_tree(
+    tmp_path, monkeypatch
+):
+    snapshot = _configured_recovery_snapshot(tmp_path, monkeypatch)
+    backed_up = snapshot.backup_root / "crm-db-operations" / "original.txt"
+    backed_up.write_text("shorter\n")
+
+    assert setup_openclaw._recovery_snapshot_is_complete(
+        snapshot,
+        deadline_check=lambda: 5.0,
+    ) is False
+
+
+def test_initial_skill_backup_must_match_source_before_setup_can_mutate(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    original = workspace / "skills" / "crm-db-operations" / "original.txt"
+    original.parent.mkdir(parents=True)
+    original.write_text("original\n")
+    queries = []
+
+    def mismatch(operation, payload, timeout):
+        queries.append((operation, payload, timeout))
+        return {
+            "match": False,
+            "left_sha256": "1" * 64,
+            "right_sha256": "2" * 64,
+        }
+
+    with pytest.raises(SetupConflict, match="backup did not match its source"):
+        setup_openclaw._snapshot_installed_skills(
+            workspace,
+            deadline_check=lambda: 5.0,
+            local_query_runner=mismatch,
+        )
+
+    assert queries[0][0] == "skill_snapshot_anchor"
 
 
 @pytest.mark.parametrize("node_kind", ("file", "directory"))
@@ -4880,6 +4964,135 @@ def test_setup_state_handoff_write_and_fsync_are_supervised(tmp_path):
         ) is True
 
     assert handoff.read_bytes() == payload
+
+
+class _WorkerProcessDouble:
+    def __init__(self, *, stdout=b"", communicate_error=None, live=False):
+        self.returncode = 0 if not live else None
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+        self.stderr = None
+        self._output = stdout
+        self._communicate_error = communicate_error
+        self._live = live
+        self.terminated = False
+        self.killed = False
+        self.reaped = False
+
+    def communicate(self, *, input, timeout):
+        del input, timeout
+        if self._communicate_error is not None:
+            raise self._communicate_error
+        return self._output, b""
+
+    def poll(self):
+        return None if self._live else self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self._live = False
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self._live = False
+        self.returncode = -9
+
+    def wait(self, *, timeout):
+        del timeout
+        self.reaped = True
+        return self.returncode
+
+
+def test_worker_decode_failure_terminates_reaps_and_closes_live_child(monkeypatch):
+    process = _WorkerProcessDouble(stdout=b"malformed", live=True)
+    process.returncode = 0
+    monkeypatch.setattr(
+        setup_openclaw.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+
+    assert setup_openclaw._run_bounded_local_worker(
+        "tree_manifest", {"base": "/missing", "roots": ["."]}, 1.0
+    ) is None
+    assert process.terminated is True
+    assert process.reaped is True
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+
+
+def test_handoff_oserror_terminates_reaps_and_closes_live_child(
+    tmp_path, monkeypatch
+):
+    process = _WorkerProcessDouble(
+        communicate_error=OSError("simulated pipe failure"), live=True
+    )
+    monkeypatch.setattr(
+        setup_openclaw.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    handoff = tmp_path / "handoff.json"
+    handoff.touch(mode=0o600)
+    with handoff.open("r+b", buffering=0) as stream:
+        assert setup_openclaw._write_setup_state_handoff(
+            stream.fileno(),
+            b'{}',
+            deadline_check=lambda: 1.0,
+        ) is False
+
+    assert process.terminated is True
+    assert process.reaped is True
+    assert process.stdin.closed is True
+
+
+def test_worker_rechecks_deadline_after_result_decode(monkeypatch):
+    body = b'{"ok":true,"result":{"match":true}}'
+    header = json.dumps(
+        {"size": len(body), "sha256": hashlib.sha256(body).hexdigest()},
+        separators=(",", ":"),
+    ).encode()
+    raw = len(header).to_bytes(8, "big") + header + body
+    process = _WorkerProcessDouble(stdout=raw)
+    monkeypatch.setattr(
+        setup_openclaw.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    decoded = []
+    real_decode = setup_openclaw._decode_local_worker_result
+
+    def decode(value):
+        decoded.append(True)
+        return real_decode(value)
+
+    monkeypatch.setattr(setup_openclaw, "_decode_local_worker_result", decode)
+    times = iter((100.0, 100.0, 101.0))
+
+    assert setup_openclaw._run_bounded_local_query(
+        "trees_match",
+        {"left": "/left", "right": "/right"},
+        1.0,
+        clock=lambda: next(times),
+    ) is None
+    assert decoded == [True]
+    assert process.reaped is True
+
+
+def test_handoff_rechecks_deadline_after_validating_written_size(tmp_path):
+    handoff = tmp_path / "handoff.json"
+    handoff.touch(mode=0o600)
+    times = iter((100.0, 100.0, 101.0))
+    with handoff.open("r+b", buffering=0) as stream:
+        assert setup_openclaw._write_setup_state_handoff(
+            stream.fileno(),
+            b'{"state":true}',
+            deadline_check=lambda: 1.0,
+            clock=lambda: next(times),
+        ) is False
+
+    assert handoff.read_bytes() == b'{"state":true}'
 
 
 def test_setup_does_not_claim_incomplete_backup_after_bounded_manifest_timeout(

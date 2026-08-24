@@ -72,7 +72,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -222,6 +222,9 @@ class SkillRollback:
     workspace_existed: bool
     skills_root_existed: bool
     missing_parent_dirs: list[Path]
+    skill_anchor_sha256: dict[str, str] = field(default_factory=dict)
+    manifest_anchor_sha256: str | None = None
+    manifest_schema_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -771,6 +774,10 @@ def execute(payload):
         return {"entries": scan_tree(payload["base"], payload["roots"], ignore_inert_pycache=bool(payload.get("ignore_inert_pycache")))}
     if operation == "trees_match":
         return {"match": full_manifest(payload["left"]) == full_manifest(payload["right"])}
+    if operation == "skill_snapshot_anchor":
+        left = full_manifest(payload["source"])
+        right = full_manifest(payload["backup"])
+        return {"match": left == right, "left_sha256": left, "right_sha256": right}
     if operation == "gateway_env_matches":
         path = Path(payload["path"])
         if not payload["existed"]:
@@ -803,9 +810,12 @@ def execute(payload):
         children = sorted(item.name for item in root.iterdir() if item.name != "transaction-state.json")
         if children != names:
             return {"complete": False}
-        digests = [full_manifest(root / name) for name in names]
-        digest = hashlib.sha256(json.dumps({"manifest": hashlib.sha256(manifest_contents).hexdigest(), "skills": digests}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        return {"complete": True, "sha256": digest}
+        return {
+            "complete": True,
+            "manifest_sha256": hashlib.sha256(manifest_contents).hexdigest(),
+            "manifest_schema_version": manifest.get("schemaVersion"),
+            "skill_sha256": {name: full_manifest(root / name) for name in names},
+        }
     raise ValueError("unsupported operation")
 
 try:
@@ -942,16 +952,21 @@ def _decode_local_worker_result(raw: bytes) -> Any:
 def _terminate_local_worker(process: subprocess.Popen[bytes]) -> None:
     try:
         process.terminate()
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         pass
     try:
         process.wait(timeout=0.25)
     except subprocess.TimeoutExpired:
-        process.kill()
+        try:
+            process.kill()
+        except (OSError, RuntimeError, ValueError):
+            pass
         try:
             process.wait(timeout=0.25)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError, RuntimeError, ValueError):
             pass
+    except (OSError, RuntimeError, ValueError):
+        pass
 
 
 def _close_local_worker_pipes(process: subprocess.Popen[bytes]) -> None:
@@ -959,12 +974,33 @@ def _close_local_worker_pipes(process: subprocess.Popen[bytes]) -> None:
         if stream is not None and not stream.closed:
             try:
                 stream.close()
-            except OSError:
+            except (OSError, RuntimeError, ValueError):
                 pass
 
 
+def _finalize_local_worker(process: subprocess.Popen[bytes]) -> None:
+    """Terminate any live child, reap it, and close every owned pipe."""
+    try:
+        live = process.poll() is None
+    except (OSError, RuntimeError, ValueError):
+        live = True
+    if live:
+        _terminate_local_worker(process)
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        _terminate_local_worker(process)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    _close_local_worker_pipes(process)
+
+
 def _run_bounded_local_worker(
-    operation: str, payload: dict[str, Any], timeout: float
+    operation: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Any | None:
     """Supervise one isolated filesystem worker over private anonymous pipes."""
     if (
@@ -974,7 +1010,7 @@ def _run_bounded_local_worker(
         or timeout <= 0
     ):
         return None
-    deadline = time.monotonic() + float(timeout)
+    deadline = clock() + float(timeout)
     try:
         request = _encode_local_worker_request(operation, payload)
     except (TypeError, ValueError, OverflowError):
@@ -984,6 +1020,7 @@ def _run_bounded_local_worker(
         for key, value in os.environ.items()
         if key.casefold() in {"systemroot", "windir", "path"}
     }
+    process: subprocess.Popen[bytes] | None = None
     try:
         process = subprocess.Popen(
             [sys.executable, "-I", "-c", _LOCAL_OPERATION_SOURCE],
@@ -994,32 +1031,45 @@ def _run_bounded_local_worker(
         )
         stdout, _ = process.communicate(
             input=request,
-            timeout=max(0.001, deadline - time.monotonic()),
+            timeout=max(0.001, deadline - clock()),
         )
-        _close_local_worker_pipes(process)
-        if process.returncode != 0 or time.monotonic() > deadline:
+        if process.returncode != 0:
             return None
-        return _decode_local_worker_result(stdout)
+        result = _decode_local_worker_result(stdout)
+        if clock() >= deadline:
+            return None
+        return result
     except subprocess.TimeoutExpired:
-        _terminate_local_worker(process)
-        _close_local_worker_pipes(process)
         return None
     except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError):
-        if "process" in locals():
-            _close_local_worker_pipes(process)
         return None
+    finally:
+        if process is not None:
+            _finalize_local_worker(process)
 
 
 def _run_bounded_local_operation(
-    operation: str, payload: dict[str, Any], timeout: float
+    operation: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    clock: Callable[[], float] = time.monotonic,
 ) -> bool:
-    return _run_bounded_local_worker(operation, payload, timeout) is True
+    return _run_bounded_local_worker(
+        operation, payload, timeout, clock=clock
+    ) is True
 
 
 def _run_bounded_local_query(
-    operation: str, payload: dict[str, Any], timeout: float
+    operation: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any] | None:
-    result = _run_bounded_local_worker(operation, payload, timeout)
+    result = _run_bounded_local_worker(
+        operation, payload, timeout, clock=clock
+    )
     if not isinstance(result, dict):
         return None
     return result
@@ -1030,6 +1080,7 @@ def _write_setup_state_handoff(
     contents: bytes,
     *,
     deadline_check: Callable[[], float],
+    clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     if len(contents) > MAX_SETUP_STATE_BYTES:
         return False
@@ -1047,12 +1098,13 @@ def _write_setup_state_handoff(
         or timeout <= 0
     ):
         return False
-    deadline = time.monotonic() + float(timeout)
+    deadline = clock() + float(timeout)
     environment = {
         key: value
         for key, value in os.environ.items()
         if key.casefold() in {"systemroot", "windir", "path"}
     }
+    process: subprocess.Popen[bytes] | None = None
     try:
         process = subprocess.Popen(
             [sys.executable, "-I", "-c", _STATE_HANDOFF_SOURCE],
@@ -1063,22 +1115,20 @@ def _write_setup_state_handoff(
         )
         process.communicate(
             input=request,
-            timeout=max(0.001, deadline - time.monotonic()),
+            timeout=max(0.001, deadline - clock()),
         )
-        _close_local_worker_pipes(process)
-        return (
+        valid_size = (
             process.returncode == 0
-            and time.monotonic() <= deadline
             and os.fstat(descriptor).st_size == len(contents)
         )
+        return valid_size and clock() < deadline
     except subprocess.TimeoutExpired:
-        _terminate_local_worker(process)
-        _close_local_worker_pipes(process)
         return False
     except (OSError, RuntimeError, ValueError, TypeError):
-        if "process" in locals():
-            _close_local_worker_pipes(process)
         return False
+    finally:
+        if process is not None:
+            _finalize_local_worker(process)
 
 
 def _run_local_if_bounded(
@@ -2281,6 +2331,7 @@ def _snapshot_installed_skills(
     *,
     deadline_check: Callable[[], float] | None = None,
     local_runner: LocalOperationRunner | None = None,
+    local_query_runner: LocalQueryRunner | None = None,
 ) -> SkillRollback:
     skills_root = workspace / "skills"
     _validate_no_symlink_components(
@@ -2299,6 +2350,7 @@ def _snapshot_installed_skills(
         tempfile.mkdtemp(prefix="openhouse-skill-rollback-")
     ).resolve(strict=True)
     existing_names: set[str] = set()
+    skill_anchors: dict[str, str] = {}
     try:
         for name in SKILL_NAMES:
             target = skills_root / name
@@ -2320,6 +2372,29 @@ def _snapshot_installed_skills(
                         f"incomplete private data remains at {backup_root} and must "
                         "not be treated as a recovery backup"
                     )
+                anchor = _run_local_query_if_bounded(
+                    "skill_snapshot_anchor",
+                    {
+                        "source": str(target),
+                        "backup": str(backup_root / name),
+                    },
+                    deadline_check=deadline_check or (lambda: 30.0),
+                    local_query_runner=local_query_runner,
+                )
+                if (
+                    not isinstance(anchor, dict)
+                    or set(anchor)
+                    != {"match", "left_sha256", "right_sha256"}
+                    or anchor["match"] is not True
+                    or not isinstance(anchor["left_sha256"], str)
+                    or not isinstance(anchor["right_sha256"], str)
+                    or SHA256_RE.fullmatch(anchor["left_sha256"]) is None
+                    or anchor["left_sha256"] != anchor["right_sha256"]
+                ):
+                    raise SetupConflict(
+                        "installed skill backup did not match its source before setup mutation"
+                    )
+                skill_anchors[name] = anchor["left_sha256"]
                 existing_names.add(name)
     except SetupConflict:
         raise
@@ -2332,6 +2407,7 @@ def _snapshot_installed_skills(
         workspace_existed=workspace.exists(),
         skills_root_existed=skills_root.exists(),
         missing_parent_dirs=_missing_directory_chain(workspace.parent),
+        skill_anchor_sha256=skill_anchors,
     )
 
 
@@ -2539,6 +2615,17 @@ def _recovery_snapshot_is_complete(
     deadline_check: Callable[[], float] | None = None,
     local_query_runner: LocalQueryRunner | None = None,
 ) -> bool:
+    if (
+        snapshot.manifest_schema_version != 1
+        or not isinstance(snapshot.manifest_anchor_sha256, str)
+        or SHA256_RE.fullmatch(snapshot.manifest_anchor_sha256) is None
+        or set(snapshot.skill_anchor_sha256) != snapshot.existing_names
+        or any(
+            not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None
+            for digest in snapshot.skill_anchor_sha256.values()
+        )
+    ):
+        return False
     try:
         result = _run_local_query_if_bounded(
             "recovery_backup_status",
@@ -2554,10 +2641,17 @@ def _recovery_snapshot_is_complete(
         return False
     return (
         isinstance(result, dict)
-        and set(result) == {"complete", "sha256"}
+        and set(result)
+        == {
+            "complete",
+            "manifest_sha256",
+            "manifest_schema_version",
+            "skill_sha256",
+        }
         and result["complete"] is True
-        and isinstance(result["sha256"], str)
-        and SHA256_RE.fullmatch(result["sha256"]) is not None
+        and result["manifest_sha256"] == snapshot.manifest_anchor_sha256
+        and result["manifest_schema_version"] == snapshot.manifest_schema_version
+        and result["skill_sha256"] == snapshot.skill_anchor_sha256
     )
 
 
@@ -2577,6 +2671,7 @@ def _write_recovery_manifest(
     local_runner: LocalOperationRunner | None = None,
 ) -> None:
     payload = {
+        "schemaVersion": 1,
         "gatewayEnv": (
             {
                 "path": str(gateway_env.path),
@@ -2612,13 +2707,16 @@ def _write_recovery_manifest(
         },
     }
     path = skill_snapshot.backup_root / "transaction-state.json"
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     _write_bytes_exclusive(
         path,
-        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        encoded,
         0o600,
         deadline_check=deadline_check,
         local_runner=local_runner,
     )
+    skill_snapshot.manifest_schema_version = payload["schemaVersion"]
+    skill_snapshot.manifest_anchor_sha256 = hashlib.sha256(encoded).hexdigest()
 
 
 def _write_bytes_exclusive(
@@ -5935,6 +6033,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             plugin_source=plugin_source,
             deadline_check=local_deadline_check,
         )
+        if not _recovery_snapshot_is_complete(
+            skill_rollback, deadline_check=local_deadline_check
+        ):
+            raise SetupConflict(
+                "The initial private recovery backup did not match its captured anchors"
+            )
 
         if token and gateway_env_path is not None:
             _upsert_gateway_env(

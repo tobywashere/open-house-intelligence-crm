@@ -289,7 +289,7 @@ test("production channel proof fails as soon as the registered executor begins",
     toolContext,
   );
 
-  const tool = registrations[0][0](toolContext);
+  const tool = registrations[0][0]({ workspaceDir: "/trusted/workspace" });
   const execution = tool.execute("call-id", params);
   const status = hooks.get("before_tool_call").handler(
     {
