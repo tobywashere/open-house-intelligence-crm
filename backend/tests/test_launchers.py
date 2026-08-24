@@ -273,6 +273,25 @@ def test_acceptance_scope_is_accurate_in_every_beginner_guide():
         assert misleading.search(normalized.lower()) is None, path
 
 
+def test_readme_describes_both_disposable_proposals_in_cleanup_sentence():
+    readme = _normalized((REPO / "README.md").read_text())
+
+    assert "never approves the test proposals" in readme
+    assert "never approves the test proposal." not in readme
+
+
+def test_wsl_write_acceptance_saves_json_without_masking_failure():
+    text = (REPO / "docs/WINDOWS-WSL-SETUP.md").read_text()
+    block = next(
+        block
+        for block in _bash_blocks(text)
+        if "scripts/acceptance_openclaw.py" in block and "--allow-test-write" in block
+    )
+
+    assert "set -o pipefail" in block
+    assert "| tee openhouse-acceptance.json" in block
+
+
 def test_voice_is_conditional_and_not_a_release_blocker_in_every_beginner_guide():
     expected = (
         "If no transcription provider is configured, record voice as "

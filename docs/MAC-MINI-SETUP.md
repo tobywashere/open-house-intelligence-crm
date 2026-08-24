@@ -102,8 +102,9 @@ records, chat content, model responses, and your home-directory path.
 
 For a hardware acceptance report, create explicit setup evidence first. The
 helper runs setup twice and records machine-verifiable evidence tied to the
-tested revision. It also compares a read-only final-state fingerprint after
-each run. The report names this prerequisite `Setup twice`.
+tested revision, which must remain clean. It also compares a canonical structured snapshot of
+the installed skills, plugin, agent policy, bindings, approvals, and gateway
+references after each run. The report names this prerequisite `Setup twice`.
 
 ```bash
 python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json

@@ -402,10 +402,14 @@ Setup is an explicit prerequisite, not a hidden acceptance-runner mutation. A
 separate evidence helper performs two explicit setup runs and records strict,
 machine-verifiable setup evidence tied to the tested revision. The acceptance
 runner validates that evidence and reports whether both runs succeeded and were
-idempotent by comparing a read-only final-state fingerprint after each run.
-Missing, incomplete, failed, malformed, mismatched-state, or wrong-revision
-evidence is a required failure. Shared JSON includes no raw logs, local paths,
-home data, or secrets.
+idempotent by comparing complete canonical structured installed-state snapshots
+after each run. The helper requires a clean, unchanged exact revision before and
+after both runs. Acceptance recomputes each snapshot digest and strictly checks
+the shipped and installed skill digests, plugin registration/configuration and
+runtime inventory, agent policy, bindings, executable approvals, and relevant
+gateway references. Missing, partial, failed, malformed, mismatched-state,
+dirty-worktree, changed-HEAD, or wrong-revision evidence is a required failure.
+Shared JSON includes no raw logs, local paths, home data, or secrets.
 
 The sanitized report records:
 
@@ -469,7 +473,8 @@ The change is complete only when a clean supported-hardware run and its
 sanitized evidence prove all of the following without manual repair:
 
 1. two explicit setup runs succeed at the tested revision and the acceptance
-   report validates their machine-verifiable setup evidence as idempotent;
+   report validates their complete canonical installed-state snapshots as
+   identical on a clean, unchanged exact revision;
 2. the doctor records an audited direct CRM call;
 3. dashboard chat reports the exact real lead count;
 4. dashboard chat queues a natural-language disposable write and names the

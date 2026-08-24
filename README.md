@@ -62,8 +62,9 @@ the same setup command if it reports a partial installation.
 
 For a hardware acceptance report, first capture two explicit setup runs. This
 helper runs setup twice and saves machine-verifiable evidence tied to the
-tested revision. It also compares a read-only final-state fingerprint after
-each run. The acceptance report shows it as `Setup twice`:
+tested revision, which must remain clean. It also compares a canonical structured snapshot of
+the installed skills, plugin, agent policy, bindings, approvals, and gateway
+references after each run. The acceptance report shows it as `Setup twice`:
 
 ```bash
 python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
@@ -79,7 +80,7 @@ voice or Discord delivery. To authorize those disposable proposals, run:
 python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
 ```
 
-This command never approves the test proposal. Inspect its JSON before sharing
+This command never approves the test proposals. Inspect its JSON before sharing
 it.
 
 ## What the status means

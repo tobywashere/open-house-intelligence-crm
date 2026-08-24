@@ -31,26 +31,34 @@ try:
     from scripts import doctor
     from scripts.setup_openclaw import (
         SetupConflict,
+        _redact_api_token,
         _read_repo_env_values,
         _validate_requested_agent_id,
+        canonical_installed_state_digest,
+        validate_installed_state_snapshot,
     )
 except ModuleNotFoundError:  # Direct execution puts scripts/, not the repo, on sys.path.
     import doctor  # type: ignore[no-redef]
     from setup_openclaw import (  # type: ignore[no-redef]
         SetupConflict,
+        _redact_api_token,
         _read_repo_env_values,
         _validate_requested_agent_id,
+        canonical_installed_state_digest,
+        validate_installed_state_snapshot,
     )
 
 
 MAX_BODY_BYTES = 1024 * 1024
 MAX_TEXT = 500
 POST_WRITE_SNAPSHOT_ATTEMPTS = 3
+MAX_UNATTRIBUTED_PROPOSAL_IDS = 10
 PENDING_RE = re.compile(r"\bQueued Pending approval #(\d+)\b")
 DIRECTORY_RE = re.compile(r"^\s*(\d+) leads total\.", re.IGNORECASE)
 REVISION_RE = re.compile(r"^[0-9a-f]{7,40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SETUP_EVIDENCE_KEYS = {
+    "repository_checks",
     "revision",
     "runs",
     "schema_version",
@@ -61,11 +69,13 @@ SETUP_RUN_KEYS = {
     "finished_at",
     "run_id",
     "sanitized_log_sha256",
-    "sanitized_state_sha256",
     "sequence",
     "started_at",
-    "state_probe_exit_code",
+    "state",
+    "state_capture_exit_code",
+    "state_sha256",
 }
+SETUP_REPOSITORY_CHECK_KEYS = {"phase", "revision", "clean"}
 FORBIDDEN_BRIEFING_KEYS = {
     "ai_insights",
     "citations",
@@ -169,8 +179,36 @@ def _entry(
 
 def _capture_revision() -> str:
     return doctor._command_version(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=REPO
+        ["git", "rev-parse", "HEAD"], cwd=REPO
     ) or "unavailable"
+
+
+def _capture_worktree_clean(
+    *, allowed_untracked: set[Path] | None = None
+) -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=REPO,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return False
+    allowed: set[str] = set()
+    for path in allowed_untracked or set():
+        try:
+            relative = path.resolve(strict=False).relative_to(REPO.resolve(strict=False))
+        except ValueError:
+            continue
+        allowed.add(relative.as_posix())
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        if not line.startswith("?? ") or line[3:] not in allowed:
+            return False
+    return True
 
 
 def _capture_dependencies() -> dict[str, str]:
@@ -218,7 +256,9 @@ def _parse_evidence_time(value: object) -> datetime:
     return parsed
 
 
-def _setup_evidence_entry(evidence: object, revision: str) -> dict:
+def _setup_evidence_entry(
+    evidence: object, revision: str, worktree_clean: bool
+) -> dict:
     base_evidence = {
         "runs": 0,
         "both_succeeded": False,
@@ -229,6 +269,10 @@ def _setup_evidence_entry(evidence: object, revision: str) -> dict:
         return _entry(
             "FAIL", "Setup twice", "setup evidence was not provided", base_evidence
         )
+    if not worktree_clean:
+        return _entry(
+            "FAIL", "Setup twice", "tested worktree was not clean", base_evidence
+        )
     if not isinstance(evidence, dict) or set(evidence) != SETUP_EVIDENCE_KEYS:
         return _entry(
             "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
@@ -236,12 +280,14 @@ def _setup_evidence_entry(evidence: object, revision: str) -> dict:
     evidence_revision = evidence.get("revision")
     command = evidence.get("setup_command")
     runs = evidence.get("runs")
+    repository_checks = evidence.get("repository_checks")
     if (
-        evidence.get("schema_version") != 1
+        evidence.get("schema_version") != 2
         or not isinstance(evidence_revision, str)
         or REVISION_RE.fullmatch(evidence_revision) is None
         or command != ["python3", "scripts/setup_openclaw.py"]
         or not isinstance(runs, list)
+        or not isinstance(repository_checks, list)
     ):
         return _entry(
             "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
@@ -254,12 +300,41 @@ def _setup_evidence_entry(evidence: object, revision: str) -> dict:
             "setup evidence did not contain two runs",
             base_evidence,
         )
+    revision_matches = evidence_revision == revision
+    base_evidence["revision_matches"] = revision_matches
+    if not revision_matches:
+        return _entry(
+            "FAIL",
+            "Setup twice",
+            "setup evidence revision did not match",
+            base_evidence,
+        )
+    expected_phases = ["before_run_1", "after_run_1", "after_run_2"]
+    if len(repository_checks) != 3:
+        return _entry(
+            "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
+        )
+    for expected_phase, item in zip(expected_phases, repository_checks, strict=True):
+        if (
+            not isinstance(item, dict)
+            or set(item) != SETUP_REPOSITORY_CHECK_KEYS
+            or item.get("phase") != expected_phase
+            or item.get("revision") != revision
+            or item.get("clean") is not True
+        ):
+            return _entry(
+                "FAIL",
+                "Setup twice",
+                "setup repository checks did not prove a clean unchanged revision",
+                base_evidence,
+            )
     valid_runs = True
     run_ids: set[str] = set()
     previous_finish: datetime | None = None
     exits: list[int] = []
-    probe_exits: list[int] = []
+    capture_exits: list[int] = []
     state_hashes: list[str] = []
+    states: list[dict] = []
     for expected_sequence, run in enumerate(runs, start=1):
         if not isinstance(run, dict) or set(run) != SETUP_RUN_KEYS:
             valid_runs = False
@@ -272,17 +347,15 @@ def _setup_evidence_entry(evidence: object, revision: str) -> dict:
             valid_runs = False
             break
         exit_code = run.get("exit_code")
-        probe_exit_code = run.get("state_probe_exit_code")
+        capture_exit_code = run.get("state_capture_exit_code")
         if (
             run.get("sequence") != expected_sequence
             or not isinstance(exit_code, int)
             or isinstance(exit_code, bool)
-            or not isinstance(probe_exit_code, int)
-            or isinstance(probe_exit_code, bool)
+            or not isinstance(capture_exit_code, int)
+            or isinstance(capture_exit_code, bool)
             or not isinstance(run.get("sanitized_log_sha256"), str)
             or SHA256_RE.fullmatch(run["sanitized_log_sha256"]) is None
-            or not isinstance(run.get("sanitized_state_sha256"), str)
-            or SHA256_RE.fullmatch(run["sanitized_state_sha256"]) is None
             or run_id in run_ids
             or finished < started
             or (previous_finish is not None and started < previous_finish)
@@ -292,22 +365,55 @@ def _setup_evidence_entry(evidence: object, revision: str) -> dict:
         run_ids.add(run_id)
         previous_finish = finished
         exits.append(exit_code)
-        probe_exits.append(probe_exit_code)
-        state_hashes.append(run["sanitized_state_sha256"])
+        capture_exits.append(capture_exit_code)
+        state = run.get("state")
+        state_hash = run.get("state_sha256")
+        if capture_exit_code == 0:
+            if not isinstance(state_hash, str) or SHA256_RE.fullmatch(state_hash) is None:
+                valid_runs = False
+                break
+            try:
+                computed_hash = hashlib.sha256(
+                    json.dumps(state, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+            except (TypeError, ValueError):
+                valid_runs = False
+                break
+            if computed_hash != state_hash:
+                return _entry(
+                    "FAIL",
+                    "Setup twice",
+                    "setup state digest did not match its content",
+                    base_evidence,
+                )
+            try:
+                validated_state = validate_installed_state_snapshot(state)
+                canonical_hash = canonical_installed_state_digest(validated_state)
+            except SetupConflict:
+                return _entry(
+                    "FAIL",
+                    "Setup twice",
+                    "setup installed-state snapshot was unsupported",
+                    base_evidence,
+                )
+            if canonical_hash != state_hash:
+                return _entry(
+                    "FAIL",
+                    "Setup twice",
+                    "setup state digest did not match its content",
+                    base_evidence,
+                )
+            state_hashes.append(state_hash)
+            states.append(validated_state)
     if not valid_runs:
         return _entry(
             "FAIL", "Setup twice", "setup evidence schema was invalid", base_evidence
         )
     both_succeeded = exits == [0, 0]
-    state_verified = probe_exits == [0, 0]
-    state_matches = len(set(state_hashes)) == 1
-    revision_matches = (
-        REVISION_RE.fullmatch(revision) is not None
-        and (
-            evidence_revision.startswith(revision)
-            or revision.startswith(evidence_revision)
-        )
-    )
+    state_verified = capture_exits == [0, 0]
+    state_matches = len(states) == 2 and states[0] == states[1]
     base_evidence.update(
         {
             "both_succeeded": both_succeeded,
@@ -328,14 +434,7 @@ def _setup_evidence_entry(evidence: object, revision: str) -> dict:
         return _entry(
             "FAIL",
             "Setup twice",
-            "setup state verification failed",
-            base_evidence,
-        )
-    if not revision_matches:
-        return _entry(
-            "FAIL",
-            "Setup twice",
-            "setup evidence revision did not match",
+            "setup state capture failed",
             base_evidence,
         )
     if not state_matches:
@@ -549,16 +648,15 @@ def _post_write_owned_booking_proposals(
     api: ApiBoundary,
     baseline_ids: set[int],
     expected_payload: dict,
-) -> tuple[dict[int, dict], int]:
+) -> tuple[dict[int, dict], list[int], int]:
     for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
         try:
             snapshot = _pending_snapshot(api)
         except Exception:
             continue
-        return (
-            _owned_booking_proposals(snapshot, baseline_ids, expected_payload),
-            attempt,
-        )
+        owned = _owned_booking_proposals(snapshot, baseline_ids, expected_payload)
+        new_ids = set(snapshot) - baseline_ids
+        return owned, sorted(new_ids - set(owned)), attempt
     raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
 
 
@@ -1057,6 +1155,7 @@ def _run_reviewed_booking(
     ownership_known = False
     ownership_ambiguous = False
     snapshot_attempts = 0
+    unattributed_ids: list[int] = []
 
     try:
         try:
@@ -1097,7 +1196,7 @@ def _run_reviewed_booking(
                         session_id,
                         (
                             "Book exactly one appointment in natural language for the existing "
-                            f"CRM lead {lead['name']} (lead ID {lead['id']}). Use exactly "
+                            f"CRM lead ID {lead['id']}. Use exactly "
                             f"{expected_payload['start_ts']} through {expected_payload['end_ts']} "
                             f"at {location}. The booking must wait for human review.\n"
                             f"BOOKING_MARKER={marker}\n"
@@ -1113,7 +1212,11 @@ def _run_reviewed_booking(
                 if match:
                     reported_pending_id = int(match.group(1))
                 try:
-                    owned, snapshot_attempts = _post_write_owned_booking_proposals(
+                    (
+                        owned,
+                        unattributed_ids,
+                        snapshot_attempts,
+                    ) = _post_write_owned_booking_proposals(
                         api, baseline_pending_ids, expected_payload
                     )
                     ownership_known = True
@@ -1123,16 +1226,6 @@ def _run_reviewed_booking(
 
                 if ownership_known:
                     try:
-                        if len(owned) > 1:
-                            ownership_ambiguous = True
-                            raise ValueError(
-                                "multiple matching booking proposals made ownership ambiguous"
-                            )
-                        if len(owned) != 1 or reported_pending_id not in owned:
-                            raise ValueError(
-                                "chat did not return exactly one real booking proposal ID"
-                            )
-                        pending_id = reported_pending_id
                         applied_before = _booking_applied(
                             _appointment_snapshot(api),
                             set(baseline_appointments),
@@ -1140,6 +1233,17 @@ def _run_reviewed_booking(
                         )
                         if applied_before:
                             raise ValueError("booking was applied before review")
+                        if len(owned) > 1:
+                            ownership_ambiguous = True
+                            raise ValueError(
+                                "multiple matching booking proposals made ownership ambiguous"
+                            )
+                        if len(owned) == 1:
+                            pending_id = next(iter(owned))
+                        if len(owned) != 1 or reported_pending_id != pending_id:
+                            raise ValueError(
+                                "chat did not return exactly one real booking proposal ID"
+                            )
                     except Exception as exc:
                         error = error or _safe_error(exc)
     finally:
@@ -1168,6 +1272,18 @@ def _run_reviewed_booking(
                 "ownership": "ambiguous",
                 "candidate_count": len(owned),
             }
+        elif write_sent and not owned:
+            cleanup_level = "FAIL"
+            cleanup_detail = (
+                "no acceptance-owned booking proposal was found after the write request"
+            )
+            cleanup_evidence = {
+                "ownership": "none",
+                "unattributed_ids": unattributed_ids[
+                    :MAX_UNATTRIBUTED_PROPOSAL_IDS
+                ],
+                "unattributed_count": len(unattributed_ids),
+            }
         elif write_sent:
             failures: list[int] = []
             for candidate in sorted(owned):
@@ -1182,8 +1298,16 @@ def _run_reviewed_booking(
             try:
                 if expected_payload is None or baseline_pending_ids is None:
                     raise ValueError("booking cleanup context was incomplete")
+                final_snapshot = _pending_snapshot(api)
                 remaining = _owned_booking_proposals(
-                    _pending_snapshot(api), baseline_pending_ids, expected_payload
+                    final_snapshot, baseline_pending_ids, expected_payload
+                )
+                unattributed_ids = sorted(
+                    set(unattributed_ids)
+                    | (
+                        (set(final_snapshot) - baseline_pending_ids)
+                        - set(remaining)
+                    )
                 )
                 pending_after = len(remaining)
                 if remaining:
@@ -1211,6 +1335,11 @@ def _run_reviewed_booking(
             if failures:
                 cleanup_level = "FAIL"
                 cleanup_detail = "booking proposal cleanup failed"
+            elif unattributed_ids:
+                cleanup_level = "FAIL"
+                cleanup_detail = (
+                    "unexpected post-baseline proposals could not be safely attributed"
+                )
             elif cleanup_level != "FAIL" and owned:
                 cleanup_level = "PASS"
                 cleanup_detail = "booking proposal was denied and no owned proposal remains"
@@ -1218,6 +1347,10 @@ def _run_reviewed_booking(
                 "pending_id": pending_id,
                 "failed": sorted(set(failures)),
                 "acceptance_pending_after_cleanup": pending_after,
+                "unattributed_ids": unattributed_ids[
+                    :MAX_UNATTRIBUTED_PROPOSAL_IDS
+                ],
+                "unattributed_count": len(unattributed_ids),
             }
         cleanup.append(
             _entry(
@@ -1236,6 +1369,7 @@ def _run_reviewed_booking(
         and denied
         and not applied_after
         and pending_after == 0
+        and not unattributed_ids
     )
     checks.append(
         _entry(
@@ -1270,8 +1404,12 @@ def run_acceptance(
     test_id: str | None = None,
     briefing_date: str | None = None,
     setup_evidence: object | None = None,
+    worktree_clean: bool | None = None,
 ) -> dict:
     revision = revision or _capture_revision()
+    worktree_clean = (
+        _capture_worktree_clean() if worktree_clean is None else worktree_clean
+    )
     dependencies = dict(dependencies or _capture_dependencies())
     session_id = session_id or f"openhouse-acceptance-{uuid.uuid4().hex}"
     test_id = test_id or uuid.uuid4().hex[:12]
@@ -1307,7 +1445,7 @@ def run_acceptance(
             {"revision": revision},
         )
     )
-    checks.append(_setup_evidence_entry(setup_evidence, revision))
+    checks.append(_setup_evidence_entry(setup_evidence, revision, worktree_clean))
     required_missing = [
         name
         for name in ("python", "node", "npm", "openclaw")
@@ -1550,13 +1688,12 @@ def run_acceptance(
 
 
 def _sanitize_text(value: str, *, limit: int = MAX_TEXT) -> str:
-    text = value
+    text = _redact_api_token(value)
     home = str(Path.home())
     if home and home != os.path.sep:
         text = text.replace(home, "<home>")
     for name in (
         "OHI_API_TOKEN",
-        "OPENCLAW_GATEWAY_TOKEN",
         "OPENCLAW_API_TOKEN",
     ):
         secret = os.environ.get(name)
@@ -1651,7 +1788,13 @@ def main() -> int:
     args = parser.parse_args()
 
     setup_evidence: object | None = None
+    evidence_artifacts: set[Path] = set()
     if args.setup_evidence is not None:
+        evidence_artifacts = {
+            args.setup_evidence,
+            args.setup_evidence.with_name("openhouse-setup-run-1.log"),
+            args.setup_evidence.with_name("openhouse-setup-run-2.log"),
+        }
         try:
             setup_evidence = _load_setup_evidence(args.setup_evidence)
         except ValueError:
@@ -1661,6 +1804,9 @@ def main() -> int:
         HttpAPI(args.base_url, timeout=args.timeout),
         allow_test_write=args.allow_test_write,
         setup_evidence=setup_evidence,
+        worktree_clean=_capture_worktree_clean(
+            allowed_untracked=evidence_artifacts
+        ),
     )
     print(render_report(result, as_json=args.json))
     return exit_code(result)

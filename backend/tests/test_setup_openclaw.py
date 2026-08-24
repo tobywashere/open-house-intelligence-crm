@@ -1570,6 +1570,91 @@ def test_fresh_setup_installs_digest_verified_contract_and_exact_policy(tmp_path
     assert len(cli.client_tool_probe_calls) == 1
 
 
+def test_installed_state_snapshot_is_complete_structured_and_read_only(tmp_path):
+    options = make_options(tmp_path, bind_discord="primary-account")
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    before_mutations = list(cli.mutating_calls)
+
+    state = setup_openclaw.capture_installed_state(options, cli)
+
+    assert state["schema_version"] == 1
+    assert set(state["sources"]["skills"]) == set(setup_openclaw.SKILL_NAMES)
+    assert state["sources"]["skills"] == state["installed"]["skills"]
+    assert state["plugin"]["registered"] is True
+    assert state["plugin"]["runtime_tools"] == ["openhouse_crm"]
+    assert state["plugin"]["runtime_hooks"] == sorted(
+        setup_openclaw.REQUIRED_PLUGIN_HOOKS
+    )
+    assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
+    assert state["agent"]["skills"] == list(setup_openclaw.SKILL_NAMES)
+    assert state["approvals"]["patterns"] == ["daily-brief"]
+    assert state["bindings"][0]["channel"] == "discord"
+    assert "primary-account" not in json.dumps(state, sort_keys=True)
+    assert setup_openclaw.canonical_installed_state_digest(state) == hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert cli.mutating_calls == before_mutations
+
+
+def test_installed_state_snapshot_fails_when_installed_skill_differs_from_source(
+    tmp_path,
+):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    installed_skill = options.workspace / "skills" / "daily-brief" / "SKILL.md"
+    installed_skill.write_text(installed_skill.read_text() + "\nchanged\n")
+
+    with pytest.raises(SetupConflict, match="installed skill digest"):
+        setup_openclaw.capture_installed_state(options, cli)
+
+
+def test_installed_state_snapshot_requires_runtime_hook_inventory(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    cli.plugin_runtime = {
+        "plugin": {
+            "id": "openhouse-crm",
+            "enabled": True,
+            "rootDir": cli.plugin_path,
+            "toolNames": ["openhouse_crm"],
+        },
+        "tools": [{"names": ["openhouse_crm"], "optional": False}],
+        "diagnostics": [],
+    }
+
+    with pytest.raises(SetupConflict, match="hook inventory"):
+        setup_openclaw.capture_installed_state(options, cli)
+
+
+def test_installed_state_snapshot_never_contains_gateway_or_crm_secrets(
+    tmp_path, monkeypatch
+):
+    crm_token = "crm-state-secret"
+    gateway_token = "gateway-state-secret"
+    gateway_password = "gateway-password-state-secret"
+    monkeypatch.setenv("OHI_API_TOKEN", crm_token)
+    monkeypatch.setenv("AGENT_GATEWAY_TOKEN", gateway_token)
+    monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", gateway_password)
+    options = make_options(tmp_path)
+    cli = FakeCLI(config_path=tmp_path / "openclaw.json")
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+
+    rendered = json.dumps(
+        setup_openclaw.capture_installed_state(options, cli), sort_keys=True
+    )
+
+    assert crm_token not in rendered
+    assert gateway_token not in rendered
+    assert gateway_password not in rendered
+
+
 def test_setup_rerun_replaces_stale_contract_and_operations_catalog(tmp_path):
     options = make_options(tmp_path)
     cli = FakeCLI()

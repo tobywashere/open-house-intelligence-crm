@@ -93,6 +93,7 @@ TOKEN_SECRETREF_REDACTED = {
 VALID_AGENT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
 RESERVED_AGENT_IDS = frozenset({"main", "openclaw", "crestodian"})
 LEGACY_AGENT_PREFIX_RE = re.compile(r"agents\.list\[\d+\]")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -1439,6 +1440,80 @@ def _write_bytes_exclusive(path: Path, contents: bytes, mode: int = 0o644) -> No
         os.close(descriptor)
 
 
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _read_regular_file_digest(path: Path, label: str) -> tuple[int, str]:
+    """Hash one regular file without following its leaf or accepting a race."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SetupConflict(f"could not inspect {label}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise SetupConflict(f"{label} must contain only regular files")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or size != after.st_size:
+            raise SetupConflict(f"{label} changed while it was inspected")
+        return size, digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _tree_digest(root: Path, label: str) -> str:
+    """Return a path-independent digest of a strict regular-file tree."""
+    try:
+        root_node = os.lstat(root)
+    except OSError as exc:
+        raise SetupConflict(f"could not inspect {label}") from exc
+    if stat.S_ISLNK(root_node.st_mode) or not stat.S_ISDIR(root_node.st_mode):
+        raise SetupConflict(f"{label} must be a real directory")
+    records: list[dict[str, Any]] = []
+    try:
+        children = sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+    except OSError as exc:
+        raise SetupConflict(f"could not inspect {label}") from exc
+    for child in children:
+        relative = child.relative_to(root).as_posix()
+        try:
+            node = os.lstat(child)
+        except OSError as exc:
+            raise SetupConflict(f"could not inspect {label}") from exc
+        if stat.S_ISLNK(node.st_mode):
+            raise SetupConflict(f"{label} must not contain symlinks")
+        if stat.S_ISDIR(node.st_mode):
+            records.append({"path": relative, "type": "directory"})
+            continue
+        if not stat.S_ISREG(node.st_mode):
+            raise SetupConflict(f"{label} must contain only regular files and directories")
+        size, digest = _read_regular_file_digest(child, label)
+        records.append(
+            {"path": relative, "type": "file", "size": size, "sha256": digest}
+        )
+    return hashlib.sha256(_canonical_json_bytes(records)).hexdigest()
+
+
 def sync_skills(
     repo: Path,
     workspace: Path,
@@ -2652,6 +2727,377 @@ def _read_config_snapshot(cli: OpenClawCLI, path: str) -> ConfigValueSnapshot:
         detail = (result.stderr or result.stdout).strip()
         raise SetupConflict(f"could not snapshot {path}: {detail}")
     return ConfigValueSnapshot(path, True, _json(result, f"{path} snapshot"))
+
+
+def _require_exact_keys(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise SetupConflict(f"unsupported installed-state snapshot: {label}")
+    return value
+
+
+def _require_sha256(value: Any, label: str) -> str:
+    if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+        raise SetupConflict(f"unsupported installed-state snapshot: {label}")
+    return value
+
+
+def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
+    """Validate the complete privacy-safe state used for setup idempotence proof."""
+    root = _require_exact_keys(
+        value,
+        {
+            "schema_version",
+            "sources",
+            "installed",
+            "plugin",
+            "agent",
+            "bindings",
+            "approvals",
+            "gateway",
+        },
+        "root",
+    )
+    if root["schema_version"] != 1:
+        raise SetupConflict("unsupported installed-state snapshot: schema version")
+
+    sources = _require_exact_keys(root["sources"], {"skills", "plugin"}, "sources")
+    installed = _require_exact_keys(root["installed"], {"skills"}, "installed")
+    for holder, label in ((sources, "sources"), (installed, "installed")):
+        skills = holder["skills"]
+        if not isinstance(skills, dict) or set(skills) != set(SKILL_NAMES):
+            raise SetupConflict(f"unsupported installed-state snapshot: {label} skills")
+        for name in SKILL_NAMES:
+            _require_sha256(skills[name], f"{label} skill digest")
+    _require_sha256(sources["plugin"], "plugin source digest")
+    if sources["skills"] != installed["skills"]:
+        raise SetupConflict("unsupported installed-state snapshot: installed skill digest")
+
+    plugin = _require_exact_keys(
+        root["plugin"],
+        {
+            "registered",
+            "enabled",
+            "allowlist",
+            "config",
+            "runtime_tools",
+            "runtime_hooks",
+        },
+        "plugin",
+    )
+    if plugin["registered"] is not True or plugin["enabled"] is not True:
+        raise SetupConflict("unsupported installed-state snapshot: plugin status")
+    allowlist = _require_exact_keys(
+        plugin["allowlist"], {"configured", "entries"}, "plugin allowlist"
+    )
+    if not isinstance(allowlist["configured"], bool):
+        raise SetupConflict("unsupported installed-state snapshot: plugin allowlist")
+    entries = allowlist["entries"]
+    if (
+        not isinstance(entries, list)
+        or not all(isinstance(item, str) and item for item in entries)
+        or entries != sorted(set(entries))
+        or (allowlist["configured"] and PLUGIN_ID not in entries)
+        or (not allowlist["configured"] and entries)
+    ):
+        raise SetupConflict("unsupported installed-state snapshot: plugin allowlist")
+    plugin_config = _require_exact_keys(plugin["config"], {"agent_id"}, "plugin config")
+    _require_canonical_agent_id(plugin_config["agent_id"], "snapshot plugin agent ID")
+    if plugin["runtime_tools"] != [PLUGIN_TOOL] or plugin["runtime_hooks"] != sorted(
+        REQUIRED_PLUGIN_HOOKS
+    ):
+        raise SetupConflict("unsupported installed-state snapshot: plugin runtime inventory")
+
+    agent = _require_exact_keys(
+        root["agent"],
+        {"id", "workspace_matches", "skills", "tools", "sandbox"},
+        "agent",
+    )
+    _require_canonical_agent_id(agent["id"], "snapshot agent ID")
+    if agent["id"] != plugin_config["agent_id"] or agent["workspace_matches"] is not True:
+        raise SetupConflict("unsupported installed-state snapshot: agent identity")
+    if agent["skills"] != list(SKILL_NAMES):
+        raise SetupConflict("unsupported installed-state snapshot: agent skills")
+    _validate_authoritative_tools(agent["tools"])
+    if agent["sandbox"] != DESIRED_SANDBOX:
+        raise SetupConflict("unsupported installed-state snapshot: agent sandbox")
+
+    bindings = root["bindings"]
+    if not isinstance(bindings, list):
+        raise SetupConflict("unsupported installed-state snapshot: bindings")
+    binding_sort_keys: list[tuple[str, str, str]] = []
+    for binding in bindings:
+        record = _require_exact_keys(
+            binding, {"agent_id", "channel", "binding_sha256"}, "binding"
+        )
+        agent_id = _require_canonical_agent_id(record["agent_id"], "snapshot binding agent ID")
+        channel = record["channel"]
+        if not isinstance(channel, str) or not channel:
+            raise SetupConflict("unsupported installed-state snapshot: binding channel")
+        digest = _require_sha256(record["binding_sha256"], "binding digest")
+        binding_sort_keys.append((agent_id, channel, digest))
+    if binding_sort_keys != sorted(set(binding_sort_keys)):
+        raise SetupConflict("unsupported installed-state snapshot: bindings")
+
+    approvals = _require_exact_keys(
+        root["approvals"], {"patterns", "daily_brief_sha256", "effective"}, "approvals"
+    )
+    if approvals["patterns"] != ["daily-brief"]:
+        raise SetupConflict("unsupported installed-state snapshot: approval patterns")
+    _require_sha256(approvals["daily_brief_sha256"], "daily brief digest")
+    effective = _require_exact_keys(
+        approvals["effective"],
+        {"host", "mode", "security", "ask", "ask_fallback"},
+        "effective approval policy",
+    )
+    if (
+        effective["host"] != "gateway"
+        or effective["mode"] != "allowlist"
+        or effective["security"] != "allowlist"
+        or effective["ask"] != "off"
+        or effective["ask_fallback"] not in {"deny", "allowlist"}
+    ):
+        raise SetupConflict("unsupported installed-state snapshot: effective approval policy")
+
+    gateway = _require_exact_keys(
+        root["gateway"],
+        {
+            "crm_api_url_sha256",
+            "api_token_ref",
+            "gateway_env",
+            "gateway_url_sha256",
+            "chat_path",
+        },
+        "gateway",
+    )
+    _require_sha256(gateway["crm_api_url_sha256"], "CRM URL digest")
+    _require_sha256(gateway["gateway_url_sha256"], "gateway URL digest")
+    token_ref = _require_exact_keys(
+        gateway["api_token_ref"], {"configured", "value"}, "API token reference"
+    )
+    if token_ref not in (
+        {"configured": False, "value": None},
+        {"configured": True, "value": TOKEN_SECRETREF},
+    ):
+        raise SetupConflict("unsupported installed-state snapshot: API token reference")
+    gateway_env = _require_exact_keys(
+        gateway["gateway_env"],
+        {"configured", "mode", "token_present", "matches_process_token"},
+        "gateway environment",
+    )
+    if not isinstance(gateway_env["configured"], bool) or not isinstance(
+        gateway_env["token_present"], bool
+    ):
+        raise SetupConflict("unsupported installed-state snapshot: gateway environment")
+    if gateway_env["configured"]:
+        if gateway_env["mode"] != 0o600:
+            raise SetupConflict("unsupported installed-state snapshot: gateway environment mode")
+    elif gateway_env["mode"] is not None or gateway_env["token_present"]:
+        raise SetupConflict("unsupported installed-state snapshot: gateway environment")
+    if gateway_env["matches_process_token"] not in (None, True):
+        raise SetupConflict("unsupported installed-state snapshot: gateway environment")
+    if token_ref["configured"] and (
+        not gateway_env["configured"]
+        or not gateway_env["token_present"]
+        or gateway_env["matches_process_token"] is not True
+    ):
+        raise SetupConflict(
+            "unsupported installed-state snapshot: gateway token environment"
+        )
+    chat_path = gateway["chat_path"]
+    if (
+        not isinstance(chat_path, str)
+        or not chat_path.startswith("/")
+        or "?" in chat_path
+        or "#" in chat_path
+    ):
+        raise SetupConflict("unsupported installed-state snapshot: chat path")
+    return root
+
+
+def canonical_installed_state_digest(value: Any) -> str:
+    validated = validate_installed_state_snapshot(value)
+    return hashlib.sha256(_canonical_json_bytes(validated)).hexdigest()
+
+
+def _configured_bindings_snapshot(cli: OpenClawCLI) -> list[dict[str, str]]:
+    snapshot = _read_config_snapshot(cli, "bindings")
+    if not snapshot.existed:
+        return []
+    if not isinstance(snapshot.value, list):
+        raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+    result: list[dict[str, str]] = []
+    for binding in snapshot.value:
+        if not isinstance(binding, dict):
+            raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+        agent_id = _require_canonical_agent_id(
+            binding.get("agentId"), "OpenClaw binding agentId"
+        )
+        match = binding.get("match")
+        if not isinstance(match, dict):
+            raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+        channel = match.get("channel")
+        if not isinstance(channel, str) or not channel:
+            raise SetupConflict("OpenClaw bindings have an unsupported JSON shape")
+        result.append(
+            {
+                "agent_id": agent_id,
+                "channel": channel,
+                "binding_sha256": hashlib.sha256(_canonical_json_bytes(binding)).hexdigest(),
+            }
+        )
+    return sorted(
+        result,
+        key=lambda item: (
+            item["agent_id"],
+            item["channel"],
+            item["binding_sha256"],
+        ),
+    )
+
+
+def capture_installed_state(options: SetupOptions, cli: OpenClawCLI) -> dict[str, Any]:
+    """Capture the complete, canonical, secret-free state established by setup."""
+    _validate_requested_agent_id(options.agent_id)
+    repo = Path(__file__).resolve().parents[1]
+    source_skills = {
+        name: _tree_digest(repo / "skills" / name, f"shipped {name} skill")
+        for name in SKILL_NAMES
+    }
+    installed_skills = {
+        name: _tree_digest(
+            options.workspace / "skills" / name, f"installed {name} skill"
+        )
+        for name in SKILL_NAMES
+    }
+    if source_skills != installed_skills:
+        raise SetupConflict("installed skill digest does not match the shipped source")
+
+    plugin_source = _plugin_source(repo)
+    plugin_digest = _tree_digest(plugin_source, "bundled OpenClaw CRM plugin")
+    inventory = _run_required(
+        cli, ["openclaw", "plugins", "list", "--json"], "installed plugin inventory"
+    )
+    registered, enabled = _inspect_plugin_inventory(
+        _json(inventory, "installed plugin inventory"),
+        plugin_source,
+        require_present=True,
+    )
+    runtime = _run_required(
+        cli,
+        ["openclaw", "plugins", "inspect", PLUGIN_ID, "--runtime", "--json"],
+        "openhouse-crm runtime inspection",
+    )
+    if not _validate_runtime_plugin(
+        _json(runtime, "openhouse-crm runtime inspection"), plugin_source
+    ):
+        raise SetupConflict("OpenClaw runtime hook inventory is unavailable")
+
+    plugin_allow = _read_plugin_allowlist(cli)
+    plugin_config = _read_config_snapshot(cli, PLUGIN_CONFIG_PATH)
+    if not plugin_config.existed or plugin_config.value != {"agentId": options.agent_id}:
+        raise SetupConflict("OpenClaw plugin configuration does not target the CRM agent")
+
+    roster = _read_agent_roster(
+        cli, allow_missing=False, label="installed-state agent config"
+    )
+    agents = [record for record in roster.records if record.get("id") == options.agent_id]
+    if len(agents) != 1:
+        raise SetupConflict("installed-state snapshot could not identify exactly one CRM agent")
+    agent = agents[0]
+    configured_workspace = agent.get("workspace") or agent.get("workspacePath")
+    if not _same_workspace(configured_workspace, options.workspace):
+        raise SetupConflict("installed-state CRM agent workspace does not match")
+    tools = agent.get("tools")
+    _validate_authoritative_tools(tools)
+    if agent.get("skills") != list(SKILL_NAMES) or agent.get("sandbox") != DESIRED_SANDBOX:
+        raise SetupConflict("installed-state CRM agent policy does not match setup")
+
+    _, daily = _entrypoints(options)
+    daily_digest = _read_regular_file_digest(daily, "installed daily-brief runner")[1]
+    approvals_result = _run_required(
+        cli,
+        ["openclaw", "approvals", "get", "--gateway", "--json"],
+        "gateway approvals inspection",
+    )
+    approvals_payload = _json(approvals_result, "gateway approvals inspection")
+    patterns = _validate_gateway_approval_payload(
+        approvals_payload, options.agent_id, require_effective=True
+    )
+    if patterns != {str(daily)}:
+        raise SetupConflict("installed-state approval patterns do not match setup")
+    scope = _effective_agent_scope(approvals_payload, options.agent_id)
+    if scope is None:
+        raise SetupConflict("installed-state effective approval policy is unavailable")
+
+    crm_url = _read_config_snapshot(cli, CRM_URL_CONFIG_PATH)
+    if not crm_url.existed or crm_url.value != options.crm_api_url:
+        raise SetupConflict("installed-state CRM API URL does not match setup")
+    token = _read_config_snapshot(cli, TOKEN_CONFIG_PATH)
+    if token.existed and token.value not in (TOKEN_SECRETREF, TOKEN_SECRETREF_REDACTED):
+        raise SetupConflict("installed-state CRM API token reference is unsupported")
+    gateway_env_snapshot = _snapshot_gateway_env(_gateway_env_path())
+    try:
+        gateway_env_contents = gateway_env_snapshot.contents.decode("utf-8")
+    except UnicodeError as exc:
+        raise SetupConflict("OpenClaw gateway environment is not valid UTF-8") from exc
+    env_token = _read_gateway_env_token(gateway_env_contents)
+    process_token = os.environ.get("OHI_API_TOKEN")
+    matches_process = None if not process_token else env_token == process_token
+
+    state = {
+        "schema_version": 1,
+        "sources": {"skills": source_skills, "plugin": plugin_digest},
+        "installed": {"skills": installed_skills},
+        "plugin": {
+            "registered": registered,
+            "enabled": enabled,
+            "allowlist": {
+                "configured": plugin_allow is not None,
+                "entries": sorted(plugin_allow or []),
+            },
+            "config": {"agent_id": options.agent_id},
+            "runtime_tools": [PLUGIN_TOOL],
+            "runtime_hooks": sorted(REQUIRED_PLUGIN_HOOKS),
+        },
+        "agent": {
+            "id": options.agent_id,
+            "workspace_matches": True,
+            "skills": list(SKILL_NAMES),
+            "tools": tools,
+            "sandbox": agent["sandbox"],
+        },
+        "bindings": _configured_bindings_snapshot(cli),
+        "approvals": {
+            "patterns": ["daily-brief"],
+            "daily_brief_sha256": daily_digest,
+            "effective": {
+                "host": scope["host"]["requested"],
+                "mode": scope["mode"]["effective"],
+                "security": scope["security"]["effective"],
+                "ask": scope["ask"]["effective"],
+                "ask_fallback": scope["askFallback"]["effective"],
+            },
+        },
+        "gateway": {
+            "crm_api_url_sha256": hashlib.sha256(options.crm_api_url.encode("utf-8")).hexdigest(),
+            "api_token_ref": {
+                "configured": token.existed,
+                "value": TOKEN_SECRETREF if token.existed else None,
+            },
+            "gateway_env": {
+                "configured": gateway_env_snapshot.existed,
+                "mode": gateway_env_snapshot.mode,
+                "token_present": env_token is not None,
+                "matches_process_token": matches_process,
+            },
+            "gateway_url_sha256": hashlib.sha256(
+                _loopback_gateway_base_url().encode("utf-8")
+            ).hexdigest(),
+            "chat_path": os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions"),
+        },
+    }
+    validate_installed_state_snapshot(state)
+    return state
 
 
 def _binding_agent_ids(snapshot: ConfigValueSnapshot) -> set[str]:

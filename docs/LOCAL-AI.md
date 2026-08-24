@@ -248,8 +248,9 @@ file yourself before sharing it.
 
 For a supported-hardware report, create setup evidence before running the app.
 The helper runs setup twice and records machine-verifiable evidence tied to the
-tested revision. It also compares a read-only final-state fingerprint after
-each run. The JSON report names this prerequisite `Setup twice`.
+tested revision, which must remain clean. It also compares a canonical structured snapshot of
+the installed skills, plugin, agent policy, bindings, approvals, and gateway
+references after each run. The JSON report names this prerequisite `Setup twice`.
 
 ```bash
 python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json

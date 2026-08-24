@@ -165,9 +165,11 @@ helper in the next section instead.
 
 The evidence helper runs setup twice. The first run creates or repairs the
 dedicated CRM agent. The second proves the same setup is safe to repeat. It
-saves two sanitized logs, compares a read-only final-state fingerprint after
-each run, and records machine-verifiable evidence tied to the tested revision.
-The later report names this prerequisite `Setup twice`.
+saves two sanitized logs, compares a canonical structured snapshot of the
+installed skills, plugin, agent policy, bindings, approvals, and gateway
+references after each run, and ties the evidence to one clean revision.
+That clean revision is the tested revision. The later report names this
+prerequisite `Setup twice`.
 
 ```bash
 python3 scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
@@ -216,7 +218,8 @@ denied and cleaned up. It does not automate voice or Discord delivery. Run it
 only if you want to authorize those disposable proposals:
 
 ```bash
-python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+set -o pipefail
+python3 scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json | tee openhouse-acceptance.json
 ```
 
 ## 9. Check the visible behavior

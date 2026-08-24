@@ -803,9 +803,9 @@ Use a fake HTTP boundary and temporary report path. Cover:
 - sanitized URL, token, exception, and filesystem output;
 - nonzero exit on any required failure;
 - Discord marked `SKIP` when unbound rather than `PASS`.
-- two strict setup results and matching read-only final-state fingerprints at
-  the tested revision, with missing, failed, mismatched, or malformed evidence
-  rejected;
+- two strict setup results and matching complete canonical installed-state
+  snapshots at one clean, unchanged exact revision, with missing, partial,
+  failed, mismatched, or malformed evidence rejected;
 - natural-language booking against an existing lead, exact Pending ownership,
   appointment nonapplication, denial, and post-cleanup absence;
 - bound Discord delivery retained as a manual hardware check, never automated
