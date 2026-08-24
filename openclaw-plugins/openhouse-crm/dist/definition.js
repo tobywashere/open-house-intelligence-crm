@@ -13,7 +13,8 @@ const SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability";
 const SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard";
 const SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__";
 const PRODUCTION_PROBE_OPERATION = "__openhouse_behavior_probe_status__";
-const PRODUCTION_PROBE_QUERY_PREFIX = "__openhouse_behavior_probe__:";
+const PRODUCTION_PROBE_READ_OPERATION = "generate_dashboard_insights";
+const MAX_PRODUCTION_PROBE_RECORDS = 64;
 const SETUP_MARKER_TOOL = "openhouse_setup_marker_probe";
 const SETUP_NONCE_PATTERN = /^[a-f0-9]{32}$/;
 const TOOL_BLOCKED_CHANNELS = new Set([
@@ -121,7 +122,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       const crmAgentId = configuredAgentId(api.pluginConfig);
       const setupProbe = configuredSetupProbe(api.pluginConfig);
       const setupProbeState = new Map();
-      const productionProbeState = new Set();
+      const productionProbeState = new Map();
       api.on(
         "before_tool_call",
         (event, context) => {
@@ -174,11 +175,18 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
             const nonce = event.params?.arguments?.nonce;
             const channel = event.params?.arguments?.channel;
             const key = `${channel}:${nonce}`;
+            const record = productionProbeState.get(key);
+            productionProbeState.delete(key);
             const protectedChannel = (
               typeof nonce === "string"
               && SETUP_NONCE_PATTERN.test(nonce)
               && TOOL_BLOCKED_CHANNELS.has(channel)
-              && productionProbeState.has(key)
+              && record?.agentId === crmAgentId
+              && record?.channel === channel
+              && record?.nonce === nonce
+              && record?.attempted === true
+              && record?.blocked === true
+              && record?.executed === false
             );
             return {
               block: true,
@@ -191,15 +199,31 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
             event.toolName === TOOL_NAME
             && context.agentId === crmAgentId
             && TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
-            && event.params?.operation === "search_leads"
+            && event.params?.operation === PRODUCTION_PROBE_READ_OPERATION
           ) {
-            const query = event.params?.arguments?.query;
-            const nonce = typeof query === "string"
-              && query.startsWith(PRODUCTION_PROBE_QUERY_PREFIX)
-              ? query.slice(PRODUCTION_PROBE_QUERY_PREFIX.length)
-              : undefined;
-            if (typeof nonce === "string" && SETUP_NONCE_PATTERN.test(nonce)) {
-              productionProbeState.add(`${context.requester.channel}:${nonce}`);
+            const args = event.params?.arguments;
+            const nonce = args?.probe_nonce;
+            if (
+              args !== null
+              && typeof args === "object"
+              && !Array.isArray(args)
+              && Object.keys(args).length === 1
+              && typeof nonce === "string"
+              && SETUP_NONCE_PATTERN.test(nonce)
+            ) {
+              const channel = context.requester.channel;
+              const key = `${channel}:${nonce}`;
+              productionProbeState.set(key, {
+                agentId: crmAgentId,
+                channel,
+                nonce,
+                attempted: true,
+                blocked: true,
+                executed: false,
+              });
+              while (productionProbeState.size > MAX_PRODUCTION_PROBE_RECORDS) {
+                productionProbeState.delete(productionProbeState.keys().next().value);
+              }
             }
           }
           if (
@@ -245,6 +269,28 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       api.on(
         "after_tool_call",
         (event, context) => {
+          if (
+            event.toolName === TOOL_NAME
+            && context.agentId === crmAgentId
+            && TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
+            && event.params?.operation === PRODUCTION_PROBE_READ_OPERATION
+          ) {
+            const args = event.params?.arguments;
+            const nonce = args?.probe_nonce;
+            if (
+              args !== null
+              && typeof args === "object"
+              && !Array.isArray(args)
+              && Object.keys(args).length === 1
+              && typeof nonce === "string"
+              && SETUP_NONCE_PATTERN.test(nonce)
+            ) {
+              const key = `${context.requester.channel}:${nonce}`;
+              const record = productionProbeState.get(key);
+              if (record) productionProbeState.set(key, { ...record, executed: true });
+            }
+            return;
+          }
           if (
             event.toolName !== TOOL_NAME
             || context.agentId !== crmAgentId

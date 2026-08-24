@@ -161,8 +161,12 @@ test("before-tool hook blocks every native tool on analysis and verified dashboa
 });
 
 
-test("production channel proof is fresh, agent-bound, and cleared on gateway stop", () => {
-  const { hooks } = registerPlugin(undefined, { agentId: "portable-crm" });
+test("production channel proof requires a canonical blocked read and is single-use", () => {
+  let executions = 0;
+  const { hooks } = registerPlugin(async () => {
+    executions += 1;
+    return { ok: true, operation: "generate_dashboard_insights", kind: "read", result: {} };
+  }, { agentId: "portable-crm" });
   const beforeToolCall = hooks.get("before_tool_call").handler;
   const nonce = "0123456789abcdef0123456789abcdef";
   const statusEvent = {
@@ -185,8 +189,8 @@ test("production channel proof is fresh, agent-bound, and cleared on gateway sto
     {
       toolName: "openhouse_crm",
       params: {
-        operation: "search_leads",
-        arguments: { query: `__openhouse_behavior_probe__:${nonce}` },
+        operation: "generate_dashboard_insights",
+        arguments: { probe_nonce: nonce },
       },
     },
     {
@@ -195,9 +199,14 @@ test("production channel proof is fresh, agent-bound, and cleared on gateway sto
     },
   );
   assert.equal(blocked.block, true);
+  assert.equal(executions, 0);
   assert.equal(
     beforeToolCall(statusEvent, statusContext).blockReason,
     `Production CRM channel openhouse-dashboard nonce ${nonce} is protected.`,
+  );
+  assert.match(
+    beforeToolCall(statusEvent, statusContext).blockReason,
+    /not proven/i,
   );
   assert.equal(
     beforeToolCall(statusEvent, {
@@ -212,6 +221,89 @@ test("production channel proof is fresh, agent-bound, and cleared on gateway sto
     beforeToolCall(statusEvent, statusContext).blockReason,
     /not proven/i,
   );
+});
+
+
+test("production channel proof fails if the canonical probe executor ran", () => {
+  const { hooks } = registerPlugin(undefined, { agentId: "portable-crm" });
+  const nonce = "fedcba9876543210fedcba9876543210";
+  const event = {
+    toolName: "openhouse_crm",
+    params: {
+      operation: "generate_dashboard_insights",
+      arguments: { probe_nonce: nonce },
+    },
+  };
+  const context = {
+    agentId: "portable-crm",
+    requester: { channel: "openhouse-analysis" },
+  };
+  hooks.get("before_tool_call").handler(event, context);
+  hooks.get("after_tool_call").handler(
+    { ...event, result: { details: { ok: true } } },
+    context,
+  );
+
+  const status = hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_crm",
+      params: {
+        operation: "__openhouse_behavior_probe_status__",
+        arguments: { channel: "openhouse-analysis", nonce },
+      },
+    },
+    {
+      agentId: "portable-crm",
+      requester: { channel: "openhouse-setup-capability" },
+    },
+  );
+  assert.match(status.blockReason, /not proven/i);
+});
+
+
+test("production channel proof retains only a bounded set of fresh records", () => {
+  const { hooks } = registerPlugin(undefined, { agentId: "portable-crm" });
+  const beforeToolCall = hooks.get("before_tool_call").handler;
+  const nonceFor = (index) => index.toString(16).padStart(32, "0");
+  for (let index = 0; index < 65; index += 1) {
+    beforeToolCall(
+      {
+        toolName: "openhouse_crm",
+        params: {
+          operation: "generate_dashboard_insights",
+          arguments: { probe_nonce: nonceFor(index) },
+        },
+      },
+      {
+        agentId: "portable-crm",
+        requester: { channel: "openhouse-dashboard" },
+      },
+    );
+  }
+  const status = (nonce) => beforeToolCall(
+    {
+      toolName: "openhouse_crm",
+      params: {
+        operation: "__openhouse_behavior_probe_status__",
+        arguments: { channel: "openhouse-dashboard", nonce },
+      },
+    },
+    {
+      agentId: "portable-crm",
+      requester: { channel: "openhouse-setup-capability" },
+    },
+  ).blockReason;
+
+  assert.match(status(nonceFor(0)), /not proven/i);
+  assert.match(status(nonceFor(64)), /is protected/i);
+});
+
+
+test("production probe implementation contains no noncanonical search_leads literal", async () => {
+  const definition = await readFile(new URL("../dist/definition.js", import.meta.url), "utf8");
+  assert.equal(definition.includes("search_leads"), false);
+  assert.match(definition, /generate_dashboard_insights/);
+  assert.match(definition, /probe_nonce/);
 });
 
 

@@ -1313,6 +1313,31 @@ def test_pending_read_that_returns_after_the_settle_deadline_is_unknown():
     assert api.last_timeout == 2.0
 
 
+def test_final_pending_refresh_rejects_a_read_returning_at_the_flow_deadline():
+    clock = _SettlingClock()
+
+    class SlowRefreshAPI(_PendingSequenceAPI):
+        def request(self, method, path, payload=None, *, timeout=None):
+            result = super().request(method, path, payload, timeout=timeout)
+            clock.now = 2.0
+            return result
+
+    api = SlowRefreshAPI([[]])
+
+    with pytest.raises(acceptance.ProposalOwnershipUnknown):
+        acceptance._refresh_pending_observation(
+            api,
+            set(),
+            lambda _snapshot: {},
+            {},
+            [],
+            deadline=2.0,
+            clock=clock,
+        )
+
+    assert api.last_timeout == 2.0
+
+
 def test_final_settling_snapshot_catches_a_last_moment_unattributed_race():
     clock = _SettlingClock()
     owned = _owned_pending()
@@ -1409,6 +1434,82 @@ def test_pending_snapshot_after_later_business_read_catches_new_proposal(
     assert pending_id in cleanup["evidence"]["unattributed_ids"]
     assert pending_id in api.pending
     assert pending_id not in api.denied
+
+
+@pytest.mark.parametrize(
+    ("phase", "runner", "check_name"),
+    (
+        ("invalid", acceptance._run_invalid_write, "Invalid write"),
+        ("reviewed", acceptance._run_reviewed_write, "Reviewed write"),
+        ("booking", acceptance._run_reviewed_booking, "Reviewed booking"),
+    ),
+)
+def test_each_write_flow_rejects_a_final_pending_refresh_past_its_deadline(
+    phase, runner, check_name
+):
+    clock = _SettlingClock()
+
+    class ExpiringFinalRefreshAPI(FakeAPI):
+        def __init__(self):
+            super().__init__()
+            self.active_phase = None
+            self.business_reads = 0
+            self.expire_next_pending = False
+            self.final_timeout = None
+
+        def request(self, method, path, payload=None, *, timeout=None):
+            if method == "POST" and path == "/chat" and isinstance(payload, dict):
+                message = payload.get("message", "")
+                if "unsupported arguments" in message:
+                    self.active_phase = "invalid"
+                elif "Create exactly one disposable" in message:
+                    self.active_phase = "reviewed"
+                elif "Book exactly one appointment" in message:
+                    self.active_phase = "booking"
+            business_read = (
+                self.active_phase in {"invalid", "reviewed"}
+                and method == "GET"
+                and path == "/leads"
+            ) or (
+                self.active_phase == "booking"
+                and method == "GET"
+                and path == "/appointments"
+            )
+            if business_read:
+                self.business_reads += 1
+                target = 1 if phase == "invalid" else 2
+                if self.business_reads == target:
+                    self.expire_next_pending = True
+            result = super().request(method, path, payload, timeout=timeout)
+            if (
+                self.expire_next_pending
+                and method == "GET"
+                and path == "/pending-changes?status=pending"
+            ):
+                self.expire_next_pending = False
+                self.final_timeout = timeout
+                clock.now = 20.0
+            return result
+
+    api = ExpiringFinalRefreshAPI()
+    checks = []
+    cleanup = []
+
+    passed = runner(
+        api,
+        checks,
+        cleanup,
+        session_id=f"deadline-{phase}",
+        test_id="deadline",
+        clock=clock,
+        sleeper=clock.sleep,
+        flow_timeout=20.0,
+    )
+
+    assert passed is False
+    assert next(item for item in checks if item["name"] == check_name)["level"] == "FAIL"
+    assert api.final_timeout is not None
+    assert 0 < api.final_timeout <= 20.0
 
 
 def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
@@ -1512,7 +1613,7 @@ def test_invalid_write_snapshot_uncertainty_is_explicit_cleanup_failure():
 
 def test_reviewed_write_snapshot_uncertainty_is_explicit_cleanup_failure():
     api = FakeAPI()
-    api.pending_fail_from_call = 10
+    api.pending_fail_from_call = 11
 
     result = run(api, allow_test_write=True)
 

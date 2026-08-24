@@ -248,6 +248,7 @@ MAX_TEXT = 500
 POST_WRITE_SETTLE_TIMEOUT_SECONDS = 4.0
 POST_WRITE_CLEAN_WINDOW_SECONDS = 1.0
 POST_WRITE_POLL_INTERVAL_SECONDS = 0.2
+WRITE_FLOW_TIMEOUT_SECONDS = 15.0
 _SETTLE_CLOCK = time.monotonic
 _SETTLE_SLEEP = time.sleep
 MAX_UNATTRIBUTED_PROPOSAL_IDS = 10
@@ -1055,8 +1056,17 @@ def _refresh_pending_observation(
     select_owned: Callable[[dict[int, dict]], dict[int, dict]],
     observed_owned: dict[int, dict],
     observed_unattributed: list[int],
+    *,
+    deadline: float,
+    clock: Callable[[], float] | None = None,
 ) -> tuple[list[int], dict[int, dict]]:
-    snapshot = _pending_snapshot(api)
+    monotonic = clock or _SETTLE_CLOCK
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ProposalOwnershipUnknown(0)
+    snapshot = _pending_snapshot(api, timeout=remaining)
+    if monotonic() >= deadline:
+        raise ProposalOwnershipUnknown(1)
     unattributed = set(observed_unattributed)
     _accumulate_pending_observation(
         snapshot,
@@ -1424,7 +1434,12 @@ def _run_invalid_write(
     *,
     session_id: str,
     test_id: str,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    flow_timeout: float = WRITE_FLOW_TIMEOUT_SECONDS,
 ) -> bool:
+    monotonic = clock or _SETTLE_CLOCK
+    flow_deadline = monotonic() + flow_timeout
     name = f"OHI ACCEPTANCE INVALID {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
@@ -1460,7 +1475,13 @@ def _run_invalid_write(
                 owned,
                 unattributed_ids,
                 snapshot_attempts,
-            ) = _post_write_owned_proposals(api, baseline_ids, name)
+            ) = _post_write_owned_proposals(
+                api,
+                baseline_ids,
+                name,
+                clock=monotonic,
+                sleeper=sleeper,
+            )
             ownership_known = True
         except ProposalOwnershipUnknown as exc:
             snapshot_attempts = exc.attempts
@@ -1478,6 +1499,8 @@ def _run_invalid_write(
                     ),
                     owned,
                     unattributed_ids,
+                    deadline=flow_deadline,
+                    clock=monotonic,
                 )
             except Exception as exc:
                 error = error or _safe_error(exc)
@@ -1561,7 +1584,12 @@ def _run_reviewed_write(
     *,
     session_id: str,
     test_id: str,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    flow_timeout: float = WRITE_FLOW_TIMEOUT_SECONDS,
 ) -> bool:
+    monotonic = clock or _SETTLE_CLOCK
+    flow_deadline = monotonic() + flow_timeout
     name = f"OHI ACCEPTANCE TEST {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
@@ -1605,7 +1633,13 @@ def _run_reviewed_write(
                     owned,
                     unattributed_ids,
                     snapshot_attempts,
-                ) = _post_write_owned_proposals(api, baseline_ids, name)
+                ) = _post_write_owned_proposals(
+                    api,
+                    baseline_ids,
+                    name,
+                    clock=monotonic,
+                    sleeper=sleeper,
+                )
                 ownership_known = True
             except ProposalOwnershipUnknown as exc:
                 snapshot_attempts = exc.attempts
@@ -1637,6 +1671,8 @@ def _run_reviewed_write(
                         ),
                         owned,
                         unattributed_ids,
+                        deadline=flow_deadline,
+                        clock=monotonic,
                     )
                     if unattributed_ids:
                         raise ValueError(
@@ -1684,6 +1720,8 @@ def _run_reviewed_write(
                         ),
                         owned,
                         unattributed_ids,
+                        deadline=flow_deadline,
+                        clock=monotonic,
                     )
                     remaining = _owned_proposals(
                         final_snapshot, baseline_ids, name
@@ -1789,7 +1827,12 @@ def _run_reviewed_booking(
     *,
     session_id: str,
     test_id: str,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    flow_timeout: float = WRITE_FLOW_TIMEOUT_SECONDS,
 ) -> bool:
+    monotonic = clock or _SETTLE_CLOCK
+    flow_deadline = monotonic() + flow_timeout
     marker = f"OHI-ACCEPTANCE-BOOKING-{test_id}"
     location = f"{marker}, 1 Review Queue Way"
     baseline_pending_ids: set[int] | None = None
@@ -1869,7 +1912,11 @@ def _run_reviewed_booking(
                         unattributed_ids,
                         snapshot_attempts,
                     ) = _post_write_owned_booking_proposals(
-                        api, baseline_pending_ids, expected_payload
+                        api,
+                        baseline_pending_ids,
+                        expected_payload,
+                        clock=monotonic,
+                        sleeper=sleeper,
                     )
                     ownership_known = True
                 except ProposalOwnershipUnknown as exc:
@@ -1893,6 +1940,8 @@ def _run_reviewed_booking(
                             ),
                             owned,
                             unattributed_ids,
+                            deadline=flow_deadline,
+                            clock=monotonic,
                         )
                         if unattributed_ids:
                             raise ValueError(
@@ -1978,6 +2027,8 @@ def _run_reviewed_booking(
                     ),
                     owned,
                     unattributed_ids,
+                    deadline=flow_deadline,
+                    clock=monotonic,
                 )
                 remaining = _owned_booking_proposals(
                     final_snapshot, baseline_pending_ids, expected_payload

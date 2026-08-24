@@ -71,6 +71,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -407,9 +408,9 @@ class OpenClawCLI:
         chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
         if production:
             system_content = (
-                f"First call the native {PLUGIN_TOOL} tool with operation search_leads "
-                f"and arguments containing only query "
-                f"__openhouse_behavior_probe__:{nonce}. After that attempt is blocked, "
+                f"First call the native {PLUGIN_TOOL} tool with operation generate_dashboard_insights "
+                "and arguments containing only "
+                f"probe_nonce {nonce}. After that attempt is blocked, "
                 "call finish_crm_response exactly once with classification "
                 "needs_clarification, the nonce as its message, and an empty "
                 "evidence_call_ids array."
@@ -450,9 +451,9 @@ class OpenClawCLI:
         chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
         content = (
             (
-                f"Call the native {PLUGIN_TOOL} tool with operation search_leads and "
-                "arguments containing only query "
-                f"__openhouse_behavior_probe__:{nonce}. Then reply briefly after the "
+                f"Call the native {PLUGIN_TOOL} tool with operation generate_dashboard_insights "
+                "and arguments containing only "
+                f"probe_nonce {nonce}. Then reply briefly after the "
                 "attempt is blocked."
             )
             if production
@@ -534,6 +535,230 @@ class OpenClawCLI:
 
 class SetupConflict(RuntimeError):
     pass
+
+
+LocalOperationRunner = Callable[[str, dict[str, Any], float], bool]
+
+
+_LOCAL_OPERATION_SOURCE = r"""
+import base64, json, os, shutil, stat
+from pathlib import Path
+
+def decode(value):
+    if isinstance(value, dict) and set(value) == {"__bytes__"}:
+        return base64.b64decode(value["__bytes__"], validate=True)
+    if isinstance(value, dict):
+        return {key: decode(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [decode(item) for item in value]
+    return value
+
+payload = decode(json.loads(os.environ.pop("OPENHOUSE_LOCAL_PAYLOAD")))
+operation = payload.pop("operation")
+if operation == "copytree":
+    source = Path(payload["source"])
+    target = Path(payload["target"])
+    ignore_kind = payload.get("ignore")
+    def ignored(directory, names):
+        result = ["__pycache__"] if "__pycache__" in names else []
+        if ignore_kind == "inert_and_contract" and Path(directory) == source and "contract.json" in names:
+            result.append("contract.json")
+        return result
+    shutil.copytree(source, target, ignore=ignored if ignore_kind else None)
+elif operation == "rmtree":
+    shutil.rmtree(Path(payload["path"]))
+elif operation == "unlink":
+    Path(payload["path"]).unlink()
+elif operation == "verify_file":
+    path = Path(payload["path"])
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        node = os.fstat(descriptor)
+        identity = payload.get("identity")
+        if not stat.S_ISREG(node.st_mode) or stat.S_IMODE(node.st_mode) != int(payload["mode"]):
+            raise OSError("file metadata mismatch")
+        if identity is not None and [node.st_dev, node.st_ino] != identity:
+            raise OSError("file identity changed")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if b"".join(chunks) != payload["contents"]:
+            raise OSError("file contents mismatch")
+    finally:
+        os.close(descriptor)
+elif operation in {"write_exclusive", "rewrite_existing"}:
+    path = Path(payload["path"])
+    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= os.O_CREAT | os.O_EXCL if operation == "write_exclusive" else os.O_TRUNC
+    descriptor = os.open(path, flags, int(payload["mode"]))
+    try:
+        node = os.fstat(descriptor)
+        identity = payload.get("identity")
+        if not stat.S_ISREG(node.st_mode):
+            raise OSError("target is not regular")
+        if identity is not None and [node.st_dev, node.st_ino] != identity:
+            raise OSError("target identity changed")
+        os.fchmod(descriptor, int(payload["mode"]))
+        view = memoryview(payload["contents"])
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    if os.name != "nt":
+        parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+else:
+    raise ValueError("unsupported operation")
+"""
+
+
+def _local_wire_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {"__bytes__": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, dict):
+        return {key: _local_wire_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_local_wire_value(item) for item in value]
+    return value
+
+
+def _run_bounded_local_operation(
+    operation: str, payload: dict[str, Any], timeout: float
+) -> bool:
+    """Supervise a killable filesystem worker; never use an unkillable thread."""
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        return False
+    deadline = time.monotonic() + float(timeout)
+    encoded_payload = json.dumps(
+        _local_wire_value({"operation": operation, **payload}),
+        separators=(",", ":"),
+    )
+    if len(encoded_payload.encode("utf-8")) > 24 * 1024:
+        return False
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.casefold() in {"systemroot", "windir", "path"}
+    }
+    environment["OPENHOUSE_LOCAL_PAYLOAD"] = encoded_payload
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-c", _LOCAL_OPERATION_SOURCE],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+        )
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        return process.returncode == 0 and time.monotonic() <= deadline
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                return False
+        return False
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return False
+
+
+def _run_local_if_bounded(
+    operation: str,
+    payload: dict[str, Any],
+    *,
+    deadline_check: Callable[[], float] | None,
+    local_runner: LocalOperationRunner | None,
+) -> bool | None:
+    """Return None only for legacy read-only/unit callers without a phase budget."""
+    if deadline_check is None and local_runner is None:
+        return None
+    try:
+        timeout = deadline_check() if deadline_check is not None else 30.0
+    except SetupConflict:
+        return False
+    return (local_runner or _run_bounded_local_operation)(
+        operation, payload, timeout
+    )
+
+
+def _verify_local_file(
+    path: Path,
+    contents: bytes,
+    mode: int,
+    *,
+    identity: list[int] | None = None,
+    deadline_check: Callable[[], float] | None,
+    local_runner: LocalOperationRunner | None,
+) -> bool:
+    bounded = _run_local_if_bounded(
+        "verify_file",
+        {
+            "path": str(path),
+            "contents": contents,
+            "mode": mode,
+            "identity": identity,
+        },
+        deadline_check=deadline_check,
+        local_runner=local_runner,
+    )
+    if bounded is not None:
+        return bounded
+    try:
+        node = os.lstat(path)
+        return (
+            stat.S_ISREG(node.st_mode)
+            and stat.S_IMODE(node.st_mode) == mode
+            and (identity is None or [node.st_dev, node.st_ino] == identity)
+            and path.read_bytes() == contents
+        )
+    except OSError:
+        return False
+
+
+@contextmanager
+def _bounded_temporary_directory(
+    *,
+    prefix: str,
+    directory: Path,
+    deadline_check: Callable[[], float] | None,
+    local_runner: LocalOperationRunner | None,
+):
+    root = Path(tempfile.mkdtemp(prefix=prefix, dir=directory))
+    try:
+        yield root
+    finally:
+        if root.exists() or root.is_symlink():
+            bounded = _run_local_if_bounded(
+                "rmtree",
+                {"path": str(root)},
+                deadline_check=deadline_check,
+                local_runner=local_runner,
+            )
+            if bounded is None:
+                shutil.rmtree(root)
+            elif not bounded:
+                raise SetupConflict(
+                    f"bounded temporary-directory cleanup did not complete: {root}"
+                )
 
 
 class _DuplicateJSONKey(ValueError):
@@ -750,7 +975,13 @@ def _verify_gateway_env_no_follow(env_path: Path, token: str) -> None:
         raise SetupConflict("OpenClaw gateway environment token verification failed")
 
 
-def _upsert_gateway_env(env_path: Path, token: str) -> None:
+def _upsert_gateway_env(
+    env_path: Path,
+    token: str,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> None:
     _validate_api_token(token)
     _create_directory_chain(env_path.parent, "OpenClaw state directory")
     existing = _read_gateway_env_no_follow(env_path)
@@ -761,12 +992,47 @@ def _upsert_gateway_env(env_path: Path, token: str) -> None:
         )
         temporary = Path(temporary_name)
         try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                descriptor = -1
-                stream.write(updated)
-                stream.flush()
-                os.fsync(stream.fileno())
+            node = os.fstat(descriptor)
+            identity = [node.st_dev, node.st_ino]
+            os.close(descriptor)
+            descriptor = -1
+            bounded = _run_local_if_bounded(
+                "rewrite_existing",
+                {
+                    "path": str(temporary),
+                    "contents": updated.encode("utf-8"),
+                    "mode": 0o600,
+                    "identity": identity,
+                },
+                deadline_check=deadline_check,
+                local_runner=local_runner,
+            )
+            if bounded is None:
+                descriptor = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                )
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    descriptor = -1
+                    stream.write(updated)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            elif not bounded:
+                raise SetupConflict(
+                    "bounded OpenClaw gateway environment write did not complete"
+                )
+            if not _verify_local_file(
+                temporary,
+                updated.encode("utf-8"),
+                0o600,
+                identity=identity,
+                deadline_check=deadline_check,
+                local_runner=local_runner,
+            ):
+                raise SetupConflict(
+                    "bounded OpenClaw gateway environment write was not verified"
+                )
             if env_path.is_symlink():
                 raise SetupConflict(
                     f"OpenClaw gateway environment must not be a symlink: {env_path}"
@@ -817,7 +1083,12 @@ def _snapshot_gateway_env(env_path: Path) -> GatewayEnvSnapshot:
     )
 
 
-def _restore_gateway_env(snapshot: GatewayEnvSnapshot) -> bool:
+def _restore_gateway_env(
+    snapshot: GatewayEnvSnapshot,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> bool:
     try:
         _validate_no_symlink_components(
             snapshot.path, "OpenClaw gateway environment", leaf_directory=False
@@ -829,7 +1100,16 @@ def _restore_gateway_env(snapshot: GatewayEnvSnapshot) -> bool:
                 return True
             if stat.S_ISLNK(node.st_mode) or not stat.S_ISREG(node.st_mode):
                 return False
-            snapshot.path.unlink()
+            bounded = _run_local_if_bounded(
+                "unlink",
+                {"path": str(snapshot.path)},
+                deadline_check=deadline_check,
+                local_runner=local_runner,
+            )
+            if bounded is None:
+                snapshot.path.unlink()
+            elif not bounded:
+                return False
             return not snapshot.path.exists() and not snapshot.path.is_symlink()
 
         snapshot.path.parent.mkdir(parents=True, exist_ok=True)
@@ -838,12 +1118,43 @@ def _restore_gateway_env(snapshot: GatewayEnvSnapshot) -> bool:
         )
         temporary = Path(temporary_name)
         try:
-            os.fchmod(descriptor, snapshot.mode or 0o600)
-            with os.fdopen(descriptor, "wb") as stream:
-                descriptor = -1
-                stream.write(snapshot.contents)
-                stream.flush()
-                os.fsync(stream.fileno())
+            node = os.fstat(descriptor)
+            identity = [node.st_dev, node.st_ino]
+            os.close(descriptor)
+            descriptor = -1
+            bounded = _run_local_if_bounded(
+                "rewrite_existing",
+                {
+                    "path": str(temporary),
+                    "contents": snapshot.contents,
+                    "mode": snapshot.mode or 0o600,
+                    "identity": identity,
+                },
+                deadline_check=deadline_check,
+                local_runner=local_runner,
+            )
+            if bounded is None:
+                descriptor = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                )
+                os.fchmod(descriptor, snapshot.mode or 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    descriptor = -1
+                    stream.write(snapshot.contents)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            elif not bounded:
+                return False
+            if not _verify_local_file(
+                temporary,
+                snapshot.contents,
+                snapshot.mode or 0o600,
+                identity=identity,
+                deadline_check=deadline_check,
+                local_runner=local_runner,
+            ):
+                return False
             os.replace(temporary, snapshot.path)
         finally:
             if descriptor >= 0:
@@ -1007,11 +1318,28 @@ def _validate_directory_node(path: Path, label: str) -> None:
         raise SetupConflict(f"{label} must be a directory: {path}")
 
 
-def _remove_installed_tree(path: Path) -> None:
+def _remove_installed_tree(
+    path: Path,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> None:
     if path.is_symlink() or path.is_file():
-        path.unlink()
+        operation = "unlink"
     elif path.is_dir():
-        shutil.rmtree(path)
+        operation = "rmtree"
+    else:
+        return
+    bounded = _run_local_if_bounded(
+        operation,
+        {"path": str(path)},
+        deadline_check=deadline_check,
+        local_runner=local_runner,
+    )
+    if bounded is None:
+        path.unlink() if operation == "unlink" else shutil.rmtree(path)
+    elif not bounded:
+        raise SetupConflict(f"bounded installed-tree removal did not complete: {path}")
 
 
 def _create_directory_chain(path: Path, label: str) -> list[Path]:
@@ -1435,7 +1763,12 @@ def _missing_directory_chain(path: Path) -> list[Path]:
     return list(reversed(missing))
 
 
-def _snapshot_installed_skills(workspace: Path) -> SkillRollback:
+def _snapshot_installed_skills(
+    workspace: Path,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> SkillRollback:
     skills_root = workspace / "skills"
     _validate_no_symlink_components(
         workspace, "OpenClaw workspace", leaf_directory=True
@@ -1453,10 +1786,26 @@ def _snapshot_installed_skills(workspace: Path) -> SkillRollback:
         for name in SKILL_NAMES:
             target = skills_root / name
             if target.exists():
-                shutil.copytree(target, backup_root / name)
+                bounded = _run_local_if_bounded(
+                    "copytree",
+                    {
+                        "source": str(target),
+                        "target": str(backup_root / name),
+                    },
+                    deadline_check=deadline_check,
+                    local_runner=local_runner,
+                )
+                if bounded is None:
+                    shutil.copytree(target, backup_root / name)
+                elif not bounded:
+                    raise SetupConflict(
+                        "could not complete the bounded installed-skill snapshot; "
+                        f"partial private recovery backup retained at {backup_root}"
+                    )
                 existing_names.add(name)
+    except SetupConflict:
+        raise
     except OSError as exc:
-        shutil.rmtree(backup_root, ignore_errors=True)
         raise SetupConflict(f"could not snapshot installed CRM skills: {exc}") from exc
     return SkillRollback(
         workspace=workspace,
@@ -1472,6 +1821,7 @@ def _restore_installed_skills(
     snapshot: SkillRollback,
     *,
     deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
 ) -> bool:
     skills_root = snapshot.workspace / "skills"
     try:
@@ -1489,13 +1839,27 @@ def _restore_installed_skills(
                 deadline_check()
             target = skills_root / name
             if name in snapshot.existing_names:
-                with tempfile.TemporaryDirectory(
-                    prefix=".openhouse-skill-restore-", dir=skills_root.parent
-                ) as staging_value:
-                    staging_root = Path(staging_value)
+                with _bounded_temporary_directory(
+                    prefix=".openhouse-skill-restore-",
+                    directory=skills_root.parent,
+                    deadline_check=deadline_check,
+                    local_runner=local_runner,
+                ) as staging_root:
                     staged = staging_root / name
                     quarantine = staging_root / f"current-{name}"
-                    shutil.copytree(snapshot.backup_root / name, staged)
+                    bounded = _run_local_if_bounded(
+                        "copytree",
+                        {
+                            "source": str(snapshot.backup_root / name),
+                            "target": str(staged),
+                        },
+                        deadline_check=deadline_check,
+                        local_runner=local_runner,
+                    )
+                    if bounded is None:
+                        shutil.copytree(snapshot.backup_root / name, staged)
+                    elif not bounded:
+                        return False
                     if deadline_check is not None:
                         deadline_check()
                     _validate_skill_tree(staged, "staged restored skill directory")
@@ -1508,7 +1872,11 @@ def _restore_installed_skills(
                         target.rename(quarantine)
                     staged.rename(target)
                     if quarantine.exists():
-                        _remove_installed_tree(quarantine)
+                        _remove_installed_tree(
+                            quarantine,
+                            deadline_check=deadline_check,
+                            local_runner=local_runner,
+                        )
                     if deadline_check is not None:
                         deadline_check()
                 if not _skill_trees_match(
@@ -1521,7 +1889,11 @@ def _restore_installed_skills(
                 _validate_no_symlink_components(
                     target, "installed skill directory", leaf_directory=True
                 )
-                _remove_installed_tree(target)
+                _remove_installed_tree(
+                    target,
+                    deadline_check=deadline_check,
+                    local_runner=local_runner,
+                )
                 if deadline_check is not None:
                     deadline_check()
                 if target.exists() or target.is_symlink():
@@ -1588,11 +1960,25 @@ def _skill_trees_match(
         return False
 
 
-def _discard_skill_snapshot(snapshot: SkillRollback) -> bool:
+def _discard_skill_snapshot(
+    snapshot: SkillRollback,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> bool:
     deletion_failed = False
     try:
-        shutil.rmtree(snapshot.backup_root)
-    except OSError:
+        bounded = _run_local_if_bounded(
+            "rmtree",
+            {"path": str(snapshot.backup_root)},
+            deadline_check=deadline_check,
+            local_runner=local_runner,
+        )
+        if bounded is None:
+            shutil.rmtree(snapshot.backup_root)
+        elif not bounded:
+            return False
+    except (OSError, SetupConflict):
         deletion_failed = True
     try:
         os.lstat(snapshot.backup_root)
@@ -1615,6 +2001,8 @@ def _write_recovery_manifest(
     plugin_preexisting: bool,
     plugin_enabled: bool,
     plugin_source: Path,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
 ) -> None:
     payload = {
         "gatewayEnv": (
@@ -1656,10 +2044,37 @@ def _write_recovery_manifest(
         path,
         json.dumps(payload, separators=(",", ":")).encode("utf-8"),
         0o600,
+        deadline_check=deadline_check,
+        local_runner=local_runner,
     )
 
 
-def _write_bytes_exclusive(path: Path, contents: bytes, mode: int = 0o644) -> None:
+def _write_bytes_exclusive(
+    path: Path,
+    contents: bytes,
+    mode: int = 0o644,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> None:
+    bounded = _run_local_if_bounded(
+        "write_exclusive",
+        {"path": str(path), "contents": contents, "mode": mode},
+        deadline_check=deadline_check,
+        local_runner=local_runner,
+    )
+    if bounded is not None:
+        if not bounded:
+            raise SetupConflict("bounded private file write did not complete")
+        if not _verify_local_file(
+            path,
+            contents,
+            mode,
+            deadline_check=deadline_check,
+            local_runner=local_runner,
+        ):
+            raise SetupConflict("bounded private file write was not verified")
+        return
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         view = memoryview(contents)
@@ -1998,6 +2413,8 @@ def sync_skills(
     *,
     dry_run: bool,
     contract_snapshot: ContractSnapshot | None = None,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
 ) -> list[Path]:
     sources = [repo / "skills" / name for name in SKILL_NAMES]
     skills_root = workspace / "skills"
@@ -2024,10 +2441,12 @@ def sync_skills(
             parent, "OpenClaw workspace parent"
         )
 
-        with tempfile.TemporaryDirectory(
-            prefix=".openhouse-skills-", dir=parent, ignore_cleanup_errors=True
-        ) as staging_value:
-            staging_root = Path(staging_value)
+        with _bounded_temporary_directory(
+            prefix=".openhouse-skills-",
+            directory=parent,
+            deadline_check=deadline_check,
+            local_runner=local_runner,
+        ) as staging_root:
             staged_skills = staging_root / "staged"
             backups = staging_root / "backups"
             for name, source in zip(SKILL_NAMES, sources):
@@ -2043,21 +2462,49 @@ def sync_skills(
                             ignored.add("contract.json")
                         return sorted(ignored)
 
-                    shutil.copytree(
-                        source,
-                        staged_skills / name,
-                        ignore=ignore_captured_contract,
+                    bounded = _run_local_if_bounded(
+                        "copytree",
+                        {
+                            "source": str(source),
+                            "target": str(staged_skills / name),
+                            "ignore": "inert_and_contract",
+                        },
+                        deadline_check=deadline_check,
+                        local_runner=local_runner,
                     )
+                    if bounded is None:
+                        shutil.copytree(
+                            source,
+                            staged_skills / name,
+                            ignore=ignore_captured_contract,
+                        )
+                    elif not bounded:
+                        raise SetupConflict("bounded CRM skill copy did not complete")
                     _write_bytes_exclusive(
                         staged_skills / name / "contract.json",
                         contract_snapshot.contents,
+                        deadline_check=deadline_check,
+                        local_runner=local_runner,
                     )
                 else:
-                    shutil.copytree(
-                        source,
-                        staged_skills / name,
-                        ignore=_ignore_inert_pycache,
+                    bounded = _run_local_if_bounded(
+                        "copytree",
+                        {
+                            "source": str(source),
+                            "target": str(staged_skills / name),
+                            "ignore": "inert",
+                        },
+                        deadline_check=deadline_check,
+                        local_runner=local_runner,
                     )
+                    if bounded is None:
+                        shutil.copytree(
+                            source,
+                            staged_skills / name,
+                            ignore=_ignore_inert_pycache,
+                        )
+                    elif not bounded:
+                        raise SetupConflict("bounded CRM skill copy did not complete")
             for path in (
                 staged_skills / "crm-db-operations" / "cli.py",
                 staged_skills / "daily-brief" / "scripts" / "run_daily_brief.py",
@@ -2081,7 +2528,11 @@ def sync_skills(
                     moved_targets.append(target)
             except OSError:
                 for target in reversed(moved_targets):
-                    _remove_installed_tree(target)
+                    _remove_installed_tree(
+                        target,
+                        deadline_check=deadline_check,
+                        local_runner=local_runner,
+                    )
                 for target, backup in reversed(list(backup_paths.items())):
                     if backup.exists() and not target.exists():
                         backup.rename(target)
@@ -3961,7 +4412,12 @@ def _create_diagnostic_agent(
                 f"Could not restrict the setup diagnostic agent {field}: "
                 + (result.stderr or result.stdout).strip()
             )
-def _remove_diagnostic_workspace(root: Path) -> bool:
+def _remove_diagnostic_workspace(
+    root: Path,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+    local_runner: LocalOperationRunner | None = None,
+) -> bool:
     try:
         if not root.exists() and not root.is_symlink():
             return True
@@ -3969,7 +4425,16 @@ def _remove_diagnostic_workspace(root: Path) -> bool:
             root, "setup diagnostic workspace", leaf_directory=True
         )
         _validate_skill_tree(root, "setup diagnostic workspace")
-        shutil.rmtree(root)
+        bounded = _run_local_if_bounded(
+            "rmtree",
+            {"path": str(root)},
+            deadline_check=deadline_check,
+            local_runner=local_runner,
+        )
+        if bounded is None:
+            shutil.rmtree(root)
+        elif not bounded:
+            return False
         return not root.exists() and not root.is_symlink()
     except (OSError, SetupConflict):
         return False
@@ -4723,7 +5188,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             return SetupResult(True, messages)
 
         # Capture every setup-owned surface before the first target mutation.
-        skill_rollback = _snapshot_installed_skills(options.workspace)
+        local_deadline_check = getattr(cli, "require_time", None)
+        skill_rollback = _snapshot_installed_skills(
+            options.workspace, deadline_check=local_deadline_check
+        )
         plugin_config_snapshot = _read_config_snapshot(cli, PLUGIN_CONFIG_PATH)
         config_snapshots[CRM_URL_CONFIG_PATH] = _read_config_snapshot(
             cli, CRM_URL_CONFIG_PATH
@@ -4765,16 +5233,22 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             plugin_preexisting=plugin_preexisting,
             plugin_enabled=plugin_previously_enabled,
             plugin_source=plugin_source,
+            deadline_check=local_deadline_check,
         )
 
         if token and gateway_env_path is not None:
-            _upsert_gateway_env(gateway_env_path, token)
+            _upsert_gateway_env(
+                gateway_env_path,
+                token,
+                deadline_check=local_deadline_check,
+            )
 
         sync_skills(
             repo,
             options.workspace,
             dry_run=False,
             contract_snapshot=contract_snapshot,
+            deadline_check=local_deadline_check,
         )
         _verify_contract_source_unchanged(contract_snapshot)
         _verify_client_tools_source_unchanged(
@@ -5253,7 +5727,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             raise SetupConflict(
                 "Could not delete and verify absence of the setup diagnostic agent"
             )
-        if not _remove_diagnostic_workspace(diagnostic_root):
+        if not _remove_diagnostic_workspace(
+            diagnostic_root,
+            deadline_check=local_deadline_check,
+        ):
             raise SetupConflict("Could not remove the setup diagnostic workspace")
         cleanup_restart = cli.run(
             ["openclaw", "gateway", "restart"], mutate=True
@@ -5287,7 +5764,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         )
         if skill_rollback is not None:
-            if not _discard_skill_snapshot(skill_rollback):
+            if not _discard_skill_snapshot(
+                skill_rollback, deadline_check=local_deadline_check
+            ):
                 skill_snapshot_cleanup_failed = True
                 raise SetupConflict(
                     "Could not securely remove and verify deletion of the private setup "
@@ -5311,6 +5790,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         return SetupResult(True, messages, runtime_verification)
     except (SetupConflict, OSError) as exc:
         rollback_failed = skill_snapshot_cleanup_failed
+        retain_recovery_backup = (
+            skill_snapshot_cleanup_failed
+            or "bounded" in str(exc).casefold()
+            or "time limit" in str(exc).casefold()
+        )
         begin_rollback = getattr(cli, "begin_rollback", None)
         if callable(begin_rollback):
             try:
@@ -5340,7 +5824,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     "Could not delete or verify absence of the setup diagnostic agent."
                 )
         if diagnostic_root is not None and not _remove_diagnostic_workspace(
-            diagnostic_root
+            diagnostic_root,
+            deadline_check=getattr(cli, "require_time", None),
         ):
             rollback_failed = True
             messages.append("Could not remove the setup diagnostic workspace.")
@@ -5552,7 +6037,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     "Could not fully restore the previous installed CRM skills."
                 )
         if gateway_env_snapshot is not None and not _restore_gateway_env(
-            gateway_env_snapshot
+            gateway_env_snapshot,
+            deadline_check=getattr(cli, "require_time", None),
         ):
             rollback_failed = True
             messages.append("Could not restore the OpenClaw gateway environment.")
@@ -5612,7 +6098,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 )
 
         if skill_rollback is not None:
-            if rollback_failed:
+            if rollback_failed or retain_recovery_backup:
                 messages.append(
                     f"Recovery backup retained at {skill_rollback.backup_root}"
                 )
@@ -5623,7 +6109,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     "After recovery, securely remove that exact private backup directory."
                 )
             else:
-                if not _discard_skill_snapshot(skill_rollback):
+                if not _discard_skill_snapshot(
+                    skill_rollback,
+                    deadline_check=getattr(cli, "require_time", None),
+                ):
                     rollback_failed = True
                     messages.append(
                         "Could not securely remove and verify deletion of the private "

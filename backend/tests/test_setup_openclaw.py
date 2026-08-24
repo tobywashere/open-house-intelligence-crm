@@ -2081,6 +2081,14 @@ def test_behavioral_fallback_is_reproven_on_production_agent_after_final_restart
     assert cli.configured_agent_guard_probe_calls[-1]["agent_id"] == "custom-crm"
 
 
+def test_production_probe_prompt_uses_exact_canonical_harmless_read():
+    source = Path(setup_openclaw.__file__).read_text(encoding="utf-8")
+
+    assert "operation search_leads" not in source
+    assert "operation generate_dashboard_insights" in source
+    assert "probe_nonce" in source
+
+
 def test_installed_state_reproves_behavior_instead_of_trusting_serialized_label(
     tmp_path,
 ):
@@ -4717,6 +4725,150 @@ def test_local_skill_rollback_stops_on_expiry_and_retains_backup(tmp_path):
         "original\n"
     )
     assert (installed / "current.txt").read_text() == "current\n"
+
+
+def test_killable_skill_restore_timeout_retains_backup_and_current_tree(tmp_path):
+    workspace = tmp_path / "workspace"
+    installed = workspace / "skills" / "crm-db-operations"
+    installed.mkdir(parents=True)
+    (installed / "current.txt").write_text("current\n")
+    backup = tmp_path / "private-backup"
+    original = backup / "crm-db-operations"
+    original.mkdir(parents=True)
+    (original / "original.txt").write_text("original\n")
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=workspace,
+        backup_root=backup,
+        existing_names={"crm-db-operations"},
+        workspace_existed=True,
+        skills_root_existed=True,
+        missing_parent_dirs=[],
+    )
+    calls = []
+
+    def timed_out(operation, payload, timeout):
+        calls.append((operation, payload, timeout))
+        return False
+
+    assert setup_openclaw._restore_installed_skills(
+        snapshot,
+        deadline_check=lambda: 2.0,
+        local_runner=timed_out,
+    ) is False
+    assert calls[0][0] == "copytree"
+    assert calls[0][2] == 2.0
+    assert (original / "original.txt").read_text() == "original\n"
+    assert (installed / "current.txt").read_text() == "current\n"
+
+
+def test_backup_deletion_checks_budget_before_start_and_retains_only_backup(tmp_path):
+    backup = tmp_path / "private-backup"
+    backup.mkdir()
+    (backup / "recovery.txt").write_text("retain\n")
+    snapshot = setup_openclaw.SkillRollback(
+        workspace=tmp_path / "workspace",
+        backup_root=backup,
+        existing_names=set(),
+        workspace_existed=False,
+        skills_root_existed=False,
+        missing_parent_dirs=[],
+    )
+    runner_called = False
+
+    def runner(*_args):
+        nonlocal runner_called
+        runner_called = True
+        return True
+
+    def expired():
+        raise SetupConflict("OpenClaw rollback time limit expired")
+
+    assert setup_openclaw._discard_skill_snapshot(
+        snapshot,
+        deadline_check=expired,
+        local_runner=runner,
+    ) is False
+    assert runner_called is False
+    assert (backup / "recovery.txt").read_text() == "retain\n"
+
+
+def test_gateway_env_restore_timeout_preserves_current_file(tmp_path):
+    env_path = tmp_path / "openclaw.env"
+    env_path.write_bytes(b"current\n")
+    snapshot = setup_openclaw.GatewayEnvSnapshot(
+        path=env_path,
+        existed=True,
+        contents=b"original\n",
+        mode=0o600,
+    )
+
+    assert setup_openclaw._restore_gateway_env(
+        snapshot,
+        deadline_check=lambda: 1.5,
+        local_runner=lambda operation, payload, timeout: False,
+    ) is False
+    assert env_path.read_bytes() == b"current\n"
+
+
+def test_recovery_write_timeout_is_reported_without_unbounded_parent_write(tmp_path):
+    target = tmp_path / "transaction-state.json"
+    calls = []
+
+    def timed_out(operation, payload, timeout):
+        calls.append((operation, payload, timeout))
+        return False
+
+    with pytest.raises(SetupConflict, match="bounded private file write"):
+        setup_openclaw._write_bytes_exclusive(
+            target,
+            b"private recovery state",
+            0o600,
+            deadline_check=lambda: 1.25,
+            local_runner=timed_out,
+        )
+
+    assert calls[0][0] == "write_exclusive"
+    assert calls[0][2] == 1.25
+    assert not target.exists()
+
+
+def test_supervised_local_writer_round_trips_mode_and_bytes(tmp_path):
+    target = tmp_path / "bounded.json"
+
+    setup_openclaw._write_bytes_exclusive(
+        target,
+        b'{"bounded":true}\n',
+        0o600,
+        deadline_check=lambda: 5.0,
+    )
+
+    assert target.read_bytes() == b'{"bounded":true}\n'
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_setup_retains_recovery_backup_after_bounded_manifest_timeout(
+    monkeypatch, tmp_path
+):
+    class DeadlineCLI(FakeCLI):
+        def require_time(self):
+            return 2.0
+
+    monkeypatch.setattr(
+        setup_openclaw,
+        "_run_bounded_local_operation",
+        lambda operation, payload, timeout: False,
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=DeadlineCLI())
+
+    assert not result.ok
+    retained = next(
+        line.split(" at ", 1)[1]
+        for line in result.messages
+        if line.startswith("Recovery backup retained at ")
+    )
+    assert Path(retained).is_dir()
+    assert "bounded private file write did not complete" in result.render()
 
 
 def test_setup_fails_closed_when_plugin_agent_config_readback_is_wrong(tmp_path):
