@@ -3,6 +3,49 @@
 
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+
+
+_BOOTSTRAP_ORIGINAL_PATH = _bootstrap_sys.path[:]
+_BOOTSTRAP_VERSION = (
+    f"python{_bootstrap_sys.version_info.major}.{_bootstrap_sys.version_info.minor}"
+)
+_BOOTSTRAP_ZIP = (
+    f"python{_bootstrap_sys.version_info.major}{_bootstrap_sys.version_info.minor}.zip"
+)
+_BOOTSTRAP_NORMALIZED = [
+    item.replace("\\", "/").rstrip("/")
+    for item in _bootstrap_sys.path
+    if isinstance(item, str) and item
+]
+_BOOTSTRAP_STDLIB = ""
+for _bootstrap_index, _bootstrap_item in enumerate(_BOOTSTRAP_NORMALIZED):
+    if not _bootstrap_item.endswith("/" + _BOOTSTRAP_VERSION):
+        continue
+    _bootstrap_parent = _bootstrap_item[: -len(_BOOTSTRAP_VERSION)].rstrip("/")
+    if (
+        _bootstrap_parent + "/" + _BOOTSTRAP_ZIP
+        in _BOOTSTRAP_NORMALIZED[:_bootstrap_index]
+    ):
+        _BOOTSTRAP_STDLIB = _bootstrap_item
+if not _BOOTSTRAP_STDLIB:
+    raise RuntimeError("could not establish an isolated Python standard library")
+_BOOTSTRAP_STDLIB_PARENT = _BOOTSTRAP_STDLIB.rsplit("/", 1)[0]
+_BOOTSTRAP_ALLOWED = {
+    _BOOTSTRAP_STDLIB_PARENT + "/" + _BOOTSTRAP_ZIP,
+    _BOOTSTRAP_STDLIB,
+    _BOOTSTRAP_STDLIB + "/lib-dynload",
+}
+_bootstrap_sys.path[:] = [
+    item
+    for item in _BOOTSTRAP_ORIGINAL_PATH
+    if isinstance(item, str)
+    and item
+    and item.replace("\\", "/").rstrip("/") in _BOOTSTRAP_ALLOWED
+]
+_bootstrap_sys.dont_write_bytecode = True
+_bootstrap_sys.pycache_prefix = _BOOTSTRAP_STDLIB + "/.openhouse-disabled-pycache"
+
 import argparse
 import base64
 import hashlib
@@ -22,6 +65,9 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+if __name__ != "__main__":
+    sys.path[:] = _BOOTSTRAP_ORIGINAL_PATH
 
 
 _SOURCE_ONLY_PYCACHE = tempfile.TemporaryDirectory(prefix="openhouse-source-only-")

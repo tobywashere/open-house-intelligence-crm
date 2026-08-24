@@ -3,8 +3,52 @@
 
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+
+
+_BOOTSTRAP_ORIGINAL_PATH = _bootstrap_sys.path[:]
+_BOOTSTRAP_VERSION = (
+    f"python{_bootstrap_sys.version_info.major}.{_bootstrap_sys.version_info.minor}"
+)
+_BOOTSTRAP_ZIP = (
+    f"python{_bootstrap_sys.version_info.major}{_bootstrap_sys.version_info.minor}.zip"
+)
+_BOOTSTRAP_NORMALIZED = [
+    item.replace("\\", "/").rstrip("/")
+    for item in _bootstrap_sys.path
+    if isinstance(item, str) and item
+]
+_BOOTSTRAP_STDLIB = ""
+for _bootstrap_index, _bootstrap_item in enumerate(_BOOTSTRAP_NORMALIZED):
+    if not _bootstrap_item.endswith("/" + _BOOTSTRAP_VERSION):
+        continue
+    _bootstrap_parent = _bootstrap_item[: -len(_BOOTSTRAP_VERSION)].rstrip("/")
+    if (
+        _bootstrap_parent + "/" + _BOOTSTRAP_ZIP
+        in _BOOTSTRAP_NORMALIZED[:_bootstrap_index]
+    ):
+        _BOOTSTRAP_STDLIB = _bootstrap_item
+if not _BOOTSTRAP_STDLIB:
+    raise RuntimeError("could not establish an isolated Python standard library")
+_BOOTSTRAP_STDLIB_PARENT = _BOOTSTRAP_STDLIB.rsplit("/", 1)[0]
+_BOOTSTRAP_ALLOWED = {
+    _BOOTSTRAP_STDLIB_PARENT + "/" + _BOOTSTRAP_ZIP,
+    _BOOTSTRAP_STDLIB,
+    _BOOTSTRAP_STDLIB + "/lib-dynload",
+}
+_bootstrap_sys.path[:] = [
+    item
+    for item in _BOOTSTRAP_ORIGINAL_PATH
+    if isinstance(item, str)
+    and item
+    and item.replace("\\", "/").rstrip("/") in _BOOTSTRAP_ALLOWED
+]
+_bootstrap_sys.dont_write_bytecode = True
+_bootstrap_sys.pycache_prefix = _BOOTSTRAP_STDLIB + "/.openhouse-disabled-pycache"
+
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -22,13 +66,103 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+if __name__ != "__main__":
+    sys.path[:] = _BOOTSTRAP_ORIGINAL_PATH
+
 _SOURCE_ONLY_PYCACHE = tempfile.TemporaryDirectory(prefix="openhouse-source-only-")
 sys.dont_write_bytecode = True
 sys.pycache_prefix = _SOURCE_ONLY_PYCACHE.name
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 os.environ["PYTHONPYCACHEPREFIX"] = _SOURCE_ONLY_PYCACHE.name
 
-REPO = Path(__file__).resolve().parent.parent
+
+def _validated_material_repo() -> Path:
+    """Load the HEAD setup scanner without exposing the repository on sys.path."""
+    script = Path(__file__)
+    if script.is_symlink():
+        raise RuntimeError("repository source validation failed")
+    repo = script.absolute().parent.parent.resolve()
+    root_result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if (
+        root_result.returncode != 0
+        or Path(root_result.stdout.strip()).resolve() != repo
+    ):
+        raise RuntimeError("repository source validation failed")
+    relative = "scripts/setup_openclaw.py"
+    source = repo / relative
+    try:
+        node = os.lstat(source)
+    except OSError as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    if stat.S_ISLNK(node.st_mode) or not stat.S_ISREG(node.st_mode):
+        raise RuntimeError("repository source validation failed")
+    tree_result = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "HEAD", "--", relative],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    try:
+        metadata, tracked_path = tree_result.stdout.rstrip(b"\n").split(b"\t", 1)
+        mode, kind, object_id = metadata.decode("ascii").split(" ")
+        tracked_relative = tracked_path.decode("utf-8", "strict")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    actual_mode = "100755" if node.st_mode & 0o111 else "100644"
+    if (
+        tree_result.returncode != 0
+        or tracked_relative != relative
+        or kind != "blob"
+        or mode != actual_mode
+    ):
+        raise RuntimeError("repository source validation failed")
+    blob_result = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "blob", object_id],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    try:
+        contents = source.read_bytes()
+    except OSError as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    if blob_result.returncode != 0 or contents != blob_result.stdout:
+        raise RuntimeError("repository source validation failed")
+    spec = importlib.util.spec_from_file_location(
+        "_openhouse_validated_setup", source
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("repository source validation failed")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        module._material_head_state(repo)
+    except Exception as exc:
+        raise RuntimeError("repository source validation failed") from exc
+    finally:
+        if previous is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous
+    return repo
+
+
+if __name__ == "__main__":
+    try:
+        REPO = _validated_material_repo()
+    except RuntimeError:
+        print("repository source validation failed", file=sys.stderr)
+        raise SystemExit(1) from None
+else:
+    REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 

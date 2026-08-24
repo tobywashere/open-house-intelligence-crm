@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import py_compile
 import re
 import shutil
 import subprocess
@@ -3268,17 +3269,7 @@ def test_sync_skills_excludes_strict_generated_pycache(tmp_path):
 
 
 def test_documented_python_commands_never_create_or_read_repo_bytecode(tmp_path):
-    checkout = tmp_path / "checkout"
-    shutil.copytree(
-        REPO_ROOT / "scripts",
-        checkout / "scripts",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
-    shutil.copytree(
-        REPO_ROOT / "backend",
-        checkout / "backend",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    checkout = _committed_material_checkout(tmp_path)
     environment = os.environ.copy()
     environment.pop("PYTHONDONTWRITEBYTECODE", None)
     environment.pop("PYTHONPYCACHEPREFIX", None)
@@ -3300,6 +3291,158 @@ def test_documented_python_commands_never_create_or_read_repo_bytecode(tmp_path)
 
     assert not list(checkout.rglob("__pycache__"))
     assert not list(checkout.rglob("*.pyc"))
+
+
+def _committed_material_checkout(root: Path) -> Path:
+    checkout = root / "checkout"
+    shutil.copytree(
+        REPO_ROOT / "scripts",
+        checkout / "scripts",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    for relative in (
+        Path("backend/app/__init__.py"),
+        Path("backend/app/briefing_contract.py"),
+    ):
+        target = checkout / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    shutil.copytree(
+        REPO_ROOT / "skills",
+        checkout / "skills",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    shutil.copytree(
+        REPO_ROOT / "openclaw-plugins" / "openhouse-crm",
+        checkout / "openclaw-plugins" / "openhouse-crm",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "node_modules"),
+    )
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "acceptance@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Acceptance Test"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "fixture"], cwd=checkout, check=True
+    )
+    return checkout
+
+
+def _entrypoint_command(script: str, checkout: Path) -> list[str]:
+    if script == "setup_openclaw.py":
+        return [sys.executable, f"scripts/{script}", "--dry-run"]
+    if script == "acceptance_openclaw.py":
+        return [
+            sys.executable,
+            f"scripts/{script}",
+            "--base-url",
+            "http://127.0.0.1:9/api",
+            "--timeout",
+            "0.01",
+            "--json",
+        ]
+    return [
+        sys.executable,
+        f"scripts/{script}",
+        "--output",
+        str(checkout / "evidence.json"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        "setup_openclaw.py",
+        "acceptance_openclaw.py",
+        "capture_setup_evidence.py",
+    ),
+)
+@pytest.mark.parametrize("shadow_name", ("argparse.pyc", "json.py", "secrets.py"))
+def test_documented_entrypoints_do_not_execute_ignored_or_untracked_stdlib_shadows(
+    tmp_path, script, shadow_name
+):
+    checkout = _committed_material_checkout(tmp_path)
+    sentinel = checkout / "shadow-executed"
+    payload = (
+        f"open({str(sentinel)!r}, 'w').write('executed')\n"
+        "raise RuntimeError('shadow module executed')\n"
+    )
+    shadow = checkout / "scripts" / shadow_name
+    if shadow.suffix == ".pyc":
+        source = checkout / "shadow_payload.py"
+        source.write_text(payload, encoding="utf-8")
+        py_compile.compile(str(source), cfile=str(shadow), doraise=True)
+        source.unlink()
+    else:
+        shadow.write_text(payload, encoding="utf-8")
+
+    result = subprocess.run(
+        _entrypoint_command(script, checkout),
+        cwd=checkout,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not sentinel.exists(), result.stderr
+    assert (
+        "extra non-HEAD file" in result.stderr
+        or "repository source validation failed" in result.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        "setup_openclaw.py",
+        "acceptance_openclaw.py",
+        "capture_setup_evidence.py",
+    ),
+)
+def test_documented_entrypoints_ignore_malicious_pythonpath_before_stdlib_imports(
+    tmp_path, script
+):
+    checkout = _committed_material_checkout(tmp_path)
+    sentinel = checkout / "pythonpath-shadow-executed"
+    malicious = tmp_path / "malicious-pythonpath"
+    malicious.mkdir()
+    (malicious / "json.py").write_text(
+        f"open({str(sentinel)!r}, 'w').write('executed')\n"
+        "raise RuntimeError('PYTHONPATH shadow executed')\n",
+        encoding="utf-8",
+    )
+    # Force the hardened command to reach the exact-HEAD rejection after its
+    # safe imports instead of depending on a local OpenClaw installation.
+    (checkout / "scripts" / "unexpected-material.txt").write_text("extra\n")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(malicious)
+
+    result = subprocess.run(
+        _entrypoint_command(script, checkout),
+        cwd=checkout,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert not sentinel.exists(), result.stderr
+    assert (
+        "extra non-HEAD file" in result.stderr
+        or "repository source validation failed" in result.stderr
+    )
 
 
 def test_canonical_contract_digest_rejects_missing_malformed_and_duplicate_keys(
