@@ -148,6 +148,21 @@ def gateway_approval_payload(
     }
 
 
+def native_tool_envelope(receipt):
+    return {
+        "ok": True,
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(receipt, separators=(",", ":")),
+                }
+            ],
+            "details": receipt,
+        },
+    }
+
+
 class FakeCLI:
     def __init__(
         self,
@@ -342,7 +357,7 @@ class FakeCLI:
             "nonce": nonce,
             "status": status,
         }
-        return CommandResult(200, json.dumps({"details": details}), "")
+        return CommandResult(200, json.dumps(native_tool_envelope(details)), "")
 
     def probe_configured_agent_guard(self, *, agent_id, nonce):
         self.configured_agent_guard_probe_calls.append(
@@ -1341,6 +1356,48 @@ def test_existing_agent_with_different_workspace_is_not_claimed(tmp_path):
     assert cli.mutating_calls == []
 
 
+def test_different_agent_workspace_collision_is_rejected_before_mutation(tmp_path):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = FakeCLI(primary_agent_id=options.agent_id)
+    cli.extra_agents["main"] = {
+        "id": "main",
+        "workspace": str(options.workspace / ".." / options.workspace.name),
+    }
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "already belongs to agent main" in result.render().lower()
+    assert cli.mutating_calls == []
+
+
+def test_different_agent_with_distinct_workspace_does_not_block_setup(tmp_path):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = FakeCLI(primary_agent_id=options.agent_id)
+    cli.extra_agents["main"] = {
+        "id": "main",
+        "workspace": str(tmp_path / "main-workspace"),
+    }
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+
+
+def test_workspace_collision_identity_resolves_symlink_aliases(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    alias = tmp_path / "workspace-alias"
+    try:
+        alias.symlink_to(workspace, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this platform")
+
+    assert setup_openclaw._canonical_workspace_key(str(alias)) == (
+        setup_openclaw._canonical_workspace_key(str(workspace))
+    )
+
+
 def test_repair_stops_if_agent_workspace_changes_before_write(tmp_path):
     options = make_options(tmp_path)
     agent = {
@@ -2088,6 +2145,67 @@ def test_production_probe_prompt_uses_exact_canonical_harmless_read():
     assert "operation search_leads" not in source
     assert "operation generate_dashboard_insights" in source
     assert "probe_nonce" in source
+
+
+def test_setup_channel_marker_accepts_the_canonical_native_tool_envelope():
+    cli = FakeCLI()
+
+    setup_openclaw._verify_channel_marker(
+        cli,
+        "openhouse-crm",
+        "a" * 32,
+        "openhouse-dashboard",
+    )
+
+
+@pytest.mark.parametrize(
+    "payload_factory",
+    [
+        lambda receipt: {"details": receipt},
+        lambda receipt: {"ok": True, "result": receipt},
+        lambda receipt: {"ok": True, "result": {"details": receipt}},
+        lambda receipt: {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": "{}"}],
+                "details": receipt,
+            },
+        },
+        lambda receipt: {**native_tool_envelope(receipt), "extra": True},
+    ],
+    ids=(
+        "top-level-details",
+        "bare-result",
+        "missing-content",
+        "non-mirrored-content",
+        "extra-top-level-field",
+    ),
+)
+def test_setup_channel_marker_rejects_noncanonical_native_tool_envelopes(
+    payload_factory,
+):
+    nonce = "b" * 32
+    channel = "openhouse-dashboard"
+    receipt = {
+        "schema_version": 1,
+        "channel": channel,
+        "nonce": nonce,
+        "status": "tool_blocked",
+    }
+    cli = FakeCLI()
+    cli.probe_channel_status = lambda **_kwargs: CommandResult(
+        200,
+        json.dumps(payload_factory(receipt)),
+        "",
+    )
+
+    with pytest.raises(SetupConflict, match="incompatible status"):
+        setup_openclaw._verify_channel_marker(
+            cli,
+            "openhouse-crm",
+            nonce,
+            channel,
+        )
 
 
 def test_installed_state_reproves_behavior_instead_of_trusting_serialized_label(

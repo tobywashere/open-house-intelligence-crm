@@ -1115,6 +1115,7 @@ def _suitable_lead(leads: list[dict]) -> dict | None:
         and lead["id"] > 0
         and isinstance(lead.get("name"), str)
         and bool(lead["name"].strip())
+        and lead.get("status") in {"new", "contacted", "meeting_booked"}
     ]
     return min(candidates, key=lambda lead: lead["id"]) if candidates else None
 
@@ -1439,7 +1440,7 @@ def _run_invalid_write(
     flow_timeout: float = WRITE_FLOW_TIMEOUT_SECONDS,
 ) -> bool:
     monotonic = clock or _SETTLE_CLOCK
-    flow_deadline = monotonic() + flow_timeout
+    flow_deadline: float | None = None
     name = f"OHI ACCEPTANCE INVALID {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
@@ -1470,6 +1471,7 @@ def _run_invalid_write(
             )
         except Exception as exc:
             error = error or _safe_error(exc)
+        flow_deadline = monotonic() + flow_timeout
         try:
             (
                 owned,
@@ -1488,6 +1490,8 @@ def _run_invalid_write(
             error = error or "proposal ownership unknown"
         if ownership_known:
             try:
+                if flow_deadline is None:
+                    raise ValueError("write verification deadline was not initialized")
                 lead_applied = _lead_exists(
                     _request_list(api, "GET", "/leads"), name
                 )
@@ -1589,7 +1593,7 @@ def _run_reviewed_write(
     flow_timeout: float = WRITE_FLOW_TIMEOUT_SECONDS,
 ) -> bool:
     monotonic = clock or _SETTLE_CLOCK
-    flow_deadline = monotonic() + flow_timeout
+    flow_deadline: float | None = None
     name = f"OHI ACCEPTANCE TEST {test_id}"
     baseline_ids: set[int] | None = None
     owned: dict[int, dict] = {}
@@ -1625,6 +1629,7 @@ def _run_reviewed_write(
                 )
             except Exception as exc:
                 error = error or _safe_error(exc)
+            flow_deadline = monotonic() + flow_timeout
             match = PENDING_RE.search(reply)
             if match:
                 reported_pending_id = int(match.group(1))
@@ -1647,6 +1652,8 @@ def _run_reviewed_write(
 
             if ownership_known:
                 try:
+                    if flow_deadline is None:
+                        raise ValueError("write verification deadline was not initialized")
                     if len(owned) == 1:
                         pending_id = next(iter(owned))
                     if unattributed_ids:
@@ -1707,6 +1714,8 @@ def _run_reviewed_write(
             verification_failed = False
             if write_sent and ownership_known:
                 try:
+                    if flow_deadline is None:
+                        raise ValueError("write verification deadline was not initialized")
                     if baseline_ids is None:
                         raise ValueError("proposal cleanup context was incomplete")
                     absent_after = not _lead_exists(
@@ -1832,7 +1841,7 @@ def _run_reviewed_booking(
     flow_timeout: float = WRITE_FLOW_TIMEOUT_SECONDS,
 ) -> bool:
     monotonic = clock or _SETTLE_CLOCK
-    flow_deadline = monotonic() + flow_timeout
+    flow_deadline: float | None = None
     marker = f"OHI-ACCEPTANCE-BOOKING-{test_id}"
     location = f"{marker}, 1 Review Queue Way"
     baseline_pending_ids: set[int] | None = None
@@ -1903,6 +1912,7 @@ def _run_reviewed_booking(
                     )
                 except Exception as exc:
                     error = error or _safe_error(exc)
+                flow_deadline = monotonic() + flow_timeout
                 match = PENDING_RE.search(reply)
                 if match:
                     reported_pending_id = int(match.group(1))
@@ -1925,6 +1935,10 @@ def _run_reviewed_booking(
 
                 if ownership_known:
                     try:
+                        if flow_deadline is None:
+                            raise ValueError(
+                                "write verification deadline was not initialized"
+                            )
                         applied_before = _booking_applied(
                             _appointment_snapshot(api),
                             set(baseline_appointments),
@@ -2010,6 +2024,8 @@ def _run_reviewed_booking(
                 except Exception:
                     failures.append(candidate)
             try:
+                if flow_deadline is None:
+                    raise ValueError("write verification deadline was not initialized")
                 if expected_payload is None or baseline_pending_ids is None:
                     raise ValueError("booking cleanup context was incomplete")
                 if baseline_appointments is None:

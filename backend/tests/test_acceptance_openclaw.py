@@ -1512,6 +1512,74 @@ def test_each_write_flow_rejects_a_final_pending_refresh_past_its_deadline(
     assert 0 < api.final_timeout <= 20.0
 
 
+@pytest.mark.parametrize(
+    ("phase", "runner"),
+    (
+        ("invalid", acceptance._run_invalid_write),
+        ("reviewed", acceptance._run_reviewed_write),
+        ("booking", acceptance._run_reviewed_booking),
+    ),
+)
+def test_each_write_flow_starts_its_verification_budget_after_slow_chat(
+    phase, runner
+):
+    clock = _SettlingClock()
+
+    class SlowChatAPI(FakeAPI):
+        def request(self, method, path, payload=None, *, timeout=None):
+            result = super().request(method, path, payload, timeout=timeout)
+            if method == "POST" and path == "/chat":
+                clock.now += 30.0
+            return result
+
+    checks = []
+    cleanup = []
+    passed = runner(
+        SlowChatAPI(),
+        checks,
+        cleanup,
+        session_id=f"slow-chat-{phase}",
+        test_id="slow-chat",
+        clock=clock,
+        sleeper=clock.sleep,
+        flow_timeout=20.0,
+    )
+
+    assert passed is True
+
+
+def test_reviewed_write_starts_cleanup_budget_after_slow_chat_failure():
+    clock = _SettlingClock()
+
+    class SlowFailedChatAPI(FakeAPI):
+        def request(self, method, path, payload=None, *, timeout=None):
+            result = super().request(method, path, payload, timeout=timeout)
+            if method == "POST" and path == "/chat":
+                clock.now += 30.0
+                raise acceptance.ApiError(504, "chat timed out")
+            return result
+
+    api = SlowFailedChatAPI()
+    checks = []
+    cleanup = []
+    passed = acceptance._run_reviewed_write(
+        api,
+        checks,
+        cleanup,
+        session_id="slow-failed-chat",
+        test_id="slow-failed-chat",
+        clock=clock,
+        sleeper=clock.sleep,
+        flow_timeout=20.0,
+    )
+
+    assert passed is False
+    assert cleanup_by_name({"cleanup": cleanup}, "Deny disposable proposal")[
+        "level"
+    ] == "PASS"
+    assert api.denied == [17]
+
+
 def test_reviewed_write_is_pending_never_applied_then_denied_and_absent():
     api = FakeAPI()
 
@@ -2584,6 +2652,43 @@ def test_booking_prompt_uses_only_validated_numeric_lead_id_not_untrusted_name()
     )
     assert untrusted_name not in booking_message
     assert "lead ID 1" in booking_message
+
+
+def test_booking_skips_closed_lowest_id_and_uses_lowest_eligible_lead():
+    api = FakeAPI()
+    api.leads = [
+        {"id": 1, "name": "Closed customer", "status": "closed"},
+        {"id": 4, "name": "Later eligible", "status": "meeting_booked"},
+        {"id": 2, "name": "First eligible", "status": "contacted"},
+    ]
+    api.directory_count = 3
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "PASS"
+    booking_message = next(
+        payload["message"]
+        for method, path, payload in api.request_calls
+        if method == "POST"
+        and path == "/chat"
+        and payload is not None
+        and "BOOKING_MARKER=" in payload["message"]
+    )
+    assert "lead ID 2" in booking_message
+
+
+def test_booking_fails_without_writing_when_all_leads_are_closed():
+    api = FakeAPI()
+    api.leads = [
+        {"id": 1, "name": "Closed one", "status": "closed"},
+        {"id": 2, "name": "Closed two", "status": "closed"},
+    ]
+    api.directory_count = 2
+
+    result = run(api, allow_test_write=True)
+
+    assert by_name(result, "Reviewed booking")["level"] == "FAIL"
+    assert 41 not in api.pending_posts
 
 
 def test_booking_sent_without_exact_owned_proposal_is_cleanup_failure():

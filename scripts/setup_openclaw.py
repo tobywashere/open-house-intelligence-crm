@@ -4134,6 +4134,35 @@ def _same_workspace(configured: Any, requested: Path) -> bool:
         return False
 
 
+def _canonical_workspace_key(workspace: Any) -> str | None:
+    if not isinstance(workspace, str) or not workspace.strip():
+        return None
+    try:
+        resolved = Path(workspace).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        raise SetupConflict("configured agent workspace could not be resolved") from None
+    return os.path.normcase(os.path.abspath(str(resolved)))
+
+
+def _reject_workspace_collisions(
+    agent_id: str, workspace: Path, rosters: tuple[list[dict], ...]
+) -> None:
+    requested = _canonical_workspace_key(str(workspace))
+    if requested is None:
+        raise SetupConflict("requested agent workspace could not be resolved")
+    for roster in rosters:
+        for agent in roster:
+            other_id = agent.get("id")
+            if not isinstance(other_id, str) or other_id == agent_id:
+                continue
+            configured = agent.get("workspace") or agent.get("workspacePath")
+            if _canonical_workspace_key(configured) == requested:
+                raise SetupConflict(
+                    f"requested workspace already belongs to agent {other_id}; "
+                    "choose a dedicated workspace before running setup"
+                )
+
+
 def _managed_agent_snapshot(agent: dict[str, Any]) -> dict[str, Any]:
     return {
         field: agent[field]
@@ -5387,21 +5416,42 @@ def _verify_analysis_completion(result: CommandResult) -> None:
 
 
 def _channel_probe_details(payload: Any) -> dict[str, Any] | None:
-    if not isinstance(payload, dict):
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"ok", "result"}
+        or payload.get("ok") is not True
+    ):
         return None
-    candidates = [payload.get("details")]
     result = payload.get("result")
-    if isinstance(result, dict):
-        candidates.extend([result, result.get("details")])
-    for candidate in candidates:
-        if isinstance(candidate, dict) and set(candidate) == {
-            "schema_version",
-            "channel",
-            "nonce",
-            "status",
-        }:
-            return candidate
-    return None
+    if (
+        not isinstance(result, dict)
+        or set(result) != {"content", "details"}
+        or not isinstance(result.get("details"), dict)
+    ):
+        return None
+    content = result.get("content")
+    if (
+        not isinstance(content, list)
+        or len(content) != 1
+        or not isinstance(content[0], dict)
+        or set(content[0]) != {"type", "text"}
+        or content[0].get("type") != "text"
+        or not isinstance(content[0].get("text"), str)
+    ):
+        return None
+    try:
+        mirrored = json.loads(content[0]["text"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    details = result["details"]
+    if mirrored != details or set(details) != {
+        "schema_version",
+        "channel",
+        "nonce",
+        "status",
+    }:
+        return None
+    return details
 
 
 def _verify_channel_marker(
@@ -5832,6 +5882,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             cli, allow_missing=True, label="initial agents config"
         )
         configured_agents = configured_roster.records
+        _reject_workspace_collisions(
+            options.agent_id,
+            options.workspace,
+            (agents, configured_agents),
+        )
         listed_agent = next(
             (agent for agent in agents if agent.get("id") == options.agent_id), None
         )
