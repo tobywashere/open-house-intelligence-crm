@@ -534,6 +534,15 @@ def _run_invalid_write(
         and not owned
         and not lead_applied
     )
+    evidence = (
+        {
+            "new_pending_count": "unknown",
+            "lead_applied": "unknown",
+            "ownership": "unknown",
+        }
+        if write_sent and not ownership_known
+        else {"new_pending_count": len(owned), "lead_applied": lead_applied}
+    )
     checks.append(
         _entry(
             "PASS" if passed else "FAIL",
@@ -543,7 +552,7 @@ def _run_invalid_write(
                 if passed
                 else error or "invalid write did not prove that nothing changed"
             ),
-            {"new_pending_count": len(owned), "lead_applied": lead_applied},
+            evidence,
         )
     )
     if write_sent and not ownership_known:

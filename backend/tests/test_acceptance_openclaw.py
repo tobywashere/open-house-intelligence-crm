@@ -538,6 +538,11 @@ def test_invalid_write_snapshot_uncertainty_is_explicit_cleanup_failure():
     assert api.pending_get_calls == 1 + acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
     assert api.denied == []
     assert "no proposal" not in cleanup["detail"].lower()
+    assert by_name(result, "Invalid write")["evidence"] == {
+        "new_pending_count": "unknown",
+        "lead_applied": "unknown",
+        "ownership": "unknown",
+    }
     assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
     assert acceptance.exit_code(result) == 1
 
