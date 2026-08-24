@@ -276,7 +276,7 @@ def main() -> int:
     parser.add_argument(
         "--live-crm",
         action="store_true",
-        help="ask OpenClaw to make one audited, read-only CRM capability call",
+        help="directly invoke one audited, read-only CRM call through OpenClaw",
     )
     parser.add_argument(
         "--live-timeout",

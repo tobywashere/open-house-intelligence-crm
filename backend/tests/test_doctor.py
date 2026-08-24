@@ -31,6 +31,7 @@ def test_doctor_help_lists_live_agent_check():
     assert "--live-timeout" in result.stdout
     assert "--base-url" in result.stdout
     assert "--json" in result.stdout
+    assert "directly invoke one audited, read-only CRM call" in result.stdout
 
 
 @pytest.mark.parametrize(
