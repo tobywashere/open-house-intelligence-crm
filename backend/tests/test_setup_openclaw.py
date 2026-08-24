@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1764,6 +1765,39 @@ def test_tracked_tree_manifest_rejects_ignored_extra_files(tmp_path):
         setup_openclaw._tracked_head_tree(repo, Path("skills/demo"), "test tree")
 
 
+def test_tracked_tree_manifest_ignores_only_strict_inert_pycache(tmp_path):
+    repo, root = _committed_tree(tmp_path)
+    cache = root / "__pycache__"
+    cache.mkdir()
+    (cache / "runner.cpython-313.pyc").write_bytes(b"inert cache bytes")
+
+    manifest = setup_openclaw._tracked_head_tree(
+        repo, Path("skills/demo"), "test tree"
+    )
+
+    assert [entry["path"] for entry in manifest["entries"]] == ["runner.py"]
+
+
+@pytest.mark.parametrize(
+    ("relative", "contents"),
+    [
+        (Path("node_modules/evil.js"), b"executable source"),
+        (Path(".DS_Store"), b"metadata"),
+        (Path("__pycache__/evil.py"), b"source-like cache entry"),
+    ],
+)
+def test_tracked_tree_manifest_rejects_noncache_ignored_material(
+    tmp_path, relative, contents
+):
+    repo, root = _committed_tree(tmp_path)
+    extra = root / relative
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_bytes(contents)
+
+    with pytest.raises(SetupConflict, match="non-HEAD|cache"):
+        setup_openclaw._tracked_head_tree(repo, Path("skills/demo"), "test tree")
+
+
 def test_tracked_tree_manifest_records_and_enforces_executable_mode(tmp_path):
     repo, root = _committed_tree(tmp_path)
 
@@ -3210,6 +3244,62 @@ def test_sync_skills_copies_canonical_directories_and_sets_entrypoints_executabl
     ]
     assert (targets[0] / "cli.py").stat().st_mode & 0o111
     assert (targets[3] / "scripts" / "run_daily_brief.py").stat().st_mode & 0o111
+
+
+def test_sync_skills_excludes_strict_generated_pycache(tmp_path):
+    repo = tmp_path / "repo"
+    shutil.copytree(
+        REPO_ROOT / "skills",
+        repo / "skills",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    for name in setup_openclaw.SKILL_NAMES:
+        cache = repo / "skills" / name / "__pycache__"
+        cache.mkdir()
+        (cache / f"{name.replace('-', '_')}.cpython-313.pyc").write_bytes(
+            b"generated cache"
+        )
+    workspace = tmp_path / "workspace"
+
+    targets = sync_skills(repo, workspace, dry_run=False)
+
+    assert all(not list(target.rglob("*.pyc")) for target in targets)
+    assert all(not list(target.rglob("__pycache__")) for target in targets)
+
+
+def test_documented_python_commands_never_create_or_read_repo_bytecode(tmp_path):
+    checkout = tmp_path / "checkout"
+    shutil.copytree(
+        REPO_ROOT / "scripts",
+        checkout / "scripts",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    shutil.copytree(
+        REPO_ROOT / "backend",
+        checkout / "backend",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    environment.pop("PYTHONPYCACHEPREFIX", None)
+
+    for script in (
+        "setup_openclaw.py",
+        "capture_setup_evidence.py",
+        "acceptance_openclaw.py",
+    ):
+        result = subprocess.run(
+            [sys.executable, f"scripts/{script}", "--help"],
+            cwd=checkout,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    assert not list(checkout.rglob("__pycache__"))
+    assert not list(checkout.rglob("*.pyc"))
 
 
 def test_canonical_contract_digest_rejects_missing_malformed_and_duplicate_keys(

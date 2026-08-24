@@ -407,9 +407,11 @@ after each run. The helper requires a clean, unchanged exact revision before and
 after both runs. Acceptance recomputes each snapshot digest and strictly checks
 the tracked HEAD files, content digests, executable modes, shipped and installed
 skills, plugin registration/configuration and runtime inventory, agent policy,
-bindings, executable approvals, and relevant gateway references. Modified,
-missing, or ignored extra files in any material source tree are a required
-failure, as are partial, failed, malformed, mismatched-state, dirty-worktree,
+bindings, executable approvals, and relevant gateway references. Strict
+generated `__pycache__` bytecode is isolated from imports and excluded from
+skill copies; every other modified, missing, ignored, or untracked material
+file is a required failure, as are partial, malformed, mismatched-state,
+dirty-worktree,
 changed-HEAD, or wrong-revision evidence. Sanitized setup logs are manual
 diagnostics only and cannot make `Setup twice` pass.
 Shared JSON includes no raw logs, local paths, home data, or secrets.
@@ -479,7 +481,8 @@ sanitized evidence prove all of the following without manual repair:
    report validates their complete canonical installed-state snapshots as
    identical on a clean, unchanged exact revision whose tracked HEAD files,
    content digests, and executable modes match at every checkpoint, with no
-   ignored extra files in material setup trees;
+   unexpected extra files in material setup trees; strict generated Python
+   cache files are isolated, excluded from copies, and never loaded;
 2. the doctor records an audited direct CRM call;
 3. dashboard chat reports the exact real lead count;
 4. dashboard chat queues a natural-language disposable write and names the

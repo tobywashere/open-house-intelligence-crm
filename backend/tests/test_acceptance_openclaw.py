@@ -1444,12 +1444,33 @@ def test_setup_evidence_capture_runs_setup_twice_and_writes_only_sanitized_logs(
         "after_run_2",
     ]
     saved = json.loads(manifest_path.read_text())
-    assert saved == result
+    assert saved["artifact_schema_version"] == 1
+    assert saved["payload"] == result
+    assert saved["payload_sha256"] == hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     for sequence in (1, 2):
         text = (tmp_path / f"openhouse-setup-run-{sequence}.log").read_text()
         assert all(secret not in text for secret in secrets.values())
         assert str(Path.home()) not in text
         assert "127.0.0.1" not in text
+
+
+def test_setup_evidence_subprocess_explicitly_uses_isolated_source_only_bytecode(
+    monkeypatch,
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    observed: dict = {}
+
+    def run(*args, **kwargs):
+        observed.update(kwargs)
+        return capture.subprocess.CompletedProcess(args, 1, "", "setup failed")
+
+    monkeypatch.setattr(capture.subprocess, "run", run)
+
+    assert capture._run_setup(1)[0] == 1
+    assert observed["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert observed["env"]["PYTHONPYCACHEPREFIX"] == capture.sys.pycache_prefix
 
 
 def test_setup_evidence_structured_state_detects_material_differences(tmp_path):
@@ -1574,7 +1595,7 @@ def test_private_evidence_write_completes_partial_os_writes(monkeypatch, tmp_pat
     assert path.read_bytes() == b"complete durable content"
 
 
-def test_private_evidence_write_removes_only_its_partial_file_on_verify_failure(
+def test_private_evidence_write_scrubs_its_partial_file_on_verify_failure(
     monkeypatch, tmp_path
 ):
     capture = importlib.import_module("scripts.capture_setup_evidence")
@@ -1590,8 +1611,42 @@ def test_private_evidence_write_removes_only_its_partial_file_on_verify_failure(
     with pytest.raises(OSError, match="verify failed"):
         capture._write_private_verified(path, b"partial")
 
-    assert not path.exists()
+    assert path.exists()
+    assert path.read_bytes() == b""
+    assert path.stat().st_mode & 0o777 == 0o600
     assert unrelated.read_text() == "keep"
+
+
+def test_private_evidence_failure_never_unlinks_or_renames_a_leaf(
+    monkeypatch, tmp_path
+):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    path = tmp_path / "evidence.json"
+    monkeypatch.setattr(
+        capture,
+        "_verify_private_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("verify failed")),
+    )
+    unlink_calls: list[object] = []
+    rename_calls: list[object] = []
+
+    def record_unlink(*args, **kwargs):
+        unlink_calls.append((args, kwargs))
+        raise AssertionError("leaf unlink is unsafe")
+
+    def record_rename(*args, **kwargs):
+        rename_calls.append((args, kwargs))
+        raise AssertionError("leaf rename is unsafe")
+
+    monkeypatch.setattr(capture.os, "unlink", record_unlink)
+    monkeypatch.setattr(capture.os, "rename", record_rename)
+
+    with pytest.raises(OSError, match="verify failed"):
+        capture._write_private_verified(path, b"partial")
+
+    assert unlink_calls == []
+    assert rename_calls == []
+    assert path.read_bytes() == b""
 
 
 def test_private_evidence_write_rejects_intermediate_ancestor_swap(
@@ -1649,6 +1704,28 @@ def test_private_evidence_write_rejects_identical_leaf_replacement(
         capture._write_private_verified(target, content)
 
     assert target.read_bytes() == content
+
+
+def test_setup_evidence_loader_nofollow_opens_and_verifies_payload_digest(tmp_path):
+    payload = setup_evidence(revision="a" * 40)
+    artifact = {
+        "artifact_schema_version": 1,
+        "payload": payload,
+        "payload_sha256": hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+    }
+    path = tmp_path / "setup-evidence.json"
+    path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+
+    assert acceptance._load_setup_evidence(path) == payload
+
+    artifact["payload"]["revision"] = "b" * 40
+    path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+    with pytest.raises(ValueError, match="digest"):
+        acceptance._load_setup_evidence(path)
 
 
 def test_natural_language_booking_is_pending_unapplied_denied_and_absent():

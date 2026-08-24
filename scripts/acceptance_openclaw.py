@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
+
+_SOURCE_ONLY_PYCACHE = tempfile.TemporaryDirectory(prefix="openhouse-source-only-")
+sys.dont_write_bytecode = True
+sys.pycache_prefix = _SOURCE_ONLY_PYCACHE.name
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["PYTHONPYCACHEPREFIX"] = _SOURCE_ONLY_PYCACHE.name
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
@@ -234,7 +241,7 @@ def _capture_dependencies() -> dict[str, str]:
 
 
 def _load_setup_evidence(path: Path) -> object:
-    """Read one small regular JSON evidence file without following its leaf."""
+    """Nofollow-read one bounded artifact and verify its canonical payload digest."""
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -243,18 +250,52 @@ def _load_setup_evidence(path: Path) -> object:
     except OSError as exc:
         raise ValueError("setup evidence could not be read") from exc
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 64 * 1024:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 64 * 1024:
             raise ValueError("setup evidence was not a bounded regular file")
-        raw = os.read(descriptor, 64 * 1024 + 1)
+        chunks: list[bytes] = []
+        remaining = 64 * 1024 + 1
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
         if len(raw) > 64 * 1024:
             raise ValueError("setup evidence exceeded the safe size limit")
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(raw) != after.st_size
+        ):
+            raise ValueError("setup evidence changed while it was read")
     finally:
         os.close(descriptor)
     try:
-        return json.loads(raw)
+        artifact = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("setup evidence was not valid JSON") from exc
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact)
+        != {"artifact_schema_version", "payload", "payload_sha256"}
+        or artifact.get("artifact_schema_version") != 1
+        or not isinstance(artifact.get("payload"), dict)
+        or not isinstance(artifact.get("payload_sha256"), str)
+        or SHA256_RE.fullmatch(artifact["payload_sha256"]) is None
+    ):
+        raise ValueError("setup evidence artifact schema was invalid")
+    try:
+        payload_bytes = json.dumps(
+            artifact["payload"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("setup evidence artifact payload was invalid") from exc
+    if hashlib.sha256(payload_bytes).hexdigest() != artifact["payload_sha256"]:
+        raise ValueError("setup evidence artifact digest did not match its payload")
+    return artifact["payload"]
 
 
 def _parse_evidence_time(value: object) -> datetime:

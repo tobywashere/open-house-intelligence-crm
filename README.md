@@ -62,10 +62,11 @@ the same setup command if it reports a partial installation.
 
 For a hardware acceptance report, first capture two explicit setup runs. This
 helper runs setup twice and saves machine-verifiable evidence tied to the
-tested revision, which must remain clean. It also compares a canonical structured snapshot of
+tested revision, which must remain clean. It also compares canonical structured snapshots of
 the installed skills, plugin, agent policy, bindings, approvals, and gateway
 references after each run. The snapshot covers tracked HEAD files and executable
-modes; modified, missing, or ignored extra files in setup material fail closed.
+modes; modified, missing, or unexpected extra files in setup material fail closed.
+Strict generated Python caches are isolated and never copied or loaded.
 Sanitized run logs are manual diagnostics only. The acceptance report shows the
 structured proof as `Setup twice`:
 

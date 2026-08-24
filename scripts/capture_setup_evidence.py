@@ -10,10 +10,18 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
+
+_SOURCE_ONLY_PYCACHE = tempfile.TemporaryDirectory(prefix="openhouse-source-only-")
+sys.dont_write_bytecode = True
+sys.pycache_prefix = _SOURCE_ONLY_PYCACHE.name
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["PYTHONPYCACHEPREFIX"] = _SOURCE_ONLY_PYCACHE.name
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
@@ -81,9 +89,13 @@ def _sanitize_output(value: str) -> str:
 
 
 def _run_setup(_sequence: int) -> tuple[int, str, int, dict | None]:
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPYCACHEPREFIX"] = str(sys.pycache_prefix)
     result = subprocess.run(
         [sys.executable, "scripts/setup_openclaw.py"],
         cwd=REPO,
+        env=environment,
         text=True,
         capture_output=True,
         check=False,
@@ -127,36 +139,45 @@ def _private_parent(path: Path) -> tuple[Path, int]:
 
 
 def _verify_private_file(
-    parent_fd: int,
-    leaf: str,
-    expected: bytes,
-    identity: tuple[int, int],
+    descriptor: int, expected: bytes, identity: tuple[int, int]
 ) -> None:
-    descriptor = -1
+    before = os.fstat(descriptor)
+    if (before.st_dev, before.st_ino) != identity:
+        raise OSError("evidence verification found a changed file identity")
+    if not stat.S_ISREG(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o600:
+        raise OSError("evidence verification found an unsupported file")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        size += len(chunk)
+        digest.update(chunk)
+    after = os.fstat(descriptor)
+    if (
+        (after.st_dev, after.st_ino) != identity
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+        or size != len(expected)
+        or digest.digest() != hashlib.sha256(expected).digest()
+    ):
+        raise OSError("evidence verification did not match the complete content")
+
+
+def _verify_private_leaf(
+    parent_fd: int, leaf: str, expected: bytes, identity: tuple[int, int]
+) -> None:
+    descriptor = os.open(
+        leaf,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent_fd,
+    )
     try:
-        descriptor = os.open(
-            leaf,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_fd,
-        )
-        node = os.fstat(descriptor)
-        if (node.st_dev, node.st_ino) != identity:
-            raise OSError("evidence verification found a changed file identity")
-        if not stat.S_ISREG(node.st_mode) or stat.S_IMODE(node.st_mode) != 0o600:
-            raise OSError("evidence verification found an unsupported file")
-        digest = hashlib.sha256()
-        size = 0
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            digest.update(chunk)
-        if size != len(expected) or digest.digest() != hashlib.sha256(expected).digest():
-            raise OSError("evidence verification did not match the complete content")
+        _verify_private_file(descriptor, expected, identity)
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        os.close(descriptor)
 
 
 def _parent_identity_matches_path(path: Path, parent_fd: int) -> None:
@@ -170,35 +191,43 @@ def _parent_identity_matches_path(path: Path, parent_fd: int) -> None:
         os.close(current_fd)
 
 
-def _remove_owned_private_file_at(
-    parent_fd: int, leaf: str, identity: tuple[int, int]
-) -> None:
-    try:
-        node = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError:
-        return
-    if stat.S_ISREG(node.st_mode) and (node.st_dev, node.st_ino) == identity:
-        os.unlink(leaf, dir_fd=parent_fd)
-        os.fsync(parent_fd)
+def _scrub_private_descriptor(descriptor: int, parent_fd: int) -> None:
+    os.fchmod(descriptor, 0o600)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    os.ftruncate(descriptor, 0)
+    os.fsync(descriptor)
+    os.fsync(parent_fd)
 
 
-def _remove_owned_private_file(path: Path, identity: tuple[int, int]) -> None:
-    try:
-        absolute, parent_fd = _private_parent(path)
-    except OSError:
-        return
-    try:
-        _remove_owned_private_file_at(parent_fd, absolute.name, identity)
-    finally:
-        os.close(parent_fd)
+@dataclass
+class _PrivateArtifact:
+    descriptor: int
+    parent_fd: int
+    identity: tuple[int, int]
+
+    def invalidate(self) -> None:
+        try:
+            _scrub_private_descriptor(self.descriptor, self.parent_fd)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self.descriptor >= 0:
+            os.close(self.descriptor)
+            self.descriptor = -1
+        if self.parent_fd >= 0:
+            os.close(self.parent_fd)
+            self.parent_fd = -1
 
 
-def _write_private_verified(path: Path, content: bytes) -> tuple[int, int]:
+def _write_private_verified(
+    path: Path, content: bytes, *, retain: bool = False
+) -> tuple[int, int] | _PrivateArtifact:
     absolute, parent_fd = _private_parent(path)
     descriptor = -1
     identity: tuple[int, int] | None = None
     try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(absolute.name, flags, 0o600, dir_fd=parent_fd)
         node = os.fstat(descriptor)
         if not stat.S_ISREG(node.st_mode):
@@ -211,20 +240,30 @@ def _write_private_verified(path: Path, content: bytes) -> tuple[int, int]:
                 raise OSError("evidence write did not make progress")
             view = view[written:]
         os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
         os.fsync(parent_fd)
-        _verify_private_file(parent_fd, absolute.name, content, identity)
+        _verify_private_file(descriptor, content, identity)
+        _verify_private_leaf(parent_fd, absolute.name, content, identity)
         _parent_identity_matches_path(absolute, parent_fd)
+        if retain:
+            artifact = _PrivateArtifact(descriptor, parent_fd, identity)
+            descriptor = -1
+            parent_fd = -1
+            return artifact
         return identity
-    except Exception:
+    except Exception as exc:
         if identity is not None:
-            _remove_owned_private_file_at(parent_fd, absolute.name, identity)
+            try:
+                _scrub_private_descriptor(descriptor, parent_fd)
+            except OSError as scrub_error:
+                raise OSError(
+                    "evidence write failed and its private artifact could not be scrubbed"
+                ) from scrub_error
         raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        os.close(parent_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
 
 
 def capture_setup_evidence(
@@ -312,20 +351,44 @@ def capture_setup_evidence(
         "repository_checks": repository_checks,
         "runs": records,
     }
-    written: list[tuple[Path, tuple[int, int]]] = []
+    payload_sha256 = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    artifact_envelope = {
+        "artifact_schema_version": 1,
+        "payload": manifest,
+        "payload_sha256": payload_sha256,
+    }
+    written: list[_PrivateArtifact] = []
     try:
         for log_path, content in logs:
-            identity = _write_private_verified(log_path, content.encode("utf-8"))
-            written.append((log_path, identity))
+            artifact = _write_private_verified(
+                log_path, content.encode("utf-8"), retain=True
+            )
+            if not isinstance(artifact, _PrivateArtifact):
+                raise OSError("evidence writer did not retain its verified descriptor")
+            written.append(artifact)
         manifest_bytes = (
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+            json.dumps(artifact_envelope, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
-        identity = _write_private_verified(output, manifest_bytes)
-        written.append((output, identity))
-    except Exception:
-        for path, identity in reversed(written):
-            _remove_owned_private_file(path, identity)
+        artifact = _write_private_verified(output, manifest_bytes, retain=True)
+        if not isinstance(artifact, _PrivateArtifact):
+            raise OSError("evidence writer did not retain its verified descriptor")
+        written.append(artifact)
+    except Exception as exc:
+        invalidation_failed = False
+        for artifact in reversed(written):
+            try:
+                artifact.invalidate()
+            except OSError:
+                invalidation_failed = True
+        if invalidation_failed:
+            raise OSError(
+                "evidence capture failed and a private artifact could not be scrubbed"
+            ) from exc
         raise
+    for artifact in written:
+        artifact.close()
     return manifest
 
 

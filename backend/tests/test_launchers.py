@@ -347,8 +347,9 @@ def test_setup_evidence_is_explicit_and_tied_to_the_tested_revision_everywhere()
 def test_setup_evidence_uses_exact_head_material_and_logs_are_only_diagnostics():
     required = (
         "tracked HEAD files",
-        "ignored extra files",
+        "unexpected extra files",
         "executable modes",
+        "Python caches are isolated",
         "manual diagnostics only",
     )
     for path in BEGINNER_GUIDES:

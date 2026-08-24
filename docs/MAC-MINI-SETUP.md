@@ -102,10 +102,11 @@ records, chat content, model responses, and your home-directory path.
 
 For a hardware acceptance report, create explicit setup evidence first. The
 helper runs setup twice and records machine-verifiable evidence tied to the
-tested revision, which must remain clean. It also compares a canonical structured snapshot of
+tested revision, which must remain clean. It also compares canonical structured snapshots of
 the installed skills, plugin, agent policy, bindings, approvals, and gateway
 references after each run. It verifies tracked HEAD files and executable modes;
-modified, missing, or ignored extra files in material setup sources fail closed.
+modified, missing, or unexpected extra files in material setup sources fail closed.
+Strict generated Python caches are isolated and never copied or loaded.
 Sanitized run logs are manual diagnostics only and do not make this pass. The
 report names the structured prerequisite `Setup twice`.
 

@@ -24,6 +24,13 @@ from pathlib import Path
 from typing import Any
 
 
+_SOURCE_ONLY_PYCACHE = tempfile.TemporaryDirectory(prefix="openhouse-source-only-")
+sys.dont_write_bytecode = True
+sys.pycache_prefix = _SOURCE_ONLY_PYCACHE.name
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["PYTHONPYCACHEPREFIX"] = _SOURCE_ONLY_PYCACHE.name
+
+
 SKILL_NAMES = (
     "crm-db-operations",
     "business-card-scanner",
@@ -101,6 +108,7 @@ MATERIAL_SHARED_PATHS = (
 MAX_MATERIAL_ENTRIES = 2048
 MAX_BINDINGS = 100
 MAX_PRIVATE_RUNTIME_VALUE = 256
+INERT_PYCACHE_FILE_RE = re.compile(r"[A-Za-z0-9_.-]{1,255}\.pyc")
 
 
 @dataclass(frozen=True)
@@ -815,6 +823,8 @@ def _validate_skill_tree(path: Path, label: str) -> None:
     for entry in path.rglob("*"):
         if entry.is_symlink():
             raise SetupConflict(f"{label} contains a symlink: {entry}")
+        if entry.name == "__pycache__" and entry.is_dir():
+            _validate_inert_pycache(entry, label)
 
 
 def _validate_directory_node(path: Path, label: str) -> None:
@@ -1536,6 +1546,9 @@ def _filesystem_material_files(
                     raise SetupConflict(f"could not inspect {label}") from exc
                 if stat.S_ISLNK(child_node.st_mode) or not stat.S_ISDIR(child_node.st_mode):
                     raise SetupConflict(f"{label} must contain only real directories")
+                if name == "__pycache__":
+                    _validate_inert_pycache(child, label)
+                    directory_names.remove(name)
             for name in file_names:
                 child = current_path / name
                 try:
@@ -1549,6 +1562,34 @@ def _filesystem_material_files(
                 if len(files) > MAX_MATERIAL_ENTRIES:
                     raise SetupConflict(f"{label} contains too many files")
     return files
+
+
+def _validate_inert_pycache(path: Path, label: str) -> None:
+    """Accept only bounded regular bytecode files that this process never loads."""
+    try:
+        entries = list(path.iterdir())
+    except OSError as exc:
+        raise SetupConflict(f"could not inspect {label} cache") from exc
+    if len(entries) > MAX_MATERIAL_ENTRIES:
+        raise SetupConflict(f"{label} cache contains too many files")
+    for entry in entries:
+        try:
+            node = os.lstat(entry)
+        except OSError as exc:
+            raise SetupConflict(f"could not inspect {label} cache") from exc
+        if (
+            not stat.S_ISREG(node.st_mode)
+            or INERT_PYCACHE_FILE_RE.fullmatch(entry.name) is None
+        ):
+            raise SetupConflict(f"{label} contains an unsupported cache entry")
+
+
+def _ignore_inert_pycache(directory: str, names: list[str]) -> list[str]:
+    if "__pycache__" not in names:
+        return []
+    cache = Path(directory) / "__pycache__"
+    _validate_inert_pycache(cache, "shipped skill directory")
+    return ["__pycache__"]
 
 
 def _tracked_head_manifest(
@@ -1708,12 +1749,13 @@ def sync_skills(
                     source_root = _absolute_lexical_path(source)
 
                     def ignore_captured_contract(directory, names):
-                        return (
-                            ["contract.json"]
-                            if _absolute_lexical_path(Path(directory)) == source_root
+                        ignored = set(_ignore_inert_pycache(directory, names))
+                        if (
+                            _absolute_lexical_path(Path(directory)) == source_root
                             and "contract.json" in names
-                            else []
-                        )
+                        ):
+                            ignored.add("contract.json")
+                        return sorted(ignored)
 
                     shutil.copytree(
                         source,
@@ -1725,7 +1767,11 @@ def sync_skills(
                         contract_snapshot.contents,
                     )
                 else:
-                    shutil.copytree(source, staged_skills / name)
+                    shutil.copytree(
+                        source,
+                        staged_skills / name,
+                        ignore=_ignore_inert_pycache,
+                    )
             for path in (
                 staged_skills / "crm-db-operations" / "cli.py",
                 staged_skills / "daily-brief" / "scripts" / "run_daily_brief.py",
@@ -5226,6 +5272,11 @@ def _parse_args(
 
 def main(argv: list[str] | None = None) -> int:
     options = _parse_args(argv)
+    try:
+        _material_head_state(Path(__file__).resolve().parents[1])
+    except SetupConflict as exc:
+        print(_redact_api_token(str(exc)), file=sys.stderr)
+        return 1
     result = configure_openclaw(options, OpenClawCLI())
     stream = sys.stdout if result.ok else sys.stderr
     print(result.render(), file=stream)
