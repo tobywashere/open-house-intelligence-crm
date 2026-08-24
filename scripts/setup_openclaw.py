@@ -4137,18 +4137,37 @@ def _same_workspace(configured: Any, requested: Path) -> bool:
 def _canonical_workspace_key(workspace: Any) -> str | None:
     if not isinstance(workspace, str) or not workspace.strip():
         return None
+    expanded = Path(workspace).expanduser()
     try:
-        resolved = Path(workspace).expanduser().resolve(strict=False)
+        resolved = expanded.resolve(strict=False)
     except (OSError, RuntimeError):
-        raise SetupConflict("configured agent workspace could not be resolved") from None
+        resolved = Path(os.path.abspath(str(expanded)))
     return os.path.normcase(os.path.abspath(str(resolved)))
+
+
+def _workspace_paths_same(left: Any, right: Any) -> bool:
+    if (
+        not isinstance(left, str)
+        or not left.strip()
+        or not isinstance(right, str)
+        or not right.strip()
+    ):
+        return False
+    left_path = Path(left).expanduser()
+    right_path = Path(right).expanduser()
+    try:
+        if os.path.samefile(left_path, right_path):
+            return True
+    except (OSError, ValueError):
+        pass
+    return _canonical_workspace_key(left) == _canonical_workspace_key(right)
 
 
 def _reject_workspace_collisions(
     agent_id: str, workspace: Path, rosters: tuple[list[dict], ...]
 ) -> None:
-    requested = _canonical_workspace_key(str(workspace))
-    if requested is None:
+    requested = str(workspace)
+    if _canonical_workspace_key(requested) is None:
         raise SetupConflict("requested agent workspace could not be resolved")
     for roster in rosters:
         for agent in roster:
@@ -4156,7 +4175,7 @@ def _reject_workspace_collisions(
             if not isinstance(other_id, str) or other_id == agent_id:
                 continue
             configured = agent.get("workspace") or agent.get("workspacePath")
-            if _canonical_workspace_key(configured) == requested:
+            if _workspace_paths_same(configured, requested):
                 raise SetupConflict(
                     f"requested workspace already belongs to agent {other_id}; "
                     "choose a dedicated workspace before running setup"

@@ -1371,6 +1371,34 @@ def test_different_agent_workspace_collision_is_rejected_before_mutation(tmp_pat
     assert cli.mutating_calls == []
 
 
+def test_case_only_workspace_alias_collision_uses_existing_filesystem_identity(
+    tmp_path, monkeypatch
+):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    options.workspace.mkdir()
+    case_alias = str(options.workspace).upper()
+    real_samefile = setup_openclaw.os.path.samefile
+
+    def case_insensitive_samefile(left, right):
+        if {str(left), str(right)} == {str(options.workspace), case_alias}:
+            return True
+        return real_samefile(left, right)
+
+    monkeypatch.setattr(
+        setup_openclaw.os.path,
+        "samefile",
+        case_insensitive_samefile,
+    )
+    cli = FakeCLI(primary_agent_id=options.agent_id)
+    cli.extra_agents["main"] = {"id": "main", "workspace": case_alias}
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "already belongs to agent main" in result.render().lower()
+    assert cli.mutating_calls == []
+
+
 def test_different_agent_with_distinct_workspace_does_not_block_setup(tmp_path):
     options = make_options(tmp_path, agent_id="custom-crm")
     cli = FakeCLI(primary_agent_id=options.agent_id)
@@ -1393,9 +1421,41 @@ def test_workspace_collision_identity_resolves_symlink_aliases(tmp_path):
     except OSError:
         pytest.skip("directory symlinks are unavailable on this platform")
 
-    assert setup_openclaw._canonical_workspace_key(str(alias)) == (
-        setup_openclaw._canonical_workspace_key(str(workspace))
-    )
+    assert setup_openclaw._workspace_paths_same(str(alias), str(workspace)) is True
+
+
+def test_workspace_collision_identity_keeps_distinct_existing_paths_separate(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    assert setup_openclaw._workspace_paths_same(str(first), str(second)) is False
+
+
+def test_workspace_collision_identity_falls_back_for_missing_paths(tmp_path):
+    missing = tmp_path / "missing"
+    lexical_alias = os.path.join(str(tmp_path), "nested", "..", "missing")
+
+    assert setup_openclaw._workspace_paths_same(lexical_alias, str(missing)) is True
+
+
+def test_workspace_collision_identity_falls_back_when_resolution_is_inaccessible(
+    tmp_path, monkeypatch
+):
+    missing = tmp_path / "missing"
+    lexical_alias = os.path.join(str(tmp_path), "nested", "..", "missing")
+    blocked = {str(missing), lexical_alias}
+    real_resolve = setup_openclaw.Path.resolve
+
+    def inaccessible_resolve(path, *args, **kwargs):
+        if str(path) in blocked:
+            raise PermissionError("workspace is inaccessible")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(setup_openclaw.Path, "resolve", inaccessible_resolve)
+
+    assert setup_openclaw._workspace_paths_same(lexical_alias, str(missing)) is True
 
 
 def test_repair_stops_if_agent_workspace_changes_before_write(tmp_path):
