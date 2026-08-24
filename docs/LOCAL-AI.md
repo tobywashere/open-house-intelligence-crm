@@ -416,8 +416,9 @@ account. Fill them in only after a person records a real run.
 - [ ] Sanitized JSON report inspected and attached:
 
 Verify required dashboard behavior and truthful briefing first. Then record
-optional providers in this order. Steps 7 through 10 are conditional and may be
-recorded as SKIP when those optional accounts are not configured:
+optional providers in this order. Steps 5 and 7 through 10 are conditional and
+may be recorded as SKIP when those optional providers or accounts are not
+configured:
 
 - [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
 - [ ] 2. Automated CRM chat acceptance with

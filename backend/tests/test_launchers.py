@@ -71,6 +71,45 @@ def _normalized(text: str) -> str:
     return " ".join(text.split())
 
 
+def _manual_openclaw_policy_repairs(text: str) -> list[str]:
+    safe_command_warnings = re.compile(
+        r"(?:do not|don't|never)\s+(?:run|use|execute)\s+"
+        r"(?:`openclaw\s+config\s+(?:set|patch|unset|delete)\s+[^`]+`|"
+        r"openclaw\s+config\s+(?:set|patch|unset|delete)\s+[^\n;]+)",
+        flags=re.IGNORECASE,
+    )
+    positive_text = safe_command_warnings.sub(" ", text)
+    commands = re.findall(
+        r"openclaw\s+(?:config\s+(?:set|patch|unset|delete)\b|plugins?\s+"
+        r"(?:install|enable|disable|remove))[^\n`]*",
+        positive_text,
+        flags=re.IGNORECASE,
+    )
+    commands = [
+        command
+        for command in commands
+        if command
+        != "openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json"
+    ]
+
+    normalized = _normalized(positive_text.lower())
+    safe_negations = re.compile(
+        r"(?:do not|never|without|rather than|no need to|does not|is not) "
+        r"(?:manually )?\b(?:edit|change|patch|set|configure|install|enable|"
+        r"unset|delete)\b "
+        r"[^.!]+[.!]"
+    )
+    positive_only = safe_negations.sub(" ", normalized)
+    manual_repair = re.compile(
+        r"\b(?:edit|change|patch|set|configure|install|enable|unset|delete)\b "
+        r"(?:the )?(?:agents\.list|openclaw\.json|plugin (?:file|files|manifest|settings)|"
+        r"agent(?:'s)? (?:profile|tool|tools|exec|plugin)|global (?:tool profile|"
+        r"tool profiles|profile|tools\.exec)|exec (?:host|mode|policy|security))"
+    )
+    prose = manual_repair.findall(positive_only)
+    return commands + prose
+
+
 def test_primary_setup_regions_have_a_safe_runnable_sequence():
     for path, (start, end, doctor_cd, _) in GUIDE_SETUP_REGIONS.items():
         primary = _section_between(path.read_text(), start, end)
@@ -152,30 +191,32 @@ def test_beginner_guides_explain_reviewed_writes_in_plain_language():
 def test_beginner_guides_do_not_prescribe_manual_openclaw_policy_repairs():
     for path in BEGINNER_GUIDES:
         text = path.read_text()
-        commands = re.findall(
-            r"openclaw\s+(?:config\s+(?:set|patch)|plugins?\s+"
-            r"(?:install|enable|disable|remove))[^\n`]*",
-            text,
-            flags=re.IGNORECASE,
-        )
-        assert commands == [
-            "openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json"
-        ], (path, commands)
+        assert _manual_openclaw_policy_repairs(text) == [], path
 
-        normalized = _normalized(text.lower())
-        safe_negations = re.compile(
-            r"(?:do not|never|without|rather than|no need to|does not|is not) "
-            r"(?:manually )?(?:edit|change|patch|set|configure|install|enable) "
-            r"[^.!]+[.!]"
-        )
-        positive_only = safe_negations.sub(" ", normalized)
-        manual_repair = re.compile(
-            r"(?:edit|change|patch|set|configure|install|enable) "
-            r"(?:the )?(?:agents\.list|openclaw\.json|plugin (?:file|files|manifest|settings)|"
-            r"agent(?:'s)? (?:profile|tool|tools|exec|plugin)|global (?:tool profile|"
-            r"tool profiles|profile|tools\.exec)|exec (?:host|mode|policy|security))"
-        )
-        assert manual_repair.search(positive_only) is None, path
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Run `openclaw config unset agents.list.1.tools` and try again.",
+        "Use `openclaw config delete tools.profile` to repair the agent.",
+        "Unset the agent's profile before setup.",
+        "Delete the plugin settings, then restart OpenClaw.",
+    ],
+)
+def test_manual_policy_guard_rejects_unset_and_delete_repairs(instruction):
+    assert _manual_openclaw_policy_repairs(instruction), instruction
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "Do not run `openclaw config unset agents.list.1.tools`; rerun setup.",
+        "Do not run openclaw config delete tools.profile; rerun setup.",
+        "Never delete the plugin settings by hand.",
+    ],
+)
+def test_manual_policy_guard_allows_negative_safety_warnings(warning):
+    assert _manual_openclaw_policy_repairs(warning) == [], warning
 
 
 def test_beginner_guides_state_supported_hardware_and_optional_features():
@@ -258,6 +299,7 @@ def test_local_ai_acceptance_checklist_has_one_numbered_sequence():
         for value in re.findall(r"^- \[ \] (\d+)\.", section, flags=re.MULTILINE)
     ]
     assert numbers == list(range(1, 11))
+    assert "Steps 5 and 7 through 10 are conditional" in _normalized(section)
 
 
 def test_local_ai_explains_evidence_statuses_without_equating_chat_and_crm():
