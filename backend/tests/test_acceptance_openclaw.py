@@ -43,6 +43,8 @@ class FakeAPI:
         self.briefing_extra: dict = {}
         self.briefing_payload: dict | None = None
         self.pending_get_failures = 0
+        self.pending_get_calls = 0
+        self.pending_fail_from_call: int | None = None
         self.chat_messages: list[str] = []
         self.chat_session_override: str | None = None
         self.delete_session_override: str | None = None
@@ -69,6 +71,12 @@ class FakeAPI:
         if path == "/leads" and method == "GET":
             return [dict(lead) for lead in self.leads]
         if path == "/pending-changes?status=pending" and method == "GET":
+            self.pending_get_calls += 1
+            if (
+                self.pending_fail_from_call is not None
+                and self.pending_get_calls >= self.pending_fail_from_call
+            ):
+                raise acceptance.ApiError(503, "pending unavailable")
             if self.pending_get_failures:
                 self.pending_get_failures -= 1
                 raise acceptance.ApiError(503, "pending unavailable")
@@ -342,6 +350,49 @@ def test_briefing_rejects_noncanonical_nested_items(mutate):
     assert check["evidence"]["nested_shape_valid"] is False
 
 
+def test_briefing_accepts_valid_empty_optional_crm_text_and_advice():
+    api = FakeAPI()
+    api.briefing_payload = canonical_briefing()
+    brief = api.briefing_payload["meeting_briefs"][0]
+    brief.update(
+        {
+            "area": "",
+            "budget": 0,
+            "timeline": "",
+            "intent": "",
+            "preferences": [""],
+            "persona": "",
+            "score": 0,
+            "assistant_advice": {"prepare": [""], "recommendation": ""},
+        }
+    )
+
+    result = run(api)
+
+    assert by_name(result, "Briefing truthfulness")["level"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda body: body["meeting_briefs"][0].update({"budget": 850000.5}),
+        lambda body: body["meeting_briefs"][0].update({"score": 72.0}),
+        lambda body: body["meeting_briefs"][0].update({"score": -1}),
+        lambda body: body["meeting_briefs"][0].update({"score": 101}),
+    ],
+)
+def test_briefing_rejects_invalid_numeric_types_and_ranges(mutate):
+    api = FakeAPI()
+    api.briefing_payload = canonical_briefing()
+    mutate(api.briefing_payload)
+
+    result = run(api)
+
+    check = by_name(result, "Briefing truthfulness")
+    assert check["level"] == "FAIL"
+    assert check["evidence"]["nested_shape_valid"] is False
+
+
 def test_crm_capability_requires_direct_crm_verified_status():
     api = FakeAPI()
     api.crm_status = "chat_verified"
@@ -470,6 +521,45 @@ def test_failed_pending_baseline_sends_no_write_request():
     assert api.pending_posts == []
     assert by_name(result, "Invalid write")["level"] == "FAIL"
     assert by_name(result, "Reviewed write")["level"] == "SKIP"
+
+
+def test_invalid_write_snapshot_uncertainty_is_explicit_cleanup_failure():
+    api = FakeAPI()
+    api.pending_fail_from_call = 2
+
+    result = run(api, allow_test_write=True)
+
+    cleanup = cleanup_by_name(result, "Invalid-write proposal cleanup")
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"] == {
+        "ownership": "unknown",
+        "snapshot_attempts": acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS,
+    }
+    assert api.pending_get_calls == 1 + acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert api.denied == []
+    assert "no proposal" not in cleanup["detail"].lower()
+    assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
+    assert acceptance.exit_code(result) == 1
+
+
+def test_reviewed_write_snapshot_uncertainty_is_explicit_cleanup_failure():
+    api = FakeAPI()
+    api.pending_fail_from_call = 4
+
+    result = run(api, allow_test_write=True)
+
+    cleanup = cleanup_by_name(result, "Deny disposable proposal")
+    assert cleanup["level"] == "FAIL"
+    assert cleanup["evidence"] == {
+        "ownership": "unknown",
+        "snapshot_attempts": acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS,
+    }
+    assert api.pending_get_calls == 3 + acceptance.POST_WRITE_SNAPSHOT_ATTEMPTS
+    assert api.denied == []
+    assert 17 in api.pending
+    assert "no proposal" not in cleanup["detail"].lower()
+    assert cleanup_by_name(result, "Delete acceptance chat session")["level"] == "PASS"
+    assert acceptance.exit_code(result) == 1
 
 
 def test_cleanup_continues_after_an_intermediate_failure_and_is_required():

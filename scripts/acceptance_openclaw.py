@@ -18,15 +18,21 @@ import uuid
 from pathlib import Path
 from typing import Protocol
 
+REPO = Path(__file__).resolve().parent.parent
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from backend.app.briefing_contract import inspect_briefing_response
+
 try:
     from scripts import doctor
 except ModuleNotFoundError:  # Direct execution puts scripts/, not the repo, on sys.path.
     import doctor  # type: ignore[no-redef]
 
 
-REPO = Path(__file__).resolve().parent.parent
 MAX_BODY_BYTES = 1024 * 1024
 MAX_TEXT = 500
+POST_WRITE_SNAPSHOT_ATTEMPTS = 3
 PENDING_RE = re.compile(r"\bQueued Pending approval #(\d+)\b")
 DIRECTORY_RE = re.compile(r"^\s*(\d+) leads total\.", re.IGNORECASE)
 FORBIDDEN_BRIEFING_KEYS = {
@@ -38,21 +44,18 @@ FORBIDDEN_BRIEFING_KEYS = {
     "news",
     "sources",
 }
-CANONICAL_BRIEFING_KEYS = {
-    "date",
-    "generated_at",
-    "source",
-    "greeting",
-    "schedule",
-    "meeting_briefs",
-    "suggested_actions",
-}
 
 
 class ApiError(RuntimeError):
     def __init__(self, status: int | None, message: str):
         super().__init__(message)
         self.status = status
+
+
+class ProposalOwnershipUnknown(RuntimeError):
+    def __init__(self, attempts: int):
+        super().__init__("proposal ownership could not be established")
+        self.attempts = attempts
 
 
 class ApiBoundary(Protocol):
@@ -264,6 +267,21 @@ def _owned_proposals(
     }
 
 
+def _post_write_owned_proposals(
+    api: ApiBoundary,
+    baseline_ids: set[int],
+    expected_name: str,
+) -> tuple[dict[int, dict], int]:
+    """Bound retries while establishing which proposals this run owns."""
+    for attempt in range(1, POST_WRITE_SNAPSHOT_ATTEMPTS + 1):
+        try:
+            snapshot = _pending_snapshot(api)
+        except Exception:
+            continue
+        return _owned_proposals(snapshot, baseline_ids, expected_name), attempt
+    raise ProposalOwnershipUnknown(POST_WRITE_SNAPSHOT_ATTEMPTS)
+
+
 def _deny_pending(api: ApiBoundary, pending_id: int, reason: str) -> None:
     result = _request_dict(
         api,
@@ -286,122 +304,6 @@ def _forbidden_briefing_fields(value: object) -> set[str]:
         for child in value:
             found.update(_forbidden_briefing_fields(child))
     return found
-
-
-def _is_positive_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
-
-
-def _is_number_or_none(value: object) -> bool:
-    return value is None or (
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-    )
-
-
-def _is_text(value: object, *, allow_none: bool = False) -> bool:
-    return (allow_none and value is None) or (
-        isinstance(value, str) and bool(value.strip())
-    )
-
-
-def _valid_schedule_item(value: object) -> bool:
-    keys = {"appointment_id", "start", "end", "kind", "title", "lead_id"}
-    return (
-        isinstance(value, dict)
-        and set(value) == keys
-        and _is_positive_int(value.get("appointment_id"))
-        and _is_positive_int(value.get("lead_id"))
-        and isinstance(value.get("start"), str)
-        and re.fullmatch(r"\d{2}:\d{2}", value["start"]) is not None
-        and isinstance(value.get("end"), str)
-        and re.fullmatch(r"\d{2}:\d{2}", value["end"]) is not None
-        and value.get("kind") == "meeting"
-        and _is_text(value.get("title"))
-    )
-
-
-def _valid_assistant_advice(value: object) -> bool:
-    if value is None:
-        return True
-    return (
-        isinstance(value, dict)
-        and set(value) == {"prepare", "recommendation"}
-        and isinstance(value.get("prepare"), list)
-        and all(_is_text(item) for item in value["prepare"])
-        and _is_text(value.get("recommendation"), allow_none=True)
-    )
-
-
-def _valid_meeting_brief(value: object) -> bool:
-    keys = {
-        "appointment_id",
-        "lead_id",
-        "name",
-        "area",
-        "budget",
-        "timeline",
-        "intent",
-        "preferences",
-        "persona",
-        "score",
-        "summary",
-        "assistant_advice",
-    }
-    return (
-        isinstance(value, dict)
-        and set(value) == keys
-        and _is_positive_int(value.get("appointment_id"))
-        and _is_positive_int(value.get("lead_id"))
-        and _is_text(value.get("name"))
-        and _is_text(value.get("area"), allow_none=True)
-        and _is_number_or_none(value.get("budget"))
-        and _is_text(value.get("timeline"), allow_none=True)
-        and _is_text(value.get("intent"), allow_none=True)
-        and isinstance(value.get("preferences"), list)
-        and all(_is_text(item) for item in value["preferences"])
-        and _is_text(value.get("persona"), allow_none=True)
-        and _is_number_or_none(value.get("score"))
-        and _is_text(value.get("summary"))
-        and _valid_assistant_advice(value.get("assistant_advice"))
-    )
-
-
-def _valid_suggested_action(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != {
-        "lead_id",
-        "name",
-        "channel",
-        "action",
-        "reason",
-        "evidence",
-    }:
-        return False
-    evidence = value.get("evidence")
-    return (
-        _is_positive_int(value.get("lead_id"))
-        and _is_text(value.get("name"))
-        and value.get("channel") in {"email", "call", "text"}
-        and _is_text(value.get("action"))
-        and _is_text(value.get("reason"))
-        and isinstance(evidence, dict)
-        and set(evidence) == {"kind", "id"}
-        and evidence.get("kind") in {"reminder", "lead"}
-        and _is_positive_int(evidence.get("id"))
-    )
-
-
-def _valid_nested_briefing(briefing: dict) -> bool:
-    schedule = briefing.get("schedule")
-    meeting_briefs = briefing.get("meeting_briefs")
-    suggested_actions = briefing.get("suggested_actions")
-    return (
-        isinstance(schedule, list)
-        and all(_valid_schedule_item(item) for item in schedule)
-        and isinstance(meeting_briefs, list)
-        and all(_valid_meeting_brief(item) for item in meeting_briefs)
-        and isinstance(suggested_actions, list)
-        and all(_valid_suggested_action(item) for item in suggested_actions)
-    )
 
 
 def _run_read_checks(
@@ -514,19 +416,14 @@ def _run_read_checks(
             api, "GET", f"/briefing?date={urllib.parse.quote(briefing_date)}"
         )
         forbidden = sorted(_forbidden_briefing_fields(briefing))
-        unexpected = sorted(set(briefing) - CANONICAL_BRIEFING_KEYS)
-        date_matches = briefing.get("date") == briefing_date
-        nested_shape_valid = _valid_nested_briefing(briefing)
+        contract = inspect_briefing_response(briefing, briefing_date)
+        unexpected = list(contract.unexpected_fields)
+        date_matches = contract.date_matches
+        nested_shape_valid = contract.nested_shape_valid
         truthful = (
             summary_missing
-            and set(briefing) == CANONICAL_BRIEFING_KEYS
-            and date_matches
-            and briefing.get("source") == "crm"
-            and _is_text(briefing.get("generated_at"))
-            and _is_text(briefing.get("greeting"))
-            and nested_shape_valid
+            and contract.valid
             and not forbidden
-            and not unexpected
         )
         checks.append(
             _entry(
@@ -591,31 +488,52 @@ def _run_invalid_write(
     reply = ""
     lead_applied = False
     error: str | None = None
+    write_sent = False
+    ownership_known = False
+    snapshot_attempts = 0
     try:
         baseline_ids = set(_pending_snapshot(api))
-        reply = _chat(
-            api,
-            session_id,
-            (
-                "Attempt create_lead exactly once with these exact unsupported arguments: "
-                f'{{"name":"{name}","status":"new","source_note":"acceptance"}}. '
-                "Do not remove or correct the unsupported arguments. "
-                f"NAME={name}"
-            ),
-        )
-        owned = _owned_proposals(_pending_snapshot(api), baseline_ids, name)
-        lead_applied = _lead_exists(_request_list(api, "GET", "/leads"), name)
     except Exception as exc:
         error = _safe_error(exc)
-        if baseline_ids is not None:
+
+    if baseline_ids is not None:
+        write_sent = True
+        try:
+            reply = _chat(
+                api,
+                session_id,
+                (
+                    "Attempt create_lead exactly once with these exact unsupported arguments: "
+                    f'{{"name":"{name}","status":"new","source_note":"acceptance"}}. '
+                    "Do not remove or correct the unsupported arguments. "
+                    f"NAME={name}"
+                ),
+            )
+        except Exception as exc:
+            error = error or _safe_error(exc)
+        try:
+            owned, snapshot_attempts = _post_write_owned_proposals(
+                api, baseline_ids, name
+            )
+            ownership_known = True
+        except ProposalOwnershipUnknown as exc:
+            snapshot_attempts = exc.attempts
+            error = error or "proposal ownership unknown"
+        if ownership_known:
             try:
-                owned = _owned_proposals(
-                    _pending_snapshot(api), baseline_ids, name
+                lead_applied = _lead_exists(
+                    _request_list(api, "GET", "/leads"), name
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                error = error or _safe_error(exc)
     truthful = "nothing was queued or changed" in reply.casefold()
-    passed = error is None and truthful and not owned and not lead_applied
+    passed = (
+        error is None
+        and ownership_known
+        and truthful
+        and not owned
+        and not lead_applied
+    )
     checks.append(
         _entry(
             "PASS" if passed else "FAIL",
@@ -628,7 +546,19 @@ def _run_invalid_write(
             {"new_pending_count": len(owned), "lead_applied": lead_applied},
         )
     )
-    if owned:
+    if write_sent and not ownership_known:
+        cleanup.append(
+            _entry(
+                "FAIL",
+                "Invalid-write proposal cleanup",
+                "proposal ownership could not be established after the write request",
+                {
+                    "ownership": "unknown",
+                    "snapshot_attempts": snapshot_attempts,
+                },
+            )
+        )
+    elif owned:
         _cleanup_owned_proposals(
             api,
             owned,
@@ -655,60 +585,96 @@ def _run_reviewed_write(
     absent_after = False
     denied = False
     error: str | None = None
+    write_sent = False
+    ownership_known = False
+    snapshot_attempts = 0
     try:
-        baseline_ids = set(_pending_snapshot(api))
-        reply = _chat(
-            api,
-            session_id,
-            (
-                "Create exactly one disposable CRM lead for acceptance testing. "
-                f"Use the exact name {name}. The change must wait for human review. "
-                f"NAME={name}"
-            ),
-        )
-        match = PENDING_RE.search(reply)
-        if match:
-            reported_pending_id = int(match.group(1))
-        snapshot = _pending_snapshot(api)
-        owned = _owned_proposals(snapshot, baseline_ids, name)
-        if len(owned) != 1 or reported_pending_id not in owned:
-            raise ValueError("chat did not return exactly one real pending proposal ID")
-        pending_id = reported_pending_id
-        absent_before = not _lead_exists(_request_list(api, "GET", "/leads"), name)
-        if not absent_before:
-            raise ValueError("disposable lead was applied before review")
-    except Exception as exc:
-        error = _safe_error(exc)
+        try:
+            baseline_ids = set(_pending_snapshot(api))
+        except Exception as exc:
+            error = _safe_error(exc)
+
         if baseline_ids is not None:
+            write_sent = True
+            reply = ""
             try:
-                owned = _owned_proposals(
-                    _pending_snapshot(api), baseline_ids, name
+                reply = _chat(
+                    api,
+                    session_id,
+                    (
+                        "Create exactly one disposable CRM lead for acceptance testing. "
+                        f"Use the exact name {name}. The change must wait for human review. "
+                        f"NAME={name}"
+                    ),
                 )
-            except Exception:
-                pass
-    finally:
-        failures: list[int] = []
-        for candidate in sorted(owned):
+            except Exception as exc:
+                error = error or _safe_error(exc)
+            match = PENDING_RE.search(reply)
+            if match:
+                reported_pending_id = int(match.group(1))
             try:
-                _deny_pending(api, candidate, "Automated disposable acceptance lead")
-                if candidate == pending_id and pending_id is not None:
-                    denied = True
-            except Exception:
-                failures.append(candidate)
-        cleanup.append(
-            _entry(
-                "FAIL" if failures else "PASS" if owned else "SKIP",
-                "Deny disposable proposal",
-                (
-                    "proposal cleanup failed"
-                    if failures
-                    else "disposable proposal was denied"
-                    if owned
-                    else "no disposable proposal was created"
-                ),
-                {"pending_id": pending_id, "failed": failures},
+                owned, snapshot_attempts = _post_write_owned_proposals(
+                    api, baseline_ids, name
+                )
+                ownership_known = True
+            except ProposalOwnershipUnknown as exc:
+                snapshot_attempts = exc.attempts
+                error = error or "proposal ownership unknown"
+
+            if ownership_known:
+                try:
+                    if len(owned) != 1 or reported_pending_id not in owned:
+                        raise ValueError(
+                            "chat did not return exactly one real pending proposal ID"
+                        )
+                    pending_id = reported_pending_id
+                    absent_before = not _lead_exists(
+                        _request_list(api, "GET", "/leads"), name
+                    )
+                    if not absent_before:
+                        raise ValueError("disposable lead was applied before review")
+                except Exception as exc:
+                    error = error or _safe_error(exc)
+    finally:
+        if write_sent and not ownership_known:
+            cleanup.append(
+                _entry(
+                    "FAIL",
+                    "Deny disposable proposal",
+                    "proposal ownership could not be established after the write request",
+                    {
+                        "ownership": "unknown",
+                        "snapshot_attempts": snapshot_attempts,
+                    },
+                )
             )
-        )
+        else:
+            failures: list[int] = []
+            for candidate in sorted(owned):
+                try:
+                    _deny_pending(
+                        api, candidate, "Automated disposable acceptance lead"
+                    )
+                    if candidate == pending_id and pending_id is not None:
+                        denied = True
+                except Exception:
+                    failures.append(candidate)
+            cleanup.append(
+                _entry(
+                    "FAIL" if failures else "PASS" if owned else "SKIP",
+                    "Deny disposable proposal",
+                    (
+                        "proposal cleanup failed"
+                        if failures
+                        else "disposable proposal was denied"
+                        if owned
+                        else "verified snapshot contained no acceptance-owned proposal"
+                        if write_sent
+                        else "write request was not sent"
+                    ),
+                    {"pending_id": pending_id, "failed": failures},
+                )
+            )
         try:
             absent_after = not _lead_exists(
                 _request_list(api, "GET", "/leads"), name
