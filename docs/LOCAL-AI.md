@@ -13,7 +13,8 @@ Required for real local-AI mode:
 - Python 3.11+, Node.js 22.22.3+ for real local AI, and a current OpenClaw installation
 - A tool-capable model configured in OpenClaw
 - The enabled `/v1/chat/completions` endpoint
-- The dedicated `openhouse-crm` agent and the `crm-db-operations` skill
+- The dedicated agent selected by `AGENT_ID` (default `openhouse-crm`) and the
+  `crm-db-operations` skill
 
 An Apple-silicon Mac mini with **16 GB** is the primary supported baseline.
 Linux x86_64 or ARM64 and Windows through WSL2 are supported at the same memory
@@ -91,6 +92,9 @@ links and enables the bundled `openhouse_crm` plugin, and validates that
 setup does not download a compiler or plugin dependencies. If you pass `--agent-id`,
 set `AGENT_ID` to the same nonblank value in `.env`; setup rejects blank or
 conflicting values so the helper and CRM runtime cannot select different agents.
+Setup also writes that selected value into the plugin's validated `agentId`
+configuration and proves the safety hooks protect that exact agent. The default
+remains `openhouse-crm`.
 CRM reads and proposals use the typed `openhouse_crm` tool without a shell.
 Command execution remains available only for the deterministic daily-brief runner.
 OpenClaw's local-model lean mode may present that tool through the compact
@@ -105,7 +109,7 @@ If an earlier run stopped halfway through, rerun the same command. Setup repairs
 the CRM agent's skills, sandbox, and execution policy before checking the final
 result. It does not change the global `tools.exec` settings used by other agents.
 If a later check fails, setup restores the CRM agent fields that existed before
-that run. It will not take over an existing `openhouse-crm` agent whose workspace
+that run. It will not take over an existing selected CRM agent whose workspace
 points somewhere else.
 
 The helper prints `openclaw --version` in both success and failure diagnostics.
@@ -289,6 +293,11 @@ python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 
 Use the `ACCOUNT` identifier OpenClaw documents for your Discord account. The
 dashboard remains the place to review proposed CRM changes.
+One Discord run keeps an ordered, bounded safety summary of its CRM writes.
+The reply lists each retained Pending proposal ID, each verified direct write,
+and any definite or uncertain failure. An uncertain result blocks later writes
+in the same run, while reads remain available, and the reply tells you when
+additional outcomes were omitted by the safety bound.
 
 ## Voice notes
 
@@ -390,7 +399,9 @@ CRM fields can create a new proposal for review.
   the `openhouse_crm` runtime tool, and removes the obsolete CRM wrapper
   approval. Do not change global `tools.exec` settings.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
-  Confirm `AGENT_ID=openhouse-crm`, rerun setup, and repeat the live CRM check.
+  Confirm the intended `AGENT_ID` in `.env` (normally `openhouse-crm`), rerun
+  setup, and repeat the live CRM check. Do not configure a different plugin
+  agent by hand; setup keeps the app, plugin hooks, and acceptance check aligned.
 - **OpenClaw unreachable:** start the gateway and verify
   `AGENT_GATEWAY_URL`.
 - **Voice failure:** run the direct transcription command above and verify the

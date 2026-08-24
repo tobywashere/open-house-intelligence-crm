@@ -35,6 +35,7 @@ TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
 LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
 LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
+PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
 
 
 OPENCLAW_SANDBOX_EXPLAIN_STABLE = {
@@ -81,10 +82,12 @@ OPENCLAW_SANDBOX_EXPLAIN_BETA = {
 }
 
 
-def make_options(tmp_path, *, dry_run=False, bind_discord=None):
+def make_options(
+    tmp_path, *, dry_run=False, bind_discord=None, agent_id="openhouse-crm"
+):
     return SetupOptions(
-        agent_id="openhouse-crm",
-        workspace=tmp_path / "workspace-openhouse-crm",
+        agent_id=agent_id,
+        workspace=tmp_path / f"workspace-{agent_id}",
         crm_api_url="http://localhost:8080/api",
         bind_discord=bind_discord,
         dry_run=dry_run,
@@ -153,7 +156,9 @@ class FakeCLI:
         plugin_runtime=None,
         client_tool_probe=None,
         dashboard_block_probe=None,
+        configured_agent_guard_probe=None,
         effective_tools=None,
+        primary_agent_id="openhouse-crm",
     ):
         self.calls = []
         self.mutating_calls = []
@@ -168,9 +173,12 @@ class FakeCLI:
         self.plugin_runtime = plugin_runtime
         self.client_tool_probe = client_tool_probe
         self.dashboard_block_probe = dashboard_block_probe
+        self.configured_agent_guard_probe = configured_agent_guard_probe
+        self.primary_agent_id = primary_agent_id
         self.effective_tools = [] if effective_tools is None else effective_tools
         self.client_tool_probe_calls = []
         self.dashboard_block_probe_calls = []
+        self.configured_agent_guard_probe_calls = []
         self.extra_agents = {}
         self.bindings = set()
 
@@ -267,6 +275,22 @@ class FakeCLI:
             "Dashboard CRM calls must use the verified tool invocation path.",
         )
 
+    def probe_configured_agent_guard(self, *, agent_id, nonce):
+        self.configured_agent_guard_probe_calls.append(
+            {
+                "agent_id": agent_id,
+                "nonce": nonce,
+                "operation": "__openhouse_agent_guard_probe__",
+            }
+        )
+        if self.configured_agent_guard_probe is not None:
+            return self.configured_agent_guard_probe
+        return CommandResult(
+            403,
+            "",
+            f"Configured CRM agent {agent_id} is protected.",
+        )
+
     def run(self, args, *, mutate=False):
         self.calls.append(args)
         key = tuple(args)
@@ -281,7 +305,7 @@ class FakeCLI:
                     "id": args[3],
                     "workspace": args[args.index("--workspace") + 1],
                 }
-                if args[3] == "openhouse-crm":
+                if args[3] == self.primary_agent_id:
                     self.created_agent = agent
                 else:
                     self.extra_agents[args[3]] = agent
@@ -544,12 +568,30 @@ class FakeCLI:
             if path not in self.config_values:
                 return CommandResult(1, "", f"Config path not found: {path}")
             return CommandResult(0, json.dumps(self.config_values[path]), "")
-        if args == ["openclaw", "skills", "check", "--agent", "openhouse-crm", "--json"]:
+        if args == [
+            "openclaw",
+            "skills",
+            "check",
+            "--agent",
+            self.primary_agent_id,
+            "--json",
+        ]:
             return CommandResult(0, '{"eligible": ["crm-db-operations"]}', "")
-        if args == ["openclaw", "sandbox", "explain", "--agent", "openhouse-crm", "--json"]:
+        if args == [
+            "openclaw",
+            "sandbox",
+            "explain",
+            "--agent",
+            self.primary_agent_id,
+            "--json",
+        ]:
+            sandbox = json.loads(json.dumps(OPENCLAW_SANDBOX_EXPLAIN_STABLE))
+            sandbox["agentId"] = self.primary_agent_id
+            sandbox["sessionKey"] = f"agent:{self.primary_agent_id}:main"
+            sandbox["mainSessionKey"] = f"agent:{self.primary_agent_id}:main"
             return CommandResult(
                 0,
-                json.dumps(OPENCLAW_SANDBOX_EXPLAIN_STABLE),
+                json.dumps(sandbox),
                 "",
             )
         if args == ["openclaw", "exec-policy", "show", "--json"]:
@@ -559,7 +601,10 @@ class FakeCLI:
                 {"pattern": pattern, "lastUsedAt": 1}
                 for pattern in sorted(self.approval_patterns)
             ]
-            payload = gateway_approval_payload(entries=entries)
+            payload = gateway_approval_payload(
+                agent_id=self.primary_agent_id,
+                entries=entries,
+            )
             return CommandResult(0, json.dumps(payload), "")
         if args[1:3] == ["agents", "add"]:
             agent = next(
@@ -3357,6 +3402,123 @@ def test_setup_defaults_to_the_runtime_agent_id_from_repo_env(tmp_path, monkeypa
     options = parse_args([], repo=tmp_path)
 
     assert options.agent_id == "custom-crm"
+
+
+def test_setup_configures_and_behaviorally_proves_the_custom_runtime_agent(tmp_path):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = FakeCLI(primary_agent_id="custom-crm")
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.config_values[PLUGIN_CONFIG_PATH] == {"agentId": "custom-crm"}
+    assert [call["agent_id"] for call in cli.configured_agent_guard_probe_calls] == [
+        "custom-crm"
+    ]
+    config_set_index = cli.mutating_calls.index(
+        [
+            "openclaw",
+            "config",
+            "set",
+            PLUGIN_CONFIG_PATH,
+            '{"agentId":"custom-crm"}',
+            "--strict-json",
+        ]
+    )
+    enable_index = cli.mutating_calls.index(
+        ["openclaw", "plugins", "enable", "openhouse-crm"]
+    )
+    assert config_set_index < enable_index
+
+
+def test_setup_fails_closed_when_plugin_agent_config_readback_is_wrong(tmp_path):
+    class WrongPluginConfigCLI(FakeCLI):
+        configured_once = False
+
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if mutate and args[1:4] == ["config", "set", PLUGIN_CONFIG_PATH]:
+                self.configured_once = True
+            if (
+                self.configured_once
+                and args
+                == ["openclaw", "config", "get", PLUGIN_CONFIG_PATH, "--json"]
+            ):
+                return CommandResult(
+                    0, json.dumps({"agentId": "openhouse-crm"}), ""
+                )
+            return result
+
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = WrongPluginConfigCLI(primary_agent_id="custom-crm")
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "configured CRM agent" in result.render()
+    assert PLUGIN_CONFIG_PATH not in cli.config_values
+    assert cli.configured_agent_guard_probe_calls == []
+
+
+def test_setup_rolls_back_preexisting_plugin_agent_config_after_late_failure(tmp_path):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
+
+    class TrackingPluginConfigCLI(FakeCLI):
+        saw_custom_config = False
+
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if (
+                mutate
+                and args[1:4] == ["config", "set", PLUGIN_CONFIG_PATH]
+                and json.loads(args[-2]) == {"agentId": "custom-crm"}
+            ):
+                self.saw_custom_config = True
+            return result
+
+    cli = TrackingPluginConfigCLI(
+        primary_agent_id="custom-crm",
+        plugin_path=plugin_path,
+        plugin_enabled=True,
+        client_tool_probe=CommandResult(503, "", "provider unavailable"),
+    )
+    cli.created_agent = {
+        "id": options.agent_id,
+        "workspace": str(options.workspace),
+    }
+    cli.config_values[PLUGIN_CONFIG_PATH] = {"agentId": "legacy-crm"}
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert cli.saw_custom_config is True
+    assert cli.config_values[PLUGIN_CONFIG_PATH] == {"agentId": "legacy-crm"}
+
+
+def test_setup_keeps_custom_plugin_agent_config_idempotent(tmp_path):
+    options = make_options(tmp_path, agent_id="custom-crm")
+    cli = FakeCLI(primary_agent_id="custom-crm")
+
+    first = configure_openclaw(options, cli=cli)
+    second = configure_openclaw(options, cli=cli)
+
+    assert first.ok, first.render()
+    assert second.ok, second.render()
+    assert cli.config_values[PLUGIN_CONFIG_PATH] == {"agentId": "custom-crm"}
+    assert len(cli.configured_agent_guard_probe_calls) == 2
+
+
+def test_custom_agent_dry_run_reports_plugin_config_without_mutating(tmp_path):
+    options = make_options(tmp_path, dry_run=True, agent_id="custom-crm")
+    cli = FakeCLI(primary_agent_id="custom-crm")
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    assert "Configure the CRM plugin for agent custom-crm" in result.render()
+    assert cli.mutating_calls == []
+    assert PLUGIN_CONFIG_PATH not in cli.config_values
 
 
 def test_setup_rejects_agent_id_that_conflicts_with_runtime_env(

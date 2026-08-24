@@ -35,8 +35,10 @@ cd open-intelligence-crm
 cp .env.example .env
 ```
 
-Open `.env` and change `AGENT_MODE=mock` to `AGENT_MODE=openclaw`. Keep
-`AGENT_ID=openhouse-crm`, then run:
+Open `.env` and change `AGENT_MODE=mock` to `AGENT_MODE=openclaw`. The default
+`AGENT_ID=openhouse-crm` works for most people. If you choose another lowercase
+agent ID, change that one value in `.env`; setup, the app, the plugin safety
+hooks, and acceptance checks will all use it. Then run:
 
 ```bash
 python3 scripts/setup_openclaw.py
@@ -118,6 +120,10 @@ python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Discord CRM writes wait for review in the dashboard's **Pending approvals**.
+If one Discord request attempts several writes, its final reply lists every
+verified proposal or applied result it retained, plus any failure. An uncertain
+result blocks later writes in that request and tells you to inspect the CRM and
+Pending approvals before retrying.
 
 ## Help and privacy
 

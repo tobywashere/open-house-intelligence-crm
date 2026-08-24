@@ -154,7 +154,29 @@ def _capture_dependencies() -> dict[str, str]:
     }
 
 
-def _capture_discord_binding(agent_id: str = "openhouse-crm") -> bool | None:
+def _runtime_agent_id() -> str:
+    configured = os.environ.get("AGENT_ID")
+    if configured is None:
+        env_file = REPO / ".env"
+        try:
+            lines = env_file.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            lines = []
+        for raw_line in lines:
+            line = raw_line.rstrip("\r")
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key != "AGENT_ID":
+                continue
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            configured = value
+            break
+    return (configured or "openhouse-crm").strip() or "openhouse-crm"
+
+
+def _capture_discord_binding(agent_id: str) -> bool | None:
     if shutil.which("openclaw") is None:
         return None
     try:
@@ -735,9 +757,7 @@ def run_acceptance(
     test_id = test_id or uuid.uuid4().hex[:12]
     briefing_date = briefing_date or "2099-12-31"
     if discord_bound is None:
-        discord_bound = _capture_discord_binding(
-            os.environ.get("OPENCLAW_AGENT_ID", "openhouse-crm")
-        )
+        discord_bound = _capture_discord_binding(_runtime_agent_id())
     tracked_api = _SessionTrackingAPI(api)
 
     checks: list[dict] = []

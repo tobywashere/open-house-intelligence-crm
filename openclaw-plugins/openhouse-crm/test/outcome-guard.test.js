@@ -129,7 +129,8 @@ test("rewrites a failed proposal with a fixed safe reason and no raw error text"
 
   assert.equal(
     guard.rewrite({ runId: "run-failed", agentId: "openhouse-crm", text: "Created it" }),
-    "I could not queue that CRM change. Nothing was changed. Invalid CRM arguments.",
+    "The create lead CRM change failed before confirmation. "
+      + "That attempt did not queue or apply a change. Invalid CRM arguments.",
   );
 });
 
@@ -155,7 +156,7 @@ test("never claims nothing changed when a mutation outcome is unknown", () => {
   });
   assert.equal(
     reply,
-    "The CRM change may have reached the backend, but its result could not be verified. "
+    "The create lead CRM change may have reached the backend, but its result could not be verified.\n"
       + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
   );
   assert.doesNotMatch(reply, /nothing (?:was )?changed/i);
@@ -310,5 +311,264 @@ test("clears every in-memory outcome for gateway restart cleanup", () => {
   assert.equal(
     guard.rewrite({ runId: "run-b", agentId: "openhouse-crm", text: "B" }),
     "B",
+  );
+});
+
+
+test("preserves multiple pending proposals in receipt order", () => {
+  const guard = createOutcomeGuard();
+  guard.record({ runId: "run-many", agentId: "openhouse-crm", receipt: pendingReceipt });
+  guard.record({
+    runId: "run-many",
+    agentId: "openhouse-crm",
+    receipt: {
+      ...pendingReceipt,
+      operation: "book_appointment",
+      result: {
+        ...pendingReceipt.result,
+        id: 9,
+        operation: "book_appointment",
+        summary: "Book Jordan for August 28 at 3 PM",
+      },
+    },
+  });
+
+  assert.equal(
+    guard.rewrite({ runId: "run-many", agentId: "openhouse-crm", text: "Done" }),
+    "Proposal #4 is waiting for your review: Create lead Jordan Ellis.\n"
+      + "Proposal #9 is waiting for your review: Book Jordan for August 28 at 3 PM.",
+  );
+});
+
+
+test("tracks every contract-declared proposal operation", () => {
+  const guard = createOutcomeGuard({ maxOutcomes: 32 });
+  const operations = [
+    "create_lead",
+    "update_lead",
+    "add_note",
+    "close_lead",
+    "merge_leads",
+    "book_appointment",
+    "schedule_followup",
+    "delete_lead",
+  ];
+  operations.forEach((operation, index) => {
+    guard.record({
+      runId: "run-all-proposals",
+      agentId: "openhouse-crm",
+      receipt: {
+        ...pendingReceipt,
+        operation,
+        result: {
+          ...pendingReceipt.result,
+          id: index + 1,
+          operation,
+          summary: `Verified operation ${index + 1}`,
+        },
+      },
+    });
+  });
+
+  const output = guard.rewrite({
+    runId: "run-all-proposals",
+    agentId: "openhouse-crm",
+    text: "Done",
+  });
+  operations.forEach((operation, index) => {
+    assert.match(
+      output,
+      new RegExp(`Proposal #${index + 1}[^\\n]+Verified operation ${index + 1}`, "u"),
+      operation,
+    );
+  });
+});
+
+
+test("a later deterministic failure cannot erase an earlier proposal", () => {
+  const guard = createOutcomeGuard();
+  guard.record({ runId: "run-mixed", agentId: "openhouse-crm", receipt: pendingReceipt });
+  guard.record({
+    runId: "run-mixed",
+    agentId: "openhouse-crm",
+    receipt: failedReceipt({ operation: "book_appointment" }),
+  });
+
+  const output = guard.rewrite({
+    runId: "run-mixed",
+    agentId: "openhouse-crm",
+    text: "Nothing happened",
+  });
+  assert.equal(
+    output,
+    "Proposal #4 is waiting for your review: Create lead Jordan Ellis.\n"
+      + "The book appointment CRM change failed before confirmation. "
+      + "That attempt did not queue or apply a change. Invalid CRM arguments.",
+  );
+  assert.doesNotMatch(output, /^I could not queue that CRM change/u);
+});
+
+
+test("renders each validated-write success including both contract operations", () => {
+  const guard = createOutcomeGuard();
+  guard.record({
+    runId: "run-applied",
+    agentId: "openhouse-crm",
+    receipt: {
+      ok: true,
+      operation: "find_neglected_leads",
+      kind: "validated_write",
+      result: [{ id: 7 }],
+    },
+  });
+  guard.record({
+    runId: "run-applied",
+    agentId: "openhouse-crm",
+    receipt: {
+      ok: true,
+      operation: "post_briefing",
+      kind: "validated_write",
+      result: { date: "2026-08-24" },
+    },
+  });
+
+  assert.equal(
+    guard.rewrite({ runId: "run-applied", agentId: "openhouse-crm", text: "Done" }),
+    "Verified CRM write completed: find neglected leads.\n"
+      + "Verified CRM write completed: post briefing.",
+  );
+});
+
+
+test("an unknown outcome preserves earlier successes and keeps the mutation gate closed", () => {
+  const guard = createOutcomeGuard();
+  guard.record({ runId: "run-unknown-many", agentId: "openhouse-crm", receipt: pendingReceipt });
+  guard.record({
+    runId: "run-unknown-many",
+    agentId: "openhouse-crm",
+    receipt: failedReceipt({
+      operation: "post_briefing",
+      error: {
+        code: "outcome_unknown",
+        message: "private transport detail",
+        retryable: false,
+      },
+    }),
+  });
+
+  assert.equal(
+    guard.mutationBlocked({
+      runId: "run-unknown-many",
+      agentId: "openhouse-crm",
+      operation: "schedule_followup",
+    }),
+    true,
+  );
+  assert.equal(
+    guard.rewrite({
+      runId: "run-unknown-many",
+      agentId: "openhouse-crm",
+      text: "Retried it",
+    }),
+    "Proposal #4 is waiting for your review: Create lead Jordan Ellis.\n"
+      + "The post briefing CRM change may have reached the backend, but its result could not be verified.\n"
+      + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
+  );
+});
+
+
+test("bounds per-run outcomes, reports truncation, and still gates on a truncated unknown", () => {
+  const guard = createOutcomeGuard({ maxOutcomes: 2 });
+  for (const id of [4, 5, 6]) {
+    guard.record({
+      runId: "run-bounded",
+      agentId: "openhouse-crm",
+      receipt: {
+        ...pendingReceipt,
+        result: { ...pendingReceipt.result, id, summary: `Create lead ${id}` },
+      },
+    });
+  }
+  guard.record({
+    runId: "run-bounded",
+    agentId: "openhouse-crm",
+    receipt: failedReceipt({
+      operation: "post_briefing",
+      error: { code: "outcome_unknown", message: "private", retryable: false },
+    }),
+  });
+
+  assert.equal(
+    guard.mutationBlocked({
+      runId: "run-bounded",
+      agentId: "openhouse-crm",
+      operation: "create_lead",
+    }),
+    true,
+  );
+  const output = guard.rewrite({
+    runId: "run-bounded",
+    agentId: "openhouse-crm",
+    text: "Done",
+  });
+  assert.match(output, /Proposal #4[^\n]+\nProposal #5/u);
+  assert.doesNotMatch(output, /Proposal #6/u);
+  assert.match(output, /2 additional CRM mutation outcomes were not shown/u);
+  assert.match(output, /Do not retry automatically/u);
+});
+
+
+test("default bounded summary stays within Discord's message limit", () => {
+  const guard = createOutcomeGuard();
+  for (let id = 1; id <= 8; id += 1) {
+    guard.record({
+      runId: "run-discord-limit",
+      agentId: "openhouse-crm",
+      receipt: {
+        ...pendingReceipt,
+        result: { ...pendingReceipt.result, id, summary: "x".repeat(240) },
+      },
+    });
+  }
+  guard.record({
+    runId: "run-discord-limit",
+    agentId: "openhouse-crm",
+    receipt: failedReceipt({
+      operation: "post_briefing",
+      error: { code: "outcome_unknown", message: "private", retryable: false },
+    }),
+  });
+
+  const output = guard.rewrite({
+    runId: "run-discord-limit",
+    agentId: "openhouse-crm",
+    text: "Done",
+  });
+  assert.ok(output.length <= 2_000, `summary was ${output.length} characters`);
+  assert.match(output, /additional CRM mutation outcomes were not shown/u);
+  assert.match(output, /Do not retry automatically/u);
+});
+
+
+test("keeps ordered outcome collections isolated by exact run and agent", () => {
+  const guard = createOutcomeGuard();
+  guard.record({ runId: "run-a", agentId: "custom-crm", receipt: pendingReceipt });
+  guard.record({
+    runId: "run-a",
+    agentId: "custom-crm",
+    receipt: { ...pendingReceipt, result: { ...pendingReceipt.result, id: 8 } },
+  });
+
+  assert.equal(
+    guard.rewrite({ runId: "run-a", agentId: "openhouse-crm", text: "Wrong agent" }),
+    "Wrong agent",
+  );
+  assert.equal(
+    guard.rewrite({ runId: "run-b", agentId: "custom-crm", text: "Wrong run" }),
+    "Wrong run",
+  );
+  assert.match(
+    guard.rewrite({ runId: "run-a", agentId: "custom-crm", text: "Right scope" }),
+    /Proposal #4[^\n]+\nProposal #8/u,
   );
 });

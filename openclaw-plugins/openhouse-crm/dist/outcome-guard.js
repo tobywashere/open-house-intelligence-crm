@@ -2,6 +2,8 @@ import { crmContract } from "./contract.js";
 
 
 const DEFAULT_MAX_ENTRIES = 256;
+const DEFAULT_MAX_OUTCOMES = 6;
+const MAX_CONFIGURED_OUTCOMES = 32;
 const DEFAULT_TTL_MS = 300_000;
 const MAX_SUMMARY_CHARACTERS = 240;
 const DISCORD_SAFE_CHARACTERS = new Map([
@@ -94,6 +96,20 @@ function proposalOutcome(receipt) {
 }
 
 
+function validatedWriteOutcome(receipt) {
+  if (
+    receipt.ok !== true
+    || receipt.kind !== "validated_write"
+    || crmContract.operations[receipt.operation]?.effect !== "validated_write"
+    || !("result" in receipt)
+  ) return undefined;
+  return {
+    operation: receipt.operation,
+    status: "applied",
+  };
+}
+
+
 function failureOutcome(receipt) {
   if (
     receipt.ok !== false
@@ -115,7 +131,9 @@ function failureOutcome(receipt) {
 
 function outcomeFromReceipt(receipt) {
   if (!isPlainObject(receipt)) return undefined;
-  return proposalOutcome(receipt) ?? failureOutcome(receipt);
+  return proposalOutcome(receipt)
+    ?? validatedWriteOutcome(receipt)
+    ?? failureOutcome(receipt);
 }
 
 
@@ -124,8 +142,30 @@ function sentence(text) {
 }
 
 
+function operationLabel(operation) {
+  return operation.replaceAll("_", " ");
+}
+
+
+function renderOutcome(outcome) {
+  if (outcome.status === "pending") {
+    return `Proposal #${outcome.proposalId} is waiting for your review: ${sentence(outcome.summary)}`;
+  }
+  const operation = operationLabel(outcome.operation);
+  if (outcome.status === "applied") {
+    return `Verified CRM write completed: ${operation}.`;
+  }
+  if (outcome.status === "unknown") {
+    return `The ${operation} CRM change may have reached the backend, but its result could not be verified.`;
+  }
+  return `The ${operation} CRM change failed before confirmation. `
+    + `That attempt did not queue or apply a change. ${sentence(outcome.error)}`;
+}
+
+
 export function createOutcomeGuard({
   maxEntries = DEFAULT_MAX_ENTRIES,
+  maxOutcomes = DEFAULT_MAX_OUTCOMES,
   ttlMs = DEFAULT_TTL_MS,
   now = Date.now,
 } = {}) {
@@ -134,6 +174,13 @@ export function createOutcomeGuard({
   }
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     throw new TypeError("ttlMs must be positive");
+  }
+  if (
+    !Number.isSafeInteger(maxOutcomes)
+    || maxOutcomes <= 0
+    || maxOutcomes > MAX_CONFIGURED_OUTCOMES
+  ) {
+    throw new TypeError(`maxOutcomes must be an integer from 1 to ${MAX_CONFIGURED_OUTCOMES}`);
   }
   if (typeof now !== "function") throw new TypeError("now must be a function");
 
@@ -152,12 +199,22 @@ export function createOutcomeGuard({
     const timestamp = now();
     removeExpired(timestamp);
     const key = scopeKey(runId, agentId);
+    const previous = entries.get(key);
+    const outcomes = previous?.outcomes ?? [];
+    let truncated = previous?.truncated ?? 0;
+    if (outcomes.length < maxOutcomes) {
+      outcomes.push(outcome);
+    } else {
+      truncated += 1;
+    }
     entries.delete(key);
     while (entries.size >= maxEntries) {
       entries.delete(entries.keys().next().value);
     }
     entries.set(key, {
-      ...outcome,
+      outcomes,
+      truncated,
+      blocked: previous?.blocked === true || outcome.status === "unknown",
       runId,
       agentId,
       expiry: timestamp + ttlMs,
@@ -172,14 +229,19 @@ export function createOutcomeGuard({
     const entry = entries.get(key);
     if (!entry) return text;
     entries.delete(key);
-    if (entry.status === "pending") {
-      return `Proposal #${entry.proposalId} is waiting for your review: ${sentence(entry.summary)}`;
+    const lines = entry.outcomes.map(renderOutcome);
+    if (entry.truncated > 0) {
+      const noun = entry.truncated === 1 ? "outcome was" : "outcomes were";
+      lines.push(
+        `${entry.truncated} additional CRM mutation ${noun} not shown because this safety summary is bounded.`,
+      );
     }
-    if (entry.status === "unknown") {
-      return "The CRM change may have reached the backend, but its result could not be verified. "
-        + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.";
+    if (entry.blocked) {
+      lines.push(
+        "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
+      );
     }
-    return `I could not queue that CRM change. Nothing was changed. ${sentence(entry.error)}`;
+    return lines.join("\n");
   }
 
   function clear(runId) {
@@ -201,7 +263,7 @@ export function createOutcomeGuard({
     ) return false;
     const timestamp = now();
     removeExpired(timestamp);
-    return entries.get(scopeKey(runId, agentId))?.status === "unknown";
+    return entries.get(scopeKey(runId, agentId))?.blocked === true;
   }
 
   return Object.freeze({ record, rewrite, clear, mutationBlocked });

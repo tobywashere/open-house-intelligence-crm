@@ -192,6 +192,54 @@ def run(api: FakeAPI, *, allow_test_write: bool = False) -> dict:
     )
 
 
+def test_discord_binding_inspection_uses_the_runtime_agent_id(monkeypatch):
+    captured: list[str] = []
+    monkeypatch.setenv("AGENT_ID", "custom-crm")
+    monkeypatch.setattr(
+        acceptance,
+        "_capture_discord_binding",
+        lambda agent_id: captured.append(agent_id) or False,
+    )
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=None,
+        session_id="accept-agent-env",
+        test_id="agent-env",
+    )
+
+    assert acceptance.exit_code(result) == 0
+    assert captured == ["custom-crm"]
+
+
+def test_discord_binding_inspection_loads_agent_id_from_repo_env(
+    monkeypatch, tmp_path
+):
+    captured: list[str] = []
+    monkeypatch.delenv("AGENT_ID", raising=False)
+    monkeypatch.setattr(acceptance, "REPO", tmp_path)
+    (tmp_path / ".env").write_text("AGENT_ID=portable-crm\n", encoding="utf-8")
+    monkeypatch.setattr(
+        acceptance,
+        "_capture_discord_binding",
+        lambda agent_id: captured.append(agent_id) or False,
+    )
+
+    result = acceptance.run_acceptance(
+        FakeAPI(),
+        revision="abc123",
+        dependencies=DEPENDENCIES,
+        discord_bound=None,
+        session_id="accept-agent-file",
+        test_id="agent-file",
+    )
+
+    assert acceptance.exit_code(result) == 0
+    assert captured == ["portable-crm"]
+
+
 def by_name(result: dict, name: str) -> dict:
     return next(check for check in result["checks"] if check["name"] == name)
 

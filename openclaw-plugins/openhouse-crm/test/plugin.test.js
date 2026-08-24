@@ -13,11 +13,12 @@ function registerPlugin(executeCrm = async () => ({
   operation: "list_leads",
   kind: "read",
   result: [],
-})) {
+}), pluginConfig) {
   const registrations = [];
   const hooks = new Map();
   const plugin = createPluginDefinition(executeCrm);
   plugin.register({
+    pluginConfig,
     registerTool: (...args) => registrations.push(args),
     on: (name, handler, options) => {
       hooks.set(name, { handler, options });
@@ -203,11 +204,11 @@ test("Discord blocks a later mutation in the same run after an unknown outcome",
         runId: "run-unknown-gate",
         usageState: { agentId: "openhouse-crm" },
       },
-      { channelId: "discord-channel", runId: "run-unknown-gate" },
+      { channel: "discord", channelId: "discord-channel", runId: "run-unknown-gate" },
     ),
     {
       payload: {
-        text: "The CRM change may have reached the backend, but its result could not be verified. "
+        text: "The create lead CRM change may have reached the backend, but its result could not be verified.\n"
           + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
       },
     },
@@ -272,11 +273,11 @@ test("Discord still allows reads after an unknown mutation and preserves the unk
         runId: "run-unknown-read",
         usageState: { agentId: "openhouse-crm" },
       },
-      { channelId: "discord-channel", runId: "run-unknown-read" },
+      { channel: "discord", channelId: "discord-channel", runId: "run-unknown-read" },
     ),
     {
       payload: {
-        text: "The CRM change may have reached the backend, but its result could not be verified. "
+        text: "The create lead CRM change may have reached the backend, but its result could not be verified.\n"
           + "Do not retry automatically. Inspect the CRM and Pending approvals before retrying.",
       },
     },
@@ -289,7 +290,12 @@ test("hooks record only structured proposal outcomes for the exact CRM tool, run
   const afterToolCall = hooks.get("after_tool_call").handler;
   const replyPayloadSending = hooks.get("reply_payload_sending").handler;
   const proposal = pendingReceipt();
-  const crmContext = { toolName: "openhouse_crm", runId: "run-record", agentId: "openhouse-crm" };
+  const crmContext = {
+    toolName: "openhouse_crm",
+    runId: "run-record",
+    agentId: "openhouse-crm",
+    requester: { channel: "discord" },
+  };
 
   afterToolCall(
     { toolName: "other_tool", runId: "run-record", params: {}, result: toolResult(proposal) },
@@ -329,7 +335,7 @@ test("hooks record only structured proposal outcomes for the exact CRM tool, run
       runId: "run-record",
       usageState: { agentId: "openhouse-crm" },
     },
-    { channelId: "discord-channel", runId: "run-record" },
+    { channel: "discord", channelId: "discord-channel", runId: "run-record" },
   );
   assert.equal(noRecord, undefined);
 
@@ -345,7 +351,7 @@ test("hooks record only structured proposal outcomes for the exact CRM tool, run
         runId: "run-record",
         usageState: { agentId: "openhouse-crm" },
       },
-      { channelId: "discord-channel", runId: "run-record" },
+      { channel: "discord", channelId: "discord-channel", runId: "run-record" },
     ),
     { payload: { text: "Proposal #4 is waiting for your review: Create lead Jordan Ellis." } },
   );
@@ -358,7 +364,12 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
   const replyPayloadSending = hooks.get("reply_payload_sending").handler;
   afterToolCall(
     { toolName: "openhouse_crm", runId: "run-payload", params: {}, result: toolResult(pendingReceipt()) },
-    { toolName: "openhouse_crm", runId: "run-payload", agentId: "openhouse-crm" },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-payload",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
   );
   const media = [{ type: "image", url: "https://example.invalid/photo.jpg" }];
   const metadata = { audit: "keep" };
@@ -381,7 +392,7 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
       runId: "run-payload",
       usageState: { agentId: "other-agent" },
     },
-    { channelId: "discord-channel", runId: "run-payload" },
+    { channel: "discord", channelId: "discord-channel", runId: "run-payload" },
   );
   assert.equal(wrongAgent, undefined);
 
@@ -392,7 +403,7 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
       runId: "run-payload",
       usageState: { agentId: "openhouse-crm" },
     },
-    { channelId: "discord-channel", runId: "run-payload" },
+    { channel: "discord", channelId: "discord-channel", runId: "run-payload" },
   );
   assert.notStrictEqual(rewritten.payload, payload);
   assert.deepEqual(rewritten, {
@@ -413,7 +424,7 @@ test("reply hook replaces only text on the latest payload for the matching CRM r
         runId: "run-payload",
         usageState: { agentId: "openhouse-crm" },
       },
-      { channelId: "discord-channel", runId: "run-payload" },
+      { channel: "discord", channelId: "discord-channel", runId: "run-payload" },
     ),
     undefined,
   );
@@ -424,7 +435,12 @@ test("gateway stop clears all pending in-memory outcomes", () => {
   const { hooks } = registerPlugin();
   hooks.get("after_tool_call").handler(
     { toolName: "openhouse_crm", runId: "run-stop", params: {}, result: toolResult(pendingReceipt()) },
-    { toolName: "openhouse_crm", runId: "run-stop", agentId: "openhouse-crm" },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-stop",
+      agentId: "openhouse-crm",
+      requester: { channel: "discord" },
+    },
   );
   hooks.get("gateway_stop").handler({ reason: "restart" }, {});
 
@@ -436,14 +452,14 @@ test("gateway stop clears all pending in-memory outcomes", () => {
         runId: "run-stop",
         usageState: { agentId: "openhouse-crm" },
       },
-      { channelId: "discord-channel", runId: "run-stop" },
+      { channel: "discord", channelId: "discord-channel", runId: "run-stop" },
     ),
     undefined,
   );
 });
 
 
-test("manifest declares exact tool ownership and no configuration", async () => {
+test("manifest declares exact tool ownership and validated agent configuration", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("openclaw.plugin.json", root), "utf8"),
   );
@@ -457,7 +473,139 @@ test("manifest declares exact tool ownership and no configuration", async () => 
   assert.deepEqual(manifest.configSchema, {
     type: "object",
     additionalProperties: false,
+    properties: {
+      agentId: {
+        type: "string",
+        pattern: "^[a-z0-9][a-z0-9_-]{0,63}$",
+      },
+    },
   });
+});
+
+
+test("configured CRM agent is guarded while the default and other agents are ignored", () => {
+  const { hooks } = registerPlugin(undefined, { agentId: "custom-crm" });
+  const afterToolCall = hooks.get("after_tool_call").handler;
+  const discordContext = {
+    toolName: "openhouse_crm",
+    runId: "run-custom",
+    agentId: "custom-crm",
+    requester: { channel: "discord" },
+  };
+  afterToolCall(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-custom",
+      params: { operation: "create_lead", arguments: {} },
+      result: toolResult(pendingReceipt()),
+    },
+    { ...discordContext, agentId: "openhouse-crm" },
+  );
+  assert.equal(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "Default agent" },
+        kind: "final",
+        runId: "run-custom",
+        usageState: { agentId: "openhouse-crm" },
+      },
+      { runId: "run-custom", channel: "discord" },
+    ),
+    undefined,
+  );
+
+  afterToolCall(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-custom",
+      params: { operation: "create_lead", arguments: {} },
+      result: toolResult(pendingReceipt()),
+    },
+    discordContext,
+  );
+  assert.deepEqual(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "Custom agent" },
+        kind: "final",
+        runId: "run-custom",
+        usageState: { agentId: "custom-crm" },
+      },
+      { runId: "run-custom", channel: "discord" },
+    ),
+    {
+      payload: {
+        text: "Proposal #4 is waiting for your review: Create lead Jordan Ellis.",
+      },
+    },
+  );
+});
+
+
+test("setup can safely prove the configured custom agent guard without executing CRM", () => {
+  const { hooks } = registerPlugin(undefined, { agentId: "custom-crm" });
+  const beforeToolCall = hooks.get("before_tool_call").handler;
+  const event = {
+    toolName: "openhouse_crm",
+    params: { operation: "__openhouse_agent_guard_probe__", arguments: {} },
+  };
+  const requester = { channel: "openhouse-setup-agent-guard" };
+
+  assert.deepEqual(
+    beforeToolCall(event, { agentId: "custom-crm", requester }),
+    {
+      block: true,
+      blockReason: "Configured CRM agent custom-crm is protected.",
+    },
+  );
+  assert.equal(
+    beforeToolCall(event, { agentId: "openhouse-crm", requester }),
+    undefined,
+  );
+});
+
+
+test("non-Discord tool outcomes cannot enter Discord mutation state", () => {
+  const { hooks } = registerPlugin();
+  hooks.get("after_tool_call").handler(
+    {
+      toolName: "openhouse_crm",
+      runId: "run-channel-scope",
+      params: { operation: "create_lead", arguments: {} },
+      result: toolResult(pendingReceipt()),
+    },
+    {
+      toolName: "openhouse_crm",
+      runId: "run-channel-scope",
+      agentId: "openhouse-crm",
+      requester: { channel: "slack" },
+    },
+  );
+
+  assert.equal(
+    hooks.get("reply_payload_sending").handler(
+      {
+        payload: { text: "Discord reply" },
+        kind: "final",
+        runId: "run-channel-scope",
+        usageState: { agentId: "openhouse-crm" },
+      },
+      { runId: "run-channel-scope", channel: "discord" },
+    ),
+    undefined,
+  );
+});
+
+
+test("invalid configured agent IDs fail plugin registration instead of falling back", () => {
+  assert.throws(
+    () => registerPlugin(undefined, { agentId: "Custom CRM" }),
+    /configured CRM agent ID/i,
+  );
+  assert.throws(
+    () => registerPlugin(undefined, { agentId: 123 }),
+    /configured CRM agent ID/i,
+  );
 });
 
 

@@ -58,13 +58,16 @@ REQUIRED_PLUGIN_HOOKS = (
 )
 DASHBOARD_CHANNEL = "openhouse-dashboard"
 SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability"
+SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard"
 SETUP_PROBE_TOOL = "openhouse_setup_capability_probe"
 SETUP_BLOCK_PROBE_OPERATION = "__openhouse_setup_probe__"
+SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__"
 GATEWAY_PROBE_TIMEOUT_SECONDS = 30
 GATEWAY_PROBE_MAX_BYTES = 256 * 1024
 CONTRACT_MAX_BYTES = 1024 * 1024
 CONTRACT_RELATIVE_PATH = Path("skills") / "crm-db-operations" / "contract.json"
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
+PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
 DIAGNOSTIC_TOOL_POLICY = {
     "profile": "minimal",
     "deny": ["session_status"],
@@ -290,6 +293,23 @@ class OpenClawCLI:
         }
         return self._post_gateway_json(
             "/tools/invoke", payload, channel=DASHBOARD_CHANNEL
+        )
+
+    def probe_configured_agent_guard(
+        self, *, agent_id: str, nonce: str
+    ) -> CommandResult:
+        payload = {
+            "tool": PLUGIN_TOOL,
+            "args": {
+                "operation": SETUP_AGENT_GUARD_OPERATION,
+                "arguments": {},
+            },
+            "agentId": agent_id,
+            "sessionKey": f"agent-guard:setup-capability:{nonce}",
+            "idempotencyKey": f"setup-agent-guard:{nonce}",
+        }
+        return self._post_gateway_json(
+            "/tools/invoke", payload, channel=SETUP_AGENT_GUARD_CHANNEL
         )
 
 
@@ -2810,6 +2830,33 @@ def _verify_dashboard_tool_block(
         )
 
 
+def _verify_plugin_agent_config(cli: OpenClawCLI, agent_id: str) -> None:
+    result = _run_required(
+        cli,
+        ["openclaw", "config", "get", PLUGIN_CONFIG_PATH, "--json"],
+        "configured CRM agent plugin readback",
+    )
+    if _json(result, "configured CRM agent plugin readback") != {
+        "agentId": agent_id
+    }:
+        raise SetupConflict(
+            "OpenClaw did not retain the configured CRM agent for the bundled plugin"
+        )
+
+
+def _verify_configured_agent_guard(cli: OpenClawCLI, agent_id: str) -> None:
+    nonce = secrets.token_hex(16)
+    result = cli.probe_configured_agent_guard(agent_id=agent_id, nonce=nonce)
+    response = f"{result.stdout}\n{result.stderr}".lower()
+    expected = f"configured crm agent {agent_id} is protected."
+    if result.returncode != 403 or expected not in response:
+        raise SetupConflict(
+            "the bounded loopback diagnostic did not prove that the configured CRM "
+            "agent is protected by the bundled plugin; no supported CRM operation "
+            "was executed"
+        )
+
+
 def _restore_approval_changes(
     cli: OpenClawCLI,
     *,
@@ -3043,6 +3090,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     plugin_allow_original: list[str] | None = None
     plugin_allow_snapshot: ConfigValueSnapshot | None = None
     plugin_allow_mutation_attempted = False
+    plugin_config_snapshot: ConfigValueSnapshot | None = None
+    plugin_config_mutation_attempted = False
     approvals_original: set[str] = set()
     approvals_mutation_attempted = False
     crm_agent_preexisting = False
@@ -3064,9 +3113,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         repo = Path(__file__).resolve().parents[1]
         contract_snapshot = _capture_canonical_contract(repo)
         contract_digest = contract_snapshot.digest
-        if SETUP_BLOCK_PROBE_OPERATION in contract_snapshot.operations:
+        if (
+            SETUP_BLOCK_PROBE_OPERATION in contract_snapshot.operations
+            or SETUP_AGENT_GUARD_OPERATION in contract_snapshot.operations
+        ):
             raise SetupConflict(
-                "dashboard diagnostic sentinel unexpectedly exists in the canonical contract"
+                "setup diagnostic sentinel unexpectedly exists in the canonical contract"
             )
         plugin_source = _plugin_source(repo)
         plugin_list = _run_required(
@@ -3167,6 +3219,20 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     ],
                 ),
                 Action(
+                    f"Configure the CRM plugin for agent {options.agent_id}",
+                    [
+                        "openclaw",
+                        "config",
+                        "set",
+                        PLUGIN_CONFIG_PATH,
+                        json.dumps(
+                            {"agentId": options.agent_id},
+                            separators=(",", ":"),
+                        ),
+                        "--strict-json",
+                    ],
+                ),
+                Action(
                     "Enable the bundled OpenClaw CRM plugin",
                     ["openclaw", "plugins", "enable", PLUGIN_ID],
                 ),
@@ -3239,6 +3305,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
 
         # Capture every setup-owned surface before the first target mutation.
         skill_rollback = _snapshot_installed_skills(options.workspace)
+        plugin_config_snapshot = _read_config_snapshot(cli, PLUGIN_CONFIG_PATH)
         config_snapshots[CRM_URL_CONFIG_PATH] = _read_config_snapshot(
             cli, CRM_URL_CONFIG_PATH
         )
@@ -3269,6 +3336,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 *config_snapshots.values(),
                 binding_snapshot,
                 plugin_allow_snapshot,
+                plugin_config_snapshot,
             ],
             crm_agent_id=options.agent_id,
             agent=configured_agent,
@@ -3313,6 +3381,29 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 + (install_plugin.stderr or install_plugin.stdout).strip()
             )
         messages.append("Linked the bundled OpenClaw CRM plugin")
+
+        plugin_config_mutation_attempted = True
+        configure_plugin = cli.run(
+            [
+                "openclaw",
+                "config",
+                "set",
+                PLUGIN_CONFIG_PATH,
+                json.dumps(
+                    {"agentId": options.agent_id},
+                    separators=(",", ":"),
+                ),
+                "--strict-json",
+            ],
+            mutate=True,
+        )
+        if configure_plugin.returncode != 0:
+            raise SetupConflict(
+                "Bundled OpenClaw CRM plugin agent configuration failed: "
+                + (configure_plugin.stderr or configure_plugin.stdout).strip()
+            )
+        _verify_plugin_agent_config(cli, options.agent_id)
+        messages.append(f"Configured the CRM plugin for agent {options.agent_id}")
 
         plugin_enable_attempted = True
         enable_plugin = cli.run(
@@ -3582,6 +3673,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             _json(runtime_plugin, "openhouse-crm runtime inspection"),
             plugin_source,
         )
+        _verify_plugin_agent_config(cli, options.agent_id)
 
         validate = _run_required(
             cli,
@@ -3656,6 +3748,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         _verify_installed_contract(options.workspace, contract_snapshot.digest)
         _verify_empty_effective_tools(cli, diagnostic_agent_id)
         _verify_client_tool_capability(cli, diagnostic_agent_id)
+        _verify_plugin_agent_config(cli, options.agent_id)
+        _verify_configured_agent_guard(cli, options.agent_id)
         _verify_dashboard_tool_block(
             cli, options.agent_id, contract_snapshot.operations
         )
@@ -3690,7 +3784,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         rollback = None
         messages.append(
             "Validated the native CRM tool, required CRM outcome hooks, dashboard "
-            "tool block, request-scoped client tools, and restricted agent configuration, "
+            "tool block, configured-agent guard, request-scoped client tools, and "
+            "restricted agent configuration, "
             "then restarted the OpenClaw Gateway for validation and diagnostic cleanup. "
             "Runtime CRM verification is still required: "
             "python scripts/doctor.py --live-agent --live-crm"
@@ -3820,6 +3915,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         "Could not delete or verify absence of the newly created CRM agent."
                     )
 
+        if plugin_config_mutation_attempted and plugin_config_snapshot is not None:
+            if not _restore_config_snapshot(cli, plugin_config_snapshot):
+                rollback_failed = True
+                messages.append(
+                    "Could not restore the previous CRM plugin agent configuration."
+                )
         if plugin_allow_mutation_attempted and plugin_allow_snapshot is not None:
             if not _restore_config_snapshot(cli, plugin_allow_snapshot):
                 rollback_failed = True
@@ -3963,6 +4064,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         *(
                             [plugin_allow_snapshot]
                             if plugin_allow_snapshot is not None
+                            else []
+                        ),
+                        *(
+                            [plugin_config_snapshot]
+                            if plugin_config_snapshot is not None
                             else []
                         ),
                     ],

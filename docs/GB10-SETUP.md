@@ -45,8 +45,9 @@ python3 scripts/doctor.py --live-agent --live-crm
 ```
 
 Open [http://localhost:8080](http://localhost:8080). The helper creates the
-dedicated `openhouse-crm` agent with the `crm-db-operations` guidance and uses
-`AGENT_ID=openhouse-crm` in the CRM configuration. It links the bundled
+dedicated agent selected by `AGENT_ID` with the `crm-db-operations` guidance.
+The default is `AGENT_ID=openhouse-crm`; choose another valid lowercase ID in
+`.env` before setup if needed. It links the bundled
 `openhouse_crm` tool plugin and allows only that tool plus `exec`; only the
 daily-brief runner remains executable, while general web, browser, and file
 tools are denied. It overrides only this agent's base tool profile, leaving the
@@ -79,8 +80,9 @@ when you need it:
 python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
-It uses the same dedicated agent. CRM writes wait for review in dashboard
-**Pending approvals**.
+It uses the same selected dedicated agent. CRM writes wait for review in
+dashboard **Pending approvals**. One reply preserves each retained proposal ID
+or verified result from that Discord run and reports failures truthfully.
 
 ## What to verify
 

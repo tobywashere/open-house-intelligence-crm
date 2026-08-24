@@ -5,9 +5,12 @@ import { runCrmTool } from "./runner.js";
 
 const toolParameters = buildToolParameters(crmContract);
 const TOOL_NAME = "openhouse_crm";
-const CRM_AGENT_ID = "openhouse-crm";
+const DEFAULT_CRM_AGENT_ID = "openhouse-crm";
+const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const DASHBOARD_CHANNEL = "openhouse-dashboard";
 const INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis";
+const SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard";
+const SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__";
 const TOOL_BLOCKED_CHANNELS = new Set([
   DASHBOARD_CHANNEL,
   INTERNAL_ANALYSIS_CHANNEL,
@@ -35,6 +38,25 @@ function structuredReceipt(result) {
 }
 
 
+function configuredAgentId(pluginConfig) {
+  if (pluginConfig === undefined || pluginConfig === null) return DEFAULT_CRM_AGENT_ID;
+  if (
+    typeof pluginConfig !== "object"
+    || Array.isArray(pluginConfig)
+    || (
+      pluginConfig.agentId !== undefined
+      && (
+        typeof pluginConfig.agentId !== "string"
+        || !AGENT_ID_PATTERN.test(pluginConfig.agentId)
+      )
+    )
+  ) {
+    throw new TypeError("Configured CRM agent ID is invalid");
+  }
+  return pluginConfig.agentId ?? DEFAULT_CRM_AGENT_ID;
+}
+
+
 export function createPluginDefinition(executeCrm = runCrmTool) {
   const outcomeGuard = createOutcomeGuard();
   return {
@@ -42,9 +64,21 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
     name: "Open House CRM",
     description: "Provides audited CRM reads and approval-gated CRM writes.",
     register(api) {
+      const crmAgentId = configuredAgentId(api.pluginConfig);
       api.on(
         "before_tool_call",
         (event, context) => {
+          if (
+            context.requester?.channel === SETUP_AGENT_GUARD_CHANNEL
+            && context.agentId === crmAgentId
+            && event.toolName === TOOL_NAME
+            && event.params?.operation === SETUP_AGENT_GUARD_OPERATION
+          ) {
+            return {
+              block: true,
+              blockReason: `Configured CRM agent ${crmAgentId} is protected.`,
+            };
+          }
           if (
             TOOL_BLOCKED_CHANNELS.has(context.requester?.channel)
           ) {
@@ -56,7 +90,7 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
           const runId = exactRunId(event, context);
           if (
             event.toolName === TOOL_NAME
-            && context.agentId === CRM_AGENT_ID
+            && context.agentId === crmAgentId
             && context.requester?.channel === "discord"
             && outcomeGuard.mutationBlocked({
               runId,
@@ -77,7 +111,11 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       api.on(
         "after_tool_call",
         (event, context) => {
-          if (event.toolName !== TOOL_NAME || context.agentId !== CRM_AGENT_ID) return;
+          if (
+            event.toolName !== TOOL_NAME
+            || context.agentId !== crmAgentId
+            || context.requester?.channel !== "discord"
+          ) return;
           const runId = exactRunId(event, context);
           const receipt = structuredReceipt(event.result);
           if (!runId || !receipt) return;
@@ -91,7 +129,8 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
         const agentId = event.usageState?.agentId;
         if (
           !runId
-          || agentId !== CRM_AGENT_ID
+          || agentId !== crmAgentId
+          || (context.channel !== "discord" && context.messageProvider !== "discord")
           || typeof event.payload?.text !== "string"
         ) return;
         const text = outcomeGuard.rewrite({ runId, agentId, text: event.payload.text });

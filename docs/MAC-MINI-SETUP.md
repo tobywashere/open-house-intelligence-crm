@@ -70,11 +70,13 @@ python3 scripts/doctor.py --live-agent --live-crm
 Open [http://localhost:8080](http://localhost:8080). Keep the Terminal running
 `bash scripts/serve.sh` open while you use the CRM.
 
-The setup helper creates `openhouse-crm`, copies the shipped skills to its own
-workspace, enables the `crm-db-operations` guidance for that agent, links the
-bundled `openhouse_crm` tool plugin, and sets restricted access. The
-configuration in `.env` is
-`AGENT_ID=openhouse-crm`. The helper prints your OpenClaw version, verifies the
+The setup helper creates the agent selected by `AGENT_ID`, copies the shipped
+skills to its own workspace, enables the `crm-db-operations` guidance for that
+agent, links the bundled `openhouse_crm` tool plugin, and sets restricted
+access. The
+default configuration in `.env` is `AGENT_ID=openhouse-crm`; you may replace it
+with another valid lowercase ID before setup. The helper configures the plugin
+safety hooks for that exact agent, prints your OpenClaw version, verifies the
 required capabilities before changing anything, and allows only
 `openhouse_crm` plus `exec`. It overrides only this agent's base tool profile,
 so a global `coding` profile cannot hide the CRM tool and is not changed. CRM
@@ -157,7 +159,9 @@ python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 
 Replace `ACCOUNT` with the account identifier required by OpenClaw. The
 printed binding command is safe to use later too. CRM writes from Discord are
-still proposed for review in the dashboard before they apply.
+still proposed for review in the dashboard before they apply. A multi-write
+Discord reply preserves each retained proposal ID or verified result and reports
+failures; an uncertain result blocks later writes in that request.
 
 ## 7. Recovery
 

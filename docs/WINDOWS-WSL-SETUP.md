@@ -79,8 +79,9 @@ openclaw gateway status
 Use a stable OpenClaw release unless a maintainer specifically asks you to test
 a beta.
 
-The CRM setup command later overrides only the dedicated `openhouse-crm`
-agent's base tool profile. It does not change a machine-wide `coding` profile.
+The CRM setup command later overrides only the dedicated agent selected by
+`AGENT_ID` (normally `openhouse-crm`). It does not change a machine-wide
+`coding` profile.
 The agent is then restricted back to the CRM tool and the daily-brief runner.
 
 ## 3. Verify the local model
@@ -165,10 +166,10 @@ python3 scripts/setup_openclaw.py 2>&1 | tee -a openhouse-setup.txt
 
 Setup links the bundled `openhouse_crm` plugin, verifies that OpenClaw really
 registered the tool, installs the `crm-db-operations` guidance for
-`AGENT_ID=openhouse-crm`, and leaves only the deterministic daily brief on the
-exec allowlist. Do not manually edit the agent's plugin, exec host, mode, security,
-or global `tools.exec` settings between runs. If setup fails, stop here and keep
-`openhouse-setup.txt` for the maintainer.
+the `AGENT_ID` selected in `.env`, and leaves only the deterministic daily brief
+on the exec allowlist. Do not manually edit the agent's plugin, exec host, mode,
+security, or global `tools.exec` settings between runs. If setup fails, stop here
+and keep `openhouse-setup.txt` for the maintainer.
 
 ## 7. Start the product
 
@@ -240,6 +241,11 @@ python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Replace `ACCOUNT` with the account identifier OpenClaw expects.
+The binding and acceptance inspection use the same `AGENT_ID` from `.env`.
+For a multi-write Discord run, the final reply preserves every retained Pending
+proposal ID or verified result and reports failures. If an outcome is uncertain,
+later writes in that run are blocked until you inspect the CRM and Pending
+approvals.
 
 ## 10. Send one complete test bundle
 
