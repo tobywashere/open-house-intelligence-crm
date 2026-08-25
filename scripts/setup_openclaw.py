@@ -3489,6 +3489,11 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
     if result.returncode != 1:
         return False
     expected_text = f"Config path not found: {path}"
+    expected_unset_text = (
+        f"Config path is valid but unset: {path}. The runtime default applies until "
+        "you set an authored value with "
+        f"`openclaw config set {path} <value>`."
+    )
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
     if stdout and stderr:
@@ -3497,11 +3502,19 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
         if stdout == expected_text:
             return True
         try:
-            return _decode_json(stdout, "config missing-path diagnostic") == {
-                "error": expected_text
-            }
+            payload = _decode_json(stdout, "config missing-path diagnostic")
         except SetupConflict:
             return False
+        return payload in (
+            {"error": expected_text},
+            {
+                "ok": False,
+                "error": {
+                    "type": "cli_error",
+                    "message": expected_unset_text,
+                },
+            },
+        )
     return stderr == expected_text
 
 
@@ -4451,19 +4464,32 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> bool:
     if not isinstance(diagnostics, list) or diagnostics:
         raise SetupConflict("openhouse-crm runtime inspection reported diagnostics")
 
-    hook_inventories: list[list[str]] = []
+    typed_hook_inventories: list[list[str]] = []
     seen_inventory_keys: set[tuple[int, str]] = set()
     for holder, key, label in (
         (runtime, "typedHooks", "runtime typed hooks"),
-        (runtime, "hooks", "runtime hooks"),
-        (runtime, "hookNames", "runtime hook names"),
-        (plugin, "hookNames", "plugin hook names"),
+        (payload, "typedHooks", "plugin inspection typed hooks"),
     ):
         marker = (id(holder), key)
         if marker in seen_inventory_keys or key not in holder:
             continue
         seen_inventory_keys.add(marker)
-        hook_inventories.append(_registered_hook_names(holder[key], label))
+        typed_hook_inventories.append(_registered_hook_names(holder[key], label))
+
+    if typed_hook_inventories:
+        hook_inventories = typed_hook_inventories
+    else:
+        hook_inventories = []
+        for holder, key, label in (
+            (runtime, "hooks", "runtime hooks"),
+            (runtime, "hookNames", "runtime hook names"),
+            (plugin, "hookNames", "plugin hook names"),
+        ):
+            marker = (id(holder), key)
+            if marker in seen_inventory_keys or key not in holder:
+                continue
+            seen_inventory_keys.add(marker)
+            hook_inventories.append(_registered_hook_names(holder[key], label))
     for hook_names in hook_inventories:
         if sorted(hook_names) != sorted(REQUIRED_PLUGIN_HOOKS):
             raise SetupConflict(
@@ -4475,7 +4501,7 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> bool:
         for names in hook_inventories[1:]
     ):
         raise SetupConflict("OpenClaw runtime hook inventory is internally inconsistent")
-    hook_count = plugin.get("hookCount")
+    hook_count = plugin.get("hookCount") if not typed_hook_inventories else None
     if hook_count is not None and (
         not isinstance(hook_count, int) or hook_count != len(REQUIRED_PLUGIN_HOOKS)
     ):

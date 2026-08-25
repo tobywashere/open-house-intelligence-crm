@@ -1131,6 +1131,91 @@ def test_agent_root_rejects_inexact_or_noncanonical_missing_path(tmp_path, resul
         )
 
 
+@pytest.mark.parametrize("path", ["plugins.allow", "bindings"])
+def test_beta3_valid_but_unset_config_path_is_treated_as_absent(path):
+    message = (
+        f"Config path is valid but unset: {path}. The runtime default applies until "
+        "you set an authored value with "
+        f"`openclaw config set {path} <value>`."
+    )
+    result = CommandResult(
+        1,
+        json.dumps(
+            {
+                "ok": False,
+                "error": {"type": "cli_error", "message": message},
+            }
+        ),
+        "",
+    )
+
+    assert setup_openclaw._is_missing_config_path(result, path) is True
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "plugins.allow",
+            {
+                "ok": False,
+                "error": {
+                    "type": "cli_error",
+                    "message": (
+                        "Config path is valid but unset: bindings. The runtime default "
+                        "applies until you set an authored value with "
+                        "`openclaw config set bindings <value>`."
+                    ),
+                },
+            },
+        ),
+        (
+            "plugins.allow",
+            {
+                "ok": False,
+                "error": {
+                    "type": "cli_error",
+                    "message": "Unknown config path: plugins.allow.",
+                },
+            },
+        ),
+        (
+            "plugins.allow",
+            {
+                "ok": False,
+                "error": {
+                    "type": "other_error",
+                    "message": (
+                        "Config path is valid but unset: plugins.allow. The runtime "
+                        "default applies until you set an authored value with "
+                        "`openclaw config set plugins.allow <value>`."
+                    ),
+                },
+            },
+        ),
+        (
+            "plugins.allow",
+            {
+                "ok": False,
+                "error": {
+                    "type": "cli_error",
+                    "message": (
+                        "Config path is valid but unset: plugins.allow. The runtime "
+                        "default applies until you set an authored value with "
+                        "`openclaw config set plugins.allow <value>`."
+                    ),
+                    "code": "unset",
+                },
+            },
+        ),
+    ],
+)
+def test_beta3_unset_config_path_rejects_inexact_structured_errors(path, payload):
+    result = CommandResult(1, json.dumps(payload), "")
+
+    assert setup_openclaw._is_missing_config_path(result, path) is False
+
+
 def test_missing_agent_plan_creates_only_dedicated_agent(tmp_path):
     options = make_options(tmp_path)
 
@@ -2120,6 +2205,76 @@ def test_setup_rejects_runtime_missing_outcome_hooks_and_restores_state(tmp_path
     assert cli.plugin_path is None
     assert cli.plugin_enabled is False
     assert ["openclaw", "gateway", "restart"] not in cli.mutating_calls
+
+
+def test_beta_runtime_uses_typed_hooks_instead_of_empty_legacy_hook_names(tmp_path):
+    cli = FakeCLI(
+        plugin_runtime={
+            "workspaceDir": str(tmp_path / "control-plane"),
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+                # OpenClaw beta.2/beta.3 keep this legacy/custom inventory empty.
+                "hookNames": [],
+                "hookCount": 0,
+            },
+            "typedHooks": [
+                {"name": name} for name in setup_openclaw.REQUIRED_PLUGIN_HOOKS
+            ],
+            "customHooks": [],
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+
+
+def test_beta_runtime_rejects_incomplete_authoritative_typed_hooks(tmp_path):
+    cli = FakeCLI(
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+                "hookNames": list(setup_openclaw.REQUIRED_PLUGIN_HOOKS),
+            },
+            "typedHooks": [
+                {"name": name}
+                for name in setup_openclaw.REQUIRED_PLUGIN_HOOKS
+                if name != "gateway_stop"
+            ],
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "required CRM outcome hooks" in result.render()
+
+
+def test_legacy_runtime_hook_names_remain_a_supported_fallback(tmp_path):
+    cli = FakeCLI(
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+                "hookNames": list(setup_openclaw.REQUIRED_PLUGIN_HOOKS),
+            },
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        }
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
 
 
 def test_setup_rejects_optional_crm_runtime_tool_and_restores_state(tmp_path):
