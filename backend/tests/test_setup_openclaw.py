@@ -1501,6 +1501,7 @@ def test_cli_config_agent_mismatch_fails_before_mutation_for_each_roster_schema(
             },
         ),
         ("sandbox", {"mode": "on"}, {"mode": "off"}),
+        ("thinkingDefault", "medium", "off"),
     ],
 )
 def test_existing_managed_agent_fields_are_repaired_for_each_schema(
@@ -1996,6 +1997,7 @@ def test_installed_state_snapshot_is_complete_structured_and_read_only(tmp_path)
     }
     assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
     assert state["agent"]["skills"] == list(setup_openclaw.SKILL_NAMES)
+    assert state["agent"]["thinking_default"] == "off"
     assert state["approvals"]["patterns"] == ["daily-brief"]
     assert state["bindings"]["count"] == 1
     assert set(state["bindings"]) == {"count", "sha256"}
@@ -2845,6 +2847,14 @@ def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path)
     assert probe_agent != options.agent_id
     assert probe_agent.startswith("openhouse-setup-probe-")
     assert cli.extra_agents == {}
+    thinking_calls = [
+        call
+        for call in cli.mutating_calls
+        if call[1:3] == ["config", "set"]
+        and call[3].endswith(".thinkingDefault")
+        and json.loads(call[-2]) == "off"
+    ]
+    assert len(thinking_calls) == 2
     assert any(
         call[1:4] == ["gateway", "call", "tools.effective"]
         and probe_agent in call[call.index("--params") + 1]
@@ -6862,6 +6872,7 @@ def test_failed_existing_agent_repair_restores_managed_fields(tmp_path):
         "skills": ["legacy-skill"],
         "tools": {"allow": ["web_fetch"]},
         "sandbox": {"mode": "on"},
+        "thinkingDefault": "high",
     }
     validate = ("openclaw", "config", "validate", "--json")
     cli = PartialPolicyCLI(

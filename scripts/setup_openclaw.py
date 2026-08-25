@@ -152,6 +152,7 @@ DIAGNOSTIC_TOOL_POLICY = {
     "deny": [PLUGIN_TOOL, "exec"],
 }
 DESIRED_SANDBOX = {"mode": "off"}
+CRM_THINKING_DEFAULT = "off"
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
 TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
 LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
@@ -4070,6 +4071,17 @@ def _config_actions(options: SetupOptions, prefix: str) -> list[Action]:
             ],
         ),
         Action(
+            "Disable thinking for reliable structured CRM tool calls",
+            [
+                "openclaw",
+                "config",
+                "set",
+                f"{prefix}.thinkingDefault",
+                json.dumps(CRM_THINKING_DEFAULT),
+                "--strict-json",
+            ],
+        ),
+        Action(
             "Restrict the CRM agent tools and gateway execution",
             [
                 "openclaw",
@@ -4209,7 +4221,7 @@ def _reject_workspace_collisions(
 def _managed_agent_snapshot(agent: dict[str, Any]) -> dict[str, Any]:
     return {
         field: agent[field]
-        for field in ("skills", "tools", "sandbox")
+        for field in ("skills", "tools", "sandbox", "thinkingDefault")
         if field in agent
     }
 
@@ -4742,7 +4754,14 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
 
     agent = _require_exact_keys(
         root["agent"],
-        {"id", "workspace_matches", "skills", "tools", "sandbox"},
+        {
+            "id",
+            "workspace_matches",
+            "skills",
+            "tools",
+            "sandbox",
+            "thinking_default",
+        },
         "agent",
     )
     _require_canonical_agent_id(agent["id"], "snapshot agent ID")
@@ -4757,6 +4776,8 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
     _validate_authoritative_tools(agent["tools"])
     if agent["sandbox"] != DESIRED_SANDBOX:
         raise SetupConflict("unsupported installed-state snapshot: agent sandbox")
+    if agent["thinking_default"] != CRM_THINKING_DEFAULT:
+        raise SetupConflict("unsupported installed-state snapshot: agent thinking default")
 
     bindings = _require_exact_keys(root["bindings"], {"count", "sha256"}, "bindings")
     if (
@@ -4978,7 +4999,11 @@ def capture_installed_state(
         raise SetupConflict("installed-state CRM agent workspace does not match")
     tools = agent.get("tools")
     _validate_authoritative_tools(tools)
-    if agent.get("skills") != list(SKILL_NAMES) or agent.get("sandbox") != DESIRED_SANDBOX:
+    if (
+        agent.get("skills") != list(SKILL_NAMES)
+        or agent.get("sandbox") != DESIRED_SANDBOX
+        or agent.get("thinkingDefault") != CRM_THINKING_DEFAULT
+    ):
         raise SetupConflict("installed-state CRM agent policy does not match setup")
 
     _, daily = _entrypoints(options)
@@ -5037,6 +5062,7 @@ def capture_installed_state(
             "skills": list(SKILL_NAMES),
             "tools": tools,
             "sandbox": agent["sandbox"],
+            "thinking_default": agent["thinkingDefault"],
         },
         "bindings": _configured_bindings_snapshot(cli),
         "approvals": {
@@ -5261,6 +5287,7 @@ def _create_diagnostic_agent(
         raise SetupConflict("OpenClaw exposed the diagnostic agent with another workspace")
     for field, value in (
         ("skills", []),
+        ("thinkingDefault", CRM_THINKING_DEFAULT),
         ("tools", DIAGNOSTIC_TOOL_POLICY),
     ):
         result = cli.run(
@@ -5924,7 +5951,7 @@ def _rollback_state_matches(
             ):
                 return False
             expected_fields = agent_snapshot or {}
-            for field in ("skills", "tools", "sandbox"):
+            for field in ("skills", "tools", "sandbox", "thinkingDefault"):
                 if (field in configured_agent) != (field in expected_fields):
                     return False
                 if field in expected_fields and (
@@ -6490,7 +6517,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             if targets_agent_config and rollback is not None:
                 field = action.argv[3][len(prefix) + 1 :]
                 if (
-                    field in {"skills", "tools", "sandbox"}
+                    field in {"skills", "tools", "sandbox", "thinkingDefault"}
                     and field not in rollback.changed_fields
                 ):
                     rollback.changed_fields.append(field)

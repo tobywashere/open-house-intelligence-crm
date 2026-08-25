@@ -110,13 +110,19 @@ Setup gives only the dedicated CRM agent an unrestricted base profile before
 narrowing its final allowlist to those two tools. This prevents a machine-wide
 `coding` profile from hiding the CRM plugin without changing that global profile
 or exposing CRM access to unrelated agents.
+Setup also sets the dedicated CRM agent's thinking default to `off`. OpenClaw's
+recommended local-model configuration uses this mode for smaller Qwen models,
+and it prevents a model from spending its response on reasoning or merely
+claiming that it called a tool. The temporary setup probe uses the same setting.
+This is scoped to the CRM agents; setup does not change the global model,
+provider, thinking default, or unrelated agents.
 
 If an earlier run stopped halfway through, rerun the same command. Setup repairs
-the CRM agent's skills, sandbox, and execution policy before checking the final
-result. It does not change the global `tools.exec` settings used by other agents.
-If a later check fails, setup restores the CRM agent fields that existed before
-that run. It will not take over an existing selected CRM agent whose workspace
-points somewhere else.
+the CRM agent's skills, thinking default, sandbox, and execution policy before
+checking the final result. It does not change the global `tools.exec` or model
+settings used by other agents. If a later check fails, setup restores the CRM
+agent fields that existed before that run. It will not take over an existing
+selected CRM agent whose workspace points somewhere else.
 
 The helper prints `openclaw --version` in both success and failure diagnostics.
 Compatibility is capability-based because this repository has no evidence for
@@ -426,6 +432,11 @@ CRM fields can create a new proposal for review.
   It repairs partial dedicated-agent setup, relinks the bundled plugin, verifies
   the `openhouse_crm` runtime tool, and removes the obsolete CRM wrapper
   approval. Do not change global `tools.exec` settings.
+- **Setup says the model/provider capability was not proven:** the model answered
+  without making the required structured tool call. Setup already turns thinking
+  off for the CRM agent, so confirm OpenClaw is using a tool-capable model and its
+  native provider configuration, then rerun setup. Do not bypass this check; it
+  prevents the dashboard from trusting a model that only says a CRM action worked.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
   Confirm the intended `AGENT_ID` in `.env` (normally `openhouse-crm`), rerun
   setup, and repeat the live CRM check. Do not configure a different plugin

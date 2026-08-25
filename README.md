@@ -66,7 +66,9 @@ Open [http://localhost:8080](http://localhost:8080). Look for
 CRM, not merely that a generic assistant answered. Setup installs the
 `crm-db-operations` guidance and the restricted CRM tool automatically. Do not
 repair OpenClaw agent, tool, exec, profile, or plugin settings by hand. Rerun
-the same setup command if it reports a partial installation.
+the same setup command if it reports a partial installation. Setup also turns
+off extended model thinking for this CRM agent only, which helps smaller local
+models make reliable CRM tool calls without changing your other OpenClaw agents.
 
 For a hardware acceptance report, first capture two explicit setup runs. This
 helper runs setup twice and saves machine-verifiable evidence tied to the
