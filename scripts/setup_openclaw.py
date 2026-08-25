@@ -3489,11 +3489,14 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
     if result.returncode != 1:
         return False
     expected_text = f"Config path not found: {path}"
-    expected_unset_text = (
+    expected_unset_prefix = (
         f"Config path is valid but unset: {path}. The runtime default applies until "
         "you set an authored value with "
-        f"`openclaw config set {path} <value>`."
     )
+    expected_unset_texts = {
+        expected_unset_prefix + f"`openclaw config set {path} <value>`.",
+        expected_unset_prefix + f"openclaw config set {path} <value>.",
+    }
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
     if stdout and stderr:
@@ -3505,15 +3508,17 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
             payload = _decode_json(stdout, "config missing-path diagnostic")
         except SetupConflict:
             return False
-        return payload in (
-            {"error": expected_text},
-            {
-                "ok": False,
-                "error": {
-                    "type": "cli_error",
-                    "message": expected_unset_text,
-                },
-            },
+        if payload == {"error": expected_text}:
+            return True
+        if not isinstance(payload, dict) or set(payload) != {"ok", "error"}:
+            return False
+        error = payload.get("error")
+        return (
+            payload.get("ok") is False
+            and isinstance(error, dict)
+            and set(error) == {"type", "message"}
+            and error.get("type") == "cli_error"
+            and error.get("message") in expected_unset_texts
         )
     return stderr == expected_text
 
@@ -5274,6 +5279,8 @@ def _create_diagnostic_agent(
                 f"Could not restrict the setup diagnostic agent {field}: "
                 + (result.stderr or result.stdout).strip()
             )
+
+
 def _remove_diagnostic_workspace(
     root: Path,
     *,
@@ -5306,53 +5313,186 @@ def _remove_diagnostic_workspace(
         return False
 
 
-def _verify_diagnostic_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
-    params = json.dumps(
-        {"sessionKey": f"agent:{agent_id}:main"}, separators=(",", ":")
+def _create_diagnostic_session(cli: OpenClawCLI, agent_id: str) -> tuple[str, str]:
+    requested_key = (
+        f"agent:{agent_id}:dashboard:openhouse-setup-{secrets.token_hex(12)}"
     )
-    result = _run_required(
-        cli,
+    params = json.dumps(
+        {"agentId": agent_id, "key": requested_key}, separators=(",", ":")
+    )
+    result = cli.run(
         [
             "openclaw",
             "gateway",
             "call",
-            "tools.effective",
+            "sessions.create",
             "--params",
             params,
             "--timeout",
             "15000",
             "--json",
         ],
-        "diagnostic effective tool inventory",
+        mutate=True,
     )
-    payload = _json(result, "diagnostic effective tool inventory")
+    if result.returncode != 0:
+        raise SetupConflict(
+            "Could not create the setup diagnostic session: "
+            + (result.stderr or result.stdout).strip()
+        )
+    payload = _json(result, "diagnostic session creation")
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise SetupConflict("OpenClaw returned an unsupported diagnostic session record")
+    session_key = payload.get("key")
+    session_id = payload.get("sessionId")
+    if (
+        session_key != requested_key
+        or not isinstance(session_id, str)
+        or not session_id
+        or payload.get("runStarted") is not False
+    ):
+        raise SetupConflict("OpenClaw returned an unsupported diagnostic session record")
+    return session_key, session_id
+
+
+def _delete_diagnostic_session(
+    cli: OpenClawCLI, agent_id: str, session_key: str, session_id: str
+) -> None:
+    params = json.dumps(
+        {
+            "key": session_key,
+            "agentId": agent_id,
+            "deleteTranscript": True,
+            "expectedSessionId": session_id,
+        },
+        separators=(",", ":"),
+    )
+    result = cli.run(
+        [
+            "openclaw",
+            "gateway",
+            "call",
+            "sessions.delete",
+            "--params",
+            params,
+            "--timeout",
+            "15000",
+            "--json",
+        ],
+        mutate=True,
+    )
+    if result.returncode != 0:
+        raise SetupConflict(
+            "Could not delete the setup diagnostic session: "
+            + (result.stderr or result.stdout).strip()
+        )
+    payload = _json(result, "diagnostic session deletion")
+    archived = payload.get("archived") if isinstance(payload, dict) else None
     if (
         not isinstance(payload, dict)
-        or payload.get("agentId") != agent_id
-        or payload.get("profile") != "full"
-        or not isinstance(payload.get("found"), list)
+        or payload.get("ok") is not True
+        or payload.get("key") != session_key
+        or payload.get("deleted") is not True
+        or not isinstance(archived, list)
+        or not all(isinstance(item, str) and item for item in archived)
     ):
-        raise SetupConflict(
-            "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+        raise SetupConflict("OpenClaw did not confirm diagnostic session deletion")
+
+
+def _verify_diagnostic_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
+    session_key, session_id = _create_diagnostic_session(cli, agent_id)
+    params = json.dumps(
+        {"sessionKey": session_key, "agentId": agent_id}, separators=(",", ":")
+    )
+    try:
+        result = _run_required(
+            cli,
+            [
+                "openclaw",
+                "gateway",
+                "call",
+                "tools.effective",
+                "--params",
+                params,
+                "--timeout",
+                "15000",
+                "--json",
+            ],
+            "diagnostic effective tool inventory",
         )
-    effective: set[str] = set()
-    for group in payload["found"]:
+        payload = _json(result, "diagnostic effective tool inventory")
         if (
-            not isinstance(group, list)
-            or len(group) != 2
-            or not isinstance(group[0], str)
-            or not group[0]
-            or not isinstance(group[1], list)
-            or not all(isinstance(name, str) and name for name in group[1])
+            not isinstance(payload, dict)
+            or payload.get("agentId") != agent_id
+            or payload.get("profile") != "full"
         ):
             raise SetupConflict(
                 "OpenClaw did not expose an authoritative setup sentinel tool inventory"
             )
-        effective.update(group[1])
-    if effective != {SETUP_MARKER_TOOL}:
-        raise SetupConflict(
-            "OpenClaw diagnostic agent must expose exactly the setup sentinel tool"
-        )
+        effective_names: list[str] = []
+        if "groups" in payload:
+            groups = payload["groups"]
+            if not isinstance(groups, list):
+                raise SetupConflict(
+                    "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+                )
+            group_ids: list[str] = []
+            for group in groups:
+                if (
+                    not isinstance(group, dict)
+                    or not isinstance(group.get("id"), str)
+                    or not group["id"]
+                    or not isinstance(group.get("source"), str)
+                    or not group["source"]
+                    or not isinstance(group.get("tools"), list)
+                ):
+                    raise SetupConflict(
+                        "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+                    )
+                group_ids.append(group["id"])
+                for tool in group["tools"]:
+                    if (
+                        not isinstance(tool, dict)
+                        or not isinstance(tool.get("id"), str)
+                        or not tool["id"]
+                    ):
+                        raise SetupConflict(
+                            "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+                        )
+                    effective_names.append(tool["id"])
+            if len(group_ids) != len(set(group_ids)):
+                raise SetupConflict(
+                    "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+                )
+        else:
+            found = payload.get("found")
+            if not isinstance(found, list):
+                raise SetupConflict(
+                    "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+                )
+            for group in found:
+                if (
+                    not isinstance(group, list)
+                    or len(group) != 2
+                    or not isinstance(group[0], str)
+                    or not group[0]
+                    or not isinstance(group[1], list)
+                    or not all(isinstance(name, str) and name for name in group[1])
+                ):
+                    raise SetupConflict(
+                        "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+                    )
+                effective_names.extend(group[1])
+        if len(effective_names) != len(set(effective_names)):
+            raise SetupConflict(
+                "OpenClaw did not expose an authoritative setup sentinel tool inventory"
+            )
+        effective = set(effective_names)
+        if effective != {SETUP_MARKER_TOOL}:
+            raise SetupConflict(
+                "OpenClaw diagnostic agent must expose exactly the setup sentinel tool"
+            )
+    finally:
+        _delete_diagnostic_session(cli, agent_id, session_key, session_id)
 
 
 def _request_client_tool_capability(

@@ -207,6 +207,7 @@ class FakeCLI:
         self.gateway_restart_count = 0
         self.extra_agents = {}
         self.bindings = set()
+        self.sessions = {}
 
     def _all_agents(self):
         agents = [self.created_agent] if self.created_agent else []
@@ -419,6 +420,11 @@ class FakeCLI:
                 self.extra_agents.pop(agent_id, None)
                 self.bindings = {
                     binding for binding in self.bindings if binding[0] != agent_id
+                }
+                self.sessions = {
+                    key: value
+                    for key, value in self.sessions.items()
+                    if value["agentId"] != agent_id
                 }
             elif args[1:3] == ["agents", "bind"]:
                 self.bindings.add(
@@ -652,9 +658,72 @@ class FakeCLI:
             and args[-1] == "--json"
         ):
             return CommandResult(0, json.dumps(self.config_values.get(args[3])), "")
+        if args[1:4] == ["gateway", "call", "sessions.create"]:
+            params = json.loads(args[args.index("--params") + 1])
+            agent_id = params.get("agentId")
+            if not isinstance(agent_id, str) or agent_id not in {
+                agent["id"] for agent in self._all_agents()
+            }:
+                return CommandResult(1, "", f'unknown agent id "{agent_id}"')
+            sequence = len(self.sessions) + 1
+            session_key = params.get("key")
+            if (
+                not isinstance(session_key, str)
+                or not session_key.startswith(f"agent:{agent_id}:dashboard:")
+                or session_key in self.sessions
+            ):
+                return CommandResult(1, "", "invalid or duplicate diagnostic session key")
+            session_id = f"setup-session-{sequence}"
+            self.sessions[session_key] = {
+                "agentId": agent_id,
+                "sessionId": session_id,
+            }
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "key": session_key,
+                        "sessionId": session_id,
+                        "entry": {"sessionId": session_id},
+                        "runStarted": False,
+                    }
+                ),
+                "",
+            )
+        if args[1:4] == ["gateway", "call", "sessions.delete"]:
+            params = json.loads(args[args.index("--params") + 1])
+            session_key = params.get("key")
+            session = self.sessions.get(session_key)
+            if (
+                session is None
+                or params.get("agentId") != session["agentId"]
+                or params.get("expectedSessionId") != session["sessionId"]
+            ):
+                return CommandResult(1, "", f'unknown session key "{session_key}"')
+            del self.sessions[session_key]
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "key": session_key,
+                        "deleted": True,
+                        "archived": [],
+                    }
+                ),
+                "",
+            )
         if args[1:4] == ["gateway", "call", "tools.effective"]:
             params = json.loads(args[args.index("--params") + 1])
-            agent_id = params["sessionKey"].split(":", 2)[1]
+            session = self.sessions.get(params.get("sessionKey"))
+            agent_id = params.get("agentId")
+            if session is None or agent_id != session["agentId"]:
+                return CommandResult(
+                    1,
+                    "",
+                    f'Error: unknown session key "{params.get("sessionKey")}"',
+                )
             agent = self.extra_agents.get(agent_id) or self.created_agent or {}
             tools = agent.get("tools", {})
             setup_probe = self.config_values.get(PLUGIN_CONFIG_PATH, {}).get(
@@ -673,7 +742,22 @@ class FakeCLI:
                     {
                         "agentId": agent_id,
                         "profile": tools.get("profile"),
-                        "found": [["core", effective]],
+                        "groups": [
+                            {
+                                "id": "plugin",
+                                "label": "Plugin tools",
+                                "source": "plugin",
+                                "tools": [
+                                    {
+                                        "id": name,
+                                        "label": name,
+                                        "description": "Test tool",
+                                        "source": "plugin",
+                                    }
+                                    for name in effective
+                                ],
+                            }
+                        ],
                     }
                 ),
                 "",
@@ -1137,6 +1221,27 @@ def test_beta3_valid_but_unset_config_path_is_treated_as_absent(path):
         f"Config path is valid but unset: {path}. The runtime default applies until "
         "you set an authored value with "
         f"`openclaw config set {path} <value>`."
+    )
+    result = CommandResult(
+        1,
+        json.dumps(
+            {
+                "ok": False,
+                "error": {"type": "cli_error", "message": message},
+            }
+        ),
+        "",
+    )
+
+    assert setup_openclaw._is_missing_config_path(result, path) is True
+
+
+@pytest.mark.parametrize("path", ["plugins.allow", "bindings"])
+def test_beta3_native_valid_but_unset_config_path_without_backticks_is_absent(path):
+    message = (
+        f"Config path is valid but unset: {path}. The runtime default applies until "
+        "you set an authored value with "
+        f"openclaw config set {path} <value>."
     )
     result = CommandResult(
         1,
@@ -2752,6 +2857,54 @@ def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path)
     assert cli.mutating_calls.count(["openclaw", "gateway", "restart"]) == 2
 
 
+def test_effective_tools_uses_a_persisted_agent_targeted_diagnostic_session(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert result.ok, result.render()
+    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    creates = [
+        call
+        for call in cli.calls
+        if call[1:4] == ["gateway", "call", "sessions.create"]
+    ]
+    effective = [
+        call
+        for call in cli.calls
+        if call[1:4] == ["gateway", "call", "tools.effective"]
+    ]
+    deletes = [
+        call
+        for call in cli.calls
+        if call[1:4] == ["gateway", "call", "sessions.delete"]
+    ]
+    assert len(creates) == len(effective) == len(deletes) == 1
+    create_params = json.loads(creates[0][creates[0].index("--params") + 1])
+    effective_params = json.loads(effective[0][effective[0].index("--params") + 1])
+    delete_params = json.loads(deletes[0][deletes[0].index("--params") + 1])
+    assert set(create_params) == {"agentId", "key"}
+    assert create_params["agentId"] == probe_agent
+    assert re.fullmatch(
+        rf"agent:{re.escape(probe_agent)}:dashboard:openhouse-setup-[0-9a-f]{{24}}",
+        create_params["key"],
+    )
+    assert effective_params == {
+        "agentId": probe_agent,
+        "sessionKey": create_params["key"],
+    }
+    assert delete_params["key"] == create_params["key"]
+    assert delete_params["agentId"] == probe_agent
+    assert delete_params["deleteTranscript"] is True
+    assert isinstance(delete_params["expectedSessionId"], str)
+    assert delete_params["expectedSessionId"]
+    assert cli.calls.index(creates[0]) < cli.calls.index(effective[0]) < cli.calls.index(
+        deletes[0]
+    )
+    assert cli.sessions == {}
+
+
 def test_client_tool_probe_fails_before_inference_for_any_extra_native_tool(
     tmp_path,
 ):
@@ -2763,6 +2916,7 @@ def test_client_tool_probe_fails_before_inference_for_any_extra_native_tool(
     assert "exactly the setup sentinel tool" in result.render()
     assert cli.client_tool_probe_calls == []
     assert cli.extra_agents == {}
+    assert cli.sessions == {}
 
 
 def test_client_tool_probe_rejects_and_cleans_up_bound_diagnostic_agent(tmp_path):
