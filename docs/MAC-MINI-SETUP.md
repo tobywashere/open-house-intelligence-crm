@@ -196,7 +196,8 @@ Discord is in scope.
 - **Chat verified, CRM capability failed:** rerun
   `python3 -I scripts/setup_openclaw.py`; it repairs a partial dedicated-agent
   setup, relinks the bundled CRM plugin, and verifies the real
-  `openhouse_crm` tool. Do not change global `tools.exec` settings.
+  `openhouse_crm` tool. It also keeps caller-supplied CRM functions directly
+  visible to this agent. Do not change global `tools.exec` settings.
 - **OpenClaw unreachable:** make sure its gateway is listening on port 18789
   and `AGENT_GATEWAY_URL` is correct in `.env`.
 - **Slow responses:** choose a smaller model. The 16 GB minimum does not mean

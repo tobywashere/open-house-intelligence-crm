@@ -397,6 +397,7 @@ def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> di
             },
             "sandbox": {"mode": "off"},
             "thinking_default": "off",
+            "local_model_lean": False,
         },
         "bindings": {
             "count": 0,

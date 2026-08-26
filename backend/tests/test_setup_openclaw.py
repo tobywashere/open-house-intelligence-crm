@@ -40,6 +40,7 @@ LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
 LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
 PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
+TOOL_SEARCH_CONFIG_PATH = "tools.toolSearch"
 
 
 OPENCLAW_SANDBOX_EXPLAIN_STABLE = {
@@ -603,6 +604,20 @@ class FakeCLI:
             if "plugins.allow" not in self.config_values:
                 return CommandResult(1, "", "Config path not found: plugins.allow")
             return CommandResult(0, json.dumps(self.config_values["plugins.allow"]), "")
+        if args == [
+            "openclaw",
+            "config",
+            "get",
+            TOOL_SEARCH_CONFIG_PATH,
+            "--json",
+        ]:
+            if TOOL_SEARCH_CONFIG_PATH not in self.config_values:
+                return CommandResult(
+                    1, "", f"Config path not found: {TOOL_SEARCH_CONFIG_PATH}"
+                )
+            return CommandResult(
+                0, json.dumps(self.config_values[TOOL_SEARCH_CONFIG_PATH]), ""
+            )
         if args == [
             "openclaw",
             "config",
@@ -1502,6 +1517,11 @@ def test_cli_config_agent_mismatch_fails_before_mutation_for_each_roster_schema(
         ),
         ("sandbox", {"mode": "on"}, {"mode": "off"}),
         ("thinkingDefault", "medium", "off"),
+        (
+            "experimental",
+            {"localModelLean": True, "futureSetting": "preserved"},
+            {"localModelLean": False, "futureSetting": "preserved"},
+        ),
     ],
 )
 def test_existing_managed_agent_fields_are_repaired_for_each_schema(
@@ -1964,6 +1984,7 @@ def test_fresh_setup_installs_digest_verified_contract_and_exact_policy(tmp_path
     assert installed_contract.read_bytes() == source_contract.read_bytes()
     assert not (installed_contract.parent / "operations.json").exists()
     assert cli.created_agent["tools"] == setup_openclaw.DESIRED_TOOLS
+    assert cli.created_agent["experimental"] == {"localModelLean": False}
     assert cli.approval_patterns == {str(daily)}
     assert "SHA-256" in result.render()
     assert len(cli.client_tool_probe_calls) == 1
@@ -1998,6 +2019,7 @@ def test_installed_state_snapshot_is_complete_structured_and_read_only(tmp_path)
     assert state["agent"]["tools"] == setup_openclaw.DESIRED_TOOLS
     assert state["agent"]["skills"] == list(setup_openclaw.SKILL_NAMES)
     assert state["agent"]["thinking_default"] == "off"
+    assert state["agent"]["local_model_lean"] is False
     assert state["approvals"]["patterns"] == ["daily-brief"]
     assert state["bindings"]["count"] == 1
     assert set(state["bindings"]) == {"count", "sha256"}
@@ -2855,6 +2877,14 @@ def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path)
         and json.loads(call[-2]) == "off"
     ]
     assert len(thinking_calls) == 2
+    lean_mode_calls = [
+        call
+        for call in cli.mutating_calls
+        if call[1:3] == ["config", "set"]
+        and call[3].endswith(".experimental")
+        and json.loads(call[-2]).get("localModelLean") is False
+    ]
+    assert len(lean_mode_calls) == 2
     assert any(
         call[1:4] == ["gateway", "call", "tools.effective"]
         and probe_agent in call[call.index("--params") + 1]
@@ -6873,6 +6903,10 @@ def test_failed_existing_agent_repair_restores_managed_fields(tmp_path):
         "tools": {"allow": ["web_fetch"]},
         "sandbox": {"mode": "on"},
         "thinkingDefault": "high",
+        "experimental": {
+            "localModelLean": True,
+            "futureSetting": "preserved",
+        },
     }
     validate = ("openclaw", "config", "validate", "--json")
     cli = PartialPolicyCLI(
@@ -6886,6 +6920,48 @@ def test_failed_existing_agent_repair_restores_managed_fields(tmp_path):
     assert "simulated validation failure" in result.render()
     assert cli.created_agent == original
     assert "Restored the previous dedicated-agent configuration" in result.render()
+
+
+@pytest.mark.parametrize(
+    "tool_search",
+    [
+        True,
+        {"enabled": True, "mode": "tools"},
+        {"mode": "code"},
+    ],
+)
+def test_setup_rejects_global_tool_search_that_hides_client_functions_before_mutation(
+    tmp_path, tool_search
+):
+    cli = FakeCLI()
+    cli.config_values[TOOL_SEARCH_CONFIG_PATH] = tool_search
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "global Tool Search" in result.render()
+    assert "caller-supplied CRM functions" in result.render()
+    assert cli.mutating_calls == []
+
+
+@pytest.mark.parametrize(
+    "tool_search",
+    [
+        False,
+        {"enabled": False, "mode": "tools"},
+        {"enabled": True, "mode": "directory"},
+        {"mode": "directory"},
+    ],
+)
+def test_setup_accepts_global_tool_search_modes_that_keep_client_functions_direct(
+    tmp_path, tool_search
+):
+    cli = FakeCLI()
+    cli.config_values[TOOL_SEARCH_CONFIG_PATH] = tool_search
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
 
 
 def test_existing_agent_rollback_requires_authoritative_exact_readback(tmp_path):

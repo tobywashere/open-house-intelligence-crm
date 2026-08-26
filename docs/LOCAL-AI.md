@@ -103,9 +103,11 @@ configuration and proves the safety hooks protect that exact agent. The default
 remains `openhouse-crm`.
 CRM reads and proposals use the typed `openhouse_crm` tool without a shell.
 Command execution remains available only for the deterministic daily-brief runner.
-OpenClaw's local-model lean mode may present that tool through the compact
-`tool_search` and `tool_call` controls instead of as a direct tool. The shipped
-skills support both presentations.
+OpenClaw may automatically enable lean tool compaction for local Ollama models.
+That compact surface is useful for general agents, but it can hide the two
+caller-supplied functions used by verified CRM chat. Setup disables lean mode
+for the dedicated CRM agent and its temporary probe only. Other agents keep
+their existing behavior.
 Setup gives only the dedicated CRM agent an unrestricted base profile before
 narrowing its final allowlist to those two tools. This prevents a machine-wide
 `coding` profile from hiding the CRM plugin without changing that global profile
@@ -115,14 +117,18 @@ recommended local-model configuration uses this mode for smaller Qwen models,
 and it prevents a model from spending its response on reasoning or merely
 claiming that it called a tool. The temporary setup probe uses the same setting.
 This is scoped to the CRM agents; setup does not change the global model,
-provider, thinking default, or unrelated agents.
+provider, thinking default, lean-mode default, or unrelated agents. If you
+explicitly enabled global Tool Search in `tools` or `code` mode, setup stops
+before changing anything because that global setting would still hide the CRM
+functions. Disable it or use `directory` mode, then rerun setup.
 
 If an earlier run stopped halfway through, rerun the same command. Setup repairs
-the CRM agent's skills, thinking default, sandbox, and execution policy before
-checking the final result. It does not change the global `tools.exec` or model
-settings used by other agents. If a later check fails, setup restores the CRM
-agent fields that existed before that run. It will not take over an existing
-selected CRM agent whose workspace points somewhere else.
+the CRM agent's skills, thinking default, lean-mode override, sandbox, and
+execution policy before checking the final result. It does not change the
+global `tools.exec` or model settings used by other agents. If a later check
+fails, setup restores the CRM agent fields that existed before that run. It
+will not take over an existing selected CRM agent whose workspace points
+somewhere else.
 
 The helper prints `openclaw --version` in both success and failure diagnostics.
 Compatibility is capability-based because this repository has no evidence for
@@ -434,9 +440,13 @@ CRM fields can create a new proposal for review.
   approval. Do not change global `tools.exec` settings.
 - **Setup says the model/provider capability was not proven:** the model answered
   without making the required structured tool call. Setup already turns thinking
-  off for the CRM agent, so confirm OpenClaw is using a tool-capable model and its
-  native provider configuration, then rerun setup. Do not bypass this check; it
-  prevents the dashboard from trusting a model that only says a CRM action worked.
+  and lean tool compaction off for the CRM agent, so confirm OpenClaw is using a
+  tool-capable model and its native provider configuration, then rerun setup. Do
+  not bypass this check; it prevents the dashboard from trusting a model that
+  only says a CRM action worked.
+- **Setup says global Tool Search would hide CRM functions:** this is an explicit
+  machine-wide OpenClaw setting, so setup leaves it alone. Disable Tool Search,
+  or configure `directory` mode if other agents need it, then rerun setup.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
   Confirm the intended `AGENT_ID` in `.env` (normally `openhouse-crm`), rerun
   setup, and repeat the live CRM check. Do not configure a different plugin

@@ -57,9 +57,10 @@ The default is `AGENT_ID=openhouse-crm`; choose another valid lowercase ID in
 `openhouse_crm` tool plugin and allows only that tool plus `exec`; only the
 daily-brief runner remains executable, while general web, browser, and file
 tools are denied. It overrides only this agent's base tool profile, leaving the
-global profile unchanged. It checks required CLI and policy capabilities, then
-reads back both the tool policy and live plugin registration before reporting
-success.
+global profile unchanged. It disables lean tool compaction for only this agent
+so verified CRM functions remain directly visible. It checks required CLI and
+policy capabilities, then reads back both the tool policy and live plugin
+registration before reporting success.
 
 The expected live result is **CRM capability: crm_verified**. If the result is
 only chat verified, rerun `python3 -I scripts/setup_openclaw.py` and use the

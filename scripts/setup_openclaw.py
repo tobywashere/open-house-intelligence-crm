@@ -146,6 +146,7 @@ CLIENT_TOOLS_RELATIVE_PATH = (
 )
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
 PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
+TOOL_SEARCH_CONFIG_PATH = "tools.toolSearch"
 DIAGNOSTIC_TOOL_POLICY = {
     "profile": "full",
     "allow": [SETUP_MARKER_TOOL],
@@ -153,6 +154,14 @@ DIAGNOSTIC_TOOL_POLICY = {
 }
 DESIRED_SANDBOX = {"mode": "off"}
 CRM_THINKING_DEFAULT = "off"
+CRM_LOCAL_MODEL_LEAN = False
+MANAGED_AGENT_FIELDS = (
+    "skills",
+    "tools",
+    "sandbox",
+    "thinkingDefault",
+    "experimental",
+)
 TOKEN_CONFIG_PATH = 'skills.entries["crm-db-operations"].apiKey'
 TOKEN_ENTRY_CONFIG_PATH = 'skills.entries["crm-db-operations"]'
 LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
@@ -4056,7 +4065,16 @@ def _validate_authoritative_tools(payload: Any) -> None:
         )
 
 
-def _config_actions(options: SetupOptions, prefix: str) -> list[Action]:
+def _desired_agent_experimental(agent: dict[str, Any] | None) -> dict[str, Any]:
+    current = agent.get("experimental") if agent is not None else None
+    preserved = dict(current) if isinstance(current, dict) else {}
+    preserved["localModelLean"] = CRM_LOCAL_MODEL_LEAN
+    return preserved
+
+
+def _config_actions(
+    options: SetupOptions, prefix: str, agent: dict[str, Any] | None = None
+) -> list[Action]:
     token = os.environ.get("OHI_API_TOKEN", "")
     actions = [
         Action(
@@ -4078,6 +4096,17 @@ def _config_actions(options: SetupOptions, prefix: str) -> list[Action]:
                 "set",
                 f"{prefix}.thinkingDefault",
                 json.dumps(CRM_THINKING_DEFAULT),
+                "--strict-json",
+            ],
+        ),
+        Action(
+            "Keep caller-supplied CRM functions directly visible to the local model",
+            [
+                "openclaw",
+                "config",
+                "set",
+                f"{prefix}.experimental",
+                json.dumps(_desired_agent_experimental(agent)),
                 "--strict-json",
             ],
         ),
@@ -4133,6 +4162,7 @@ def _deferred_agent_config_messages(options: SetupOptions) -> list[str]:
         "once OpenClaw selects the exact roster path.",
         "Would configure the dedicated CRM agent's sandbox mode after agent creation, "
         "once OpenClaw selects the exact roster path.",
+        "Would disable lean local-model tool compaction for only the dedicated CRM agent.",
         "Would configure the CRM API URL.",
     ]
     if os.environ.get("OHI_API_TOKEN", ""):
@@ -4221,7 +4251,7 @@ def _reject_workspace_collisions(
 def _managed_agent_snapshot(agent: dict[str, Any]) -> dict[str, Any]:
     return {
         field: agent[field]
-        for field in ("skills", "tools", "sandbox", "thinkingDefault")
+        for field in MANAGED_AGENT_FIELDS
         if field in agent
     }
 
@@ -4581,6 +4611,36 @@ def _read_config_snapshot(cli: OpenClawCLI, path: str) -> ConfigValueSnapshot:
     return ConfigValueSnapshot(path, True, _json(result, f"{path} snapshot"))
 
 
+def _validate_global_tool_search_for_client_functions(cli: OpenClawCLI) -> None:
+    snapshot = _read_config_snapshot(cli, TOOL_SEARCH_CONFIG_PATH)
+    if not snapshot.existed:
+        return
+    value = snapshot.value
+    if value is False:
+        return
+    if value is True:
+        enabled = True
+        mode = "code"
+    elif isinstance(value, dict):
+        raw_enabled = value.get("enabled")
+        if raw_enabled is not None and not isinstance(raw_enabled, bool):
+            raise SetupConflict("global Tool Search has an unsupported enabled value")
+        configured = any(key != "enabled" for key in value)
+        enabled = raw_enabled if isinstance(raw_enabled, bool) else configured
+        mode = value.get("mode", "code")
+        if not isinstance(mode, str):
+            raise SetupConflict("global Tool Search has an unsupported mode value")
+    else:
+        raise SetupConflict("global Tool Search has an unsupported configuration")
+    if not enabled or mode == "directory":
+        return
+    raise SetupConflict(
+        "global Tool Search would hide caller-supplied CRM functions from the local "
+        "model. Disable tools.toolSearch or use directory mode before setup; this "
+        "installer will not change unrelated agents' global tool surface"
+    )
+
+
 def _require_exact_keys(value: Any, keys: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise SetupConflict(f"unsupported installed-state snapshot: {label}")
@@ -4761,6 +4821,7 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
             "tools",
             "sandbox",
             "thinking_default",
+            "local_model_lean",
         },
         "agent",
     )
@@ -4778,6 +4839,8 @@ def validate_installed_state_snapshot(value: Any) -> dict[str, Any]:
         raise SetupConflict("unsupported installed-state snapshot: agent sandbox")
     if agent["thinking_default"] != CRM_THINKING_DEFAULT:
         raise SetupConflict("unsupported installed-state snapshot: agent thinking default")
+    if agent["local_model_lean"] is not CRM_LOCAL_MODEL_LEAN:
+        raise SetupConflict("unsupported installed-state snapshot: agent local model mode")
 
     bindings = _require_exact_keys(root["bindings"], {"count", "sha256"}, "bindings")
     if (
@@ -4936,6 +4999,7 @@ def capture_installed_state(
 ) -> dict[str, Any]:
     """Capture the complete, canonical, secret-free state established by setup."""
     _validate_requested_agent_id(options.agent_id)
+    _validate_global_tool_search_for_client_functions(cli)
     repo = Path(__file__).resolve().parents[1]
     sources = _material_head_state(
         repo, deadline_check=getattr(cli, "require_time", None)
@@ -4999,10 +5063,13 @@ def capture_installed_state(
         raise SetupConflict("installed-state CRM agent workspace does not match")
     tools = agent.get("tools")
     _validate_authoritative_tools(tools)
+    experimental = agent.get("experimental")
     if (
         agent.get("skills") != list(SKILL_NAMES)
         or agent.get("sandbox") != DESIRED_SANDBOX
         or agent.get("thinkingDefault") != CRM_THINKING_DEFAULT
+        or not isinstance(experimental, dict)
+        or experimental.get("localModelLean") is not CRM_LOCAL_MODEL_LEAN
     ):
         raise SetupConflict("installed-state CRM agent policy does not match setup")
 
@@ -5063,6 +5130,7 @@ def capture_installed_state(
             "tools": tools,
             "sandbox": agent["sandbox"],
             "thinking_default": agent["thinkingDefault"],
+            "local_model_lean": experimental["localModelLean"],
         },
         "bindings": _configured_bindings_snapshot(cli),
         "approvals": {
@@ -5288,6 +5356,7 @@ def _create_diagnostic_agent(
     for field, value in (
         ("skills", []),
         ("thinkingDefault", CRM_THINKING_DEFAULT),
+        ("experimental", {"localModelLean": CRM_LOCAL_MODEL_LEAN}),
         ("tools", DIAGNOSTIC_TOOL_POLICY),
     ):
         result = cli.run(
@@ -5951,7 +6020,7 @@ def _rollback_state_matches(
             ):
                 return False
             expected_fields = agent_snapshot or {}
-            for field in ("skills", "tools", "sandbox", "thinkingDefault"):
+            for field in MANAGED_AGENT_FIELDS:
                 if (field in configured_agent) != (field in expected_fields):
                     return False
                 if field in expected_fields and (
@@ -6057,6 +6126,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         version = _detect_version(cli)
         messages.append(f"OpenClaw version: {version}")
         _preflight(cli, options)
+        _validate_global_tool_search_for_client_functions(cli)
         repo = Path(__file__).resolve().parents[1]
         contract_snapshot = _capture_canonical_contract(repo)
         client_tools_snapshot = _capture_dashboard_client_tools(
@@ -6222,7 +6292,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             if prefix is None:
                 messages.extend(_deferred_agent_config_messages(options))
             else:
-                planned.extend(_config_actions(options, prefix))
+                planned.extend(_config_actions(options, prefix, configured_agent))
             messages.append("Dry run only. No files or OpenClaw configuration were changed.")
             messages.append(
                 "Would install and verify skills/crm-db-operations/contract.json "
@@ -6478,7 +6548,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             raise SetupConflict(
                 f"OpenClaw did not expose the {options.agent_id} agent after creation"
             )
-        actions = _config_actions(options, prefix)
+        actions = _config_actions(options, prefix, refreshed_agent)
         actions.extend(
             action
             for action in initial_actions
@@ -6517,7 +6587,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             if targets_agent_config and rollback is not None:
                 field = action.argv[3][len(prefix) + 1 :]
                 if (
-                    field in {"skills", "tools", "sandbox", "thinkingDefault"}
+                    field in MANAGED_AGENT_FIELDS
                     and field not in rollback.changed_fields
                 ):
                     rollback.changed_fields.append(field)

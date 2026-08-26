@@ -310,6 +310,9 @@ recordings, or screenshots containing client information.
 - **Setup reports incompatible OpenClaw configuration:** do not loosen policy
   manually. Send the complete test bundle so the compatibility adapter can be
   fixed against the real output.
+- **Setup says global Tool Search would hide CRM functions:** disable the global
+  setting or use `directory` mode. Setup will not change unrelated OpenClaw
+  agents for you.
 
 For the security model, recovery details, and ordered acceptance checklist, see
 [LOCAL-AI.md](LOCAL-AI.md).
