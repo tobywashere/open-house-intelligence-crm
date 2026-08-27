@@ -177,6 +177,7 @@ class FakeCLI:
         client_tool_probe=None,
         configured_agent_guard_probe=None,
         analysis_tool_probe=None,
+        channel_probe_attempt=None,
         channel_probe_statuses=None,
         production_channel_guard_probe=None,
         effective_tools=None,
@@ -196,6 +197,7 @@ class FakeCLI:
         self.client_tool_probe = client_tool_probe
         self.configured_agent_guard_probe = configured_agent_guard_probe
         self.analysis_tool_probe = analysis_tool_probe
+        self.channel_probe_attempt = channel_probe_attempt
         self.channel_probe_statuses = dict(channel_probe_statuses or {})
         self.production_channel_guard_probe = production_channel_guard_probe
         self.primary_agent_id = primary_agent_id
@@ -203,6 +205,7 @@ class FakeCLI:
         self.client_tool_probe_calls = []
         self.configured_agent_guard_probe_calls = []
         self.analysis_tool_probe_calls = []
+        self.channel_probe_attempt_calls = []
         self.channel_probe_status_calls = []
         self.production_channel_guard_probe_calls = []
         self.gateway_restart_count = 0
@@ -358,6 +361,32 @@ class FakeCLI:
                             "message": {"role": "assistant", "content": "blocked"},
                         }
                     ]
+                }
+            ),
+            "",
+        )
+
+    def probe_channel_marker_attempt(
+        self, *, agent_id, nonce, channel, session_key=None
+    ):
+        self.channel_probe_attempt_calls.append(
+            {
+                "agent_id": agent_id,
+                "nonce": nonce,
+                "channel": channel,
+                "session_key": session_key,
+            }
+        )
+        if self.channel_probe_attempt is not None:
+            return self.channel_probe_attempt
+        return CommandResult(
+            502,
+            json.dumps(
+                {
+                    "error": {
+                        "type": "api_error",
+                        "message": "pinned setup probe was blocked",
+                    }
                 }
             ),
             "",
@@ -609,6 +638,7 @@ class FakeCLI:
                         "toolNames": ["openhouse_crm"],
                         "hookNames": [
                             "after_tool_call",
+                            "before_prompt_build",
                             "before_tool_call",
                             "gateway_stop",
                             "reply_payload_sending",
@@ -616,6 +646,7 @@ class FakeCLI:
                     },
                     "typedHooks": [
                         {"name": "after_tool_call"},
+                        {"name": "before_prompt_build"},
                         {"name": "before_tool_call"},
                         {"name": "gateway_stop"},
                         {"name": "reply_payload_sending"},
@@ -2775,6 +2806,20 @@ def test_setup_proves_full_schema_and_both_production_channel_markers(tmp_path):
             "session_key": dashboard_call["session_key"],
         }
     ]
+    assert cli.channel_probe_attempt_calls == [
+        {
+            "agent_id": dashboard_call["agent_id"],
+            "nonce": dashboard_call["nonce"],
+            "channel": "openhouse-dashboard",
+            "session_key": dashboard_call["session_key"],
+        },
+        {
+            "agent_id": dashboard_call["agent_id"],
+            "nonce": dashboard_call["nonce"],
+            "channel": "openhouse-analysis",
+            "session_key": dashboard_call["session_key"],
+        },
+    ]
     assert cli.channel_probe_status_calls == [
         {
             "agent_id": dashboard_call["agent_id"],
@@ -2932,7 +2977,7 @@ def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path)
 
     assert result.ok, result.render()
     assert len(cli.client_tool_probe_calls) == 1
-    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    probe_agent = cli.channel_probe_attempt_calls[0]["agent_id"]
     assert probe_agent != options.agent_id
     assert probe_agent.startswith("openhouse-setup-probe-")
     assert cli.extra_agents == {}
@@ -3030,7 +3075,7 @@ def test_failed_probe_deletes_diagnostic_session_before_agent(tmp_path):
         for call in cli.calls
         if call[1:4] == ["gateway", "call", "sessions.delete"]
     )
-    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    probe_agent = cli.channel_probe_attempt_calls[0]["agent_id"]
     agent_delete = next(
         call
         for call in cli.calls
@@ -3189,7 +3234,9 @@ def test_names_present_but_wrong_dashboard_block_behavior_is_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
-@pytest.mark.parametrize("probe", ["client_tools", "analysis", "status"])
+@pytest.mark.parametrize(
+    "probe", ["client_tools", "channel_attempt", "analysis", "status"]
+)
 def test_authenticated_gateway_probes_never_follow_redirects(
     monkeypatch, redirect_status, probe
 ):
@@ -3235,6 +3282,12 @@ def test_authenticated_gateway_probes_never_follow_redirects(
                 ).tools
                 result = cli.probe_client_tools(
                     agent_id="openhouse-crm", nonce="abc123", tools=tools
+                )
+            elif probe == "channel_attempt":
+                result = cli.probe_channel_marker_attempt(
+                    agent_id="openhouse-crm",
+                    nonce="0123456789abcdef0123456789abcdef",
+                    channel="openhouse-dashboard",
                 )
             elif probe == "analysis":
                 result = cli.probe_analysis_tool_block(

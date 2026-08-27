@@ -113,15 +113,17 @@ test("plugin registers exactly one required CRM tool factory", async () => {
 });
 
 
-test("plugin registers the four supported scoped hooks", () => {
+test("plugin registers the five supported scoped hooks", () => {
   const { hooks } = registerPlugin();
 
   assert.deepEqual([...hooks.keys()], [
+    "before_prompt_build",
     "before_tool_call",
     "after_tool_call",
     "reply_payload_sending",
     "gateway_stop",
   ]);
+  assert.equal(hooks.get("before_prompt_build").options, undefined);
   assert.equal(hooks.get("before_tool_call").options, undefined);
   assert.deepEqual(hooks.get("after_tool_call").options, { matcher: ["openhouse_crm"] });
   assert.equal(hooks.get("reply_payload_sending").options, undefined);
@@ -378,22 +380,36 @@ test("setup probe registers one config-gated marker tool without changing normal
 
 
 for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
-  test(`setup probe records and proves a blocked ${channel} native-tool attempt`, async () => {
+  test(`setup probe correlates and blocks a pinned ${channel} client-tool attempt`, async () => {
     const nonce = "0123456789abcdef0123456789abcdef";
     const agentId = "openhouse-setup-probe-a1b2c3d4";
     const { hooks, registrations } = registerPlugin(undefined, {
       agentId: "portable-crm",
       setupProbe: { agentId, nonce },
     });
+    hooks.get("before_prompt_build").handler(
+      {},
+      { agentId, runId: `run-${channel}`, channel },
+    );
     const beforeToolCall = hooks.get("before_tool_call").handler;
     const blocked = beforeToolCall(
       {
-        toolName: "openhouse_setup_marker_probe",
-        params: { action: "attempt", channel, nonce },
+        toolName: "openhouse_setup_marker_attempt",
+        runId: `run-${channel}`,
+        params: { channel, nonce },
       },
-      { agentId, requester: { channel } },
+      { agentId, runId: `run-${channel}` },
     );
     assert.equal(blocked.block, true);
+    const repeated = beforeToolCall(
+      {
+        toolName: "openhouse_setup_marker_attempt",
+        runId: `run-${channel}`,
+        params: { channel, nonce },
+      },
+      { agentId, runId: `run-${channel}` },
+    );
+    assert.equal(repeated.block, true);
 
     assert.equal(
       beforeToolCall(
@@ -424,7 +440,119 @@ for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
 }
 
 
-test("setup probe distinguishes a missing marker that allowed sentinel execution", async () => {
+test("setup probe keeps malformed attempt evidence fail-closed across a later retry", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const { hooks, registrations } = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  const runId = "run-malformed-then-valid";
+  const channel = "openhouse-dashboard";
+  hooks.get("before_prompt_build").handler({}, { agentId, runId, channel });
+  const beforeToolCall = hooks.get("before_tool_call").handler;
+  beforeToolCall(
+    {
+      toolName: "openhouse_setup_marker_attempt",
+      runId,
+      params: { channel, nonce: "fedcba9876543210fedcba9876543210" },
+    },
+    { agentId, runId },
+  );
+  beforeToolCall(
+    {
+      toolName: "openhouse_setup_marker_attempt",
+      runId,
+      params: { channel, nonce },
+    },
+    { agentId, runId },
+  );
+
+  const [factory] = registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const result = await factory({}).execute("status-call", {
+    action: "status",
+    channel,
+    nonce,
+  });
+  assert.equal(result.details.status, "hook_context_unsupported");
+});
+
+
+test("setup probe bounds and clears trusted run correlations", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const channel = "openhouse-dashboard";
+  const registered = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  for (let index = 0; index < 65; index += 1) {
+    registered.hooks.get("before_prompt_build").handler(
+      {},
+      { agentId, runId: `bounded-run-${index}`, channel },
+    );
+  }
+  const beforeToolCall = registered.hooks.get("before_tool_call").handler;
+  beforeToolCall(
+    {
+      toolName: "openhouse_setup_marker_attempt",
+      runId: "bounded-run-64",
+      params: { channel, nonce },
+    },
+    { agentId, runId: "bounded-run-64" },
+  );
+  const [factory] = registered.registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const status = (tool) => tool.execute("status-call", {
+    action: "status",
+    channel,
+    nonce,
+  });
+  assert.equal((await status(factory({}))).details.status, "tool_blocked");
+  beforeToolCall(
+    {
+      toolName: "openhouse_setup_marker_attempt",
+      runId: "bounded-run-0",
+      params: { channel, nonce },
+    },
+    { agentId, runId: "bounded-run-0" },
+  );
+  assert.equal(
+    (await status(factory({}))).details.status,
+    "hook_context_unsupported",
+  );
+
+  const restarted = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  restarted.hooks.get("before_prompt_build").handler(
+    {},
+    { agentId, runId: "cleared-run", channel },
+  );
+  restarted.hooks.get("gateway_stop").handler();
+  restarted.hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_setup_marker_attempt",
+      runId: "cleared-run",
+      params: { channel, nonce },
+    },
+    { agentId, runId: "cleared-run" },
+  );
+  const [restartedFactory] = restarted.registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  assert.equal(
+    (await status(restartedFactory({}))).details.status,
+    "hook_context_unsupported",
+  );
+});
+
+
+test("setup probe distinguishes a mismatched trusted run channel", async () => {
   const nonce = "0123456789abcdef0123456789abcdef";
   const agentId = "openhouse-setup-probe-a1b2c3d4";
   const { hooks, registrations } = registerPlugin(undefined, {
@@ -435,28 +563,26 @@ test("setup probe distinguishes a missing marker that allowed sentinel execution
     ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
   );
   const tool = factory({});
-  assert.equal(
-    hooks.get("before_tool_call").handler(
-      {
-        toolName: "openhouse_setup_marker_probe",
-        params: { action: "attempt", channel: "openhouse-dashboard", nonce },
-      },
-      { agentId, requester: { channel: "generic-chat" } },
-    ),
-    undefined,
+  hooks.get("before_prompt_build").handler(
+    {},
+    { agentId, runId: "run-mismatch", channel: "openhouse-analysis" },
   );
-  await tool.execute("attempt-call", {
-    action: "attempt",
-    channel: "openhouse-dashboard",
-    nonce,
-  });
+  const blocked = hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_setup_marker_attempt",
+      runId: "run-mismatch",
+      params: { channel: "openhouse-dashboard", nonce },
+    },
+    { agentId, runId: "run-mismatch" },
+  );
+  assert.equal(blocked.block, true);
 
   const result = await tool.execute("status-call", {
     action: "status",
     channel: "openhouse-dashboard",
     nonce,
   });
-  assert.equal(result.details.status, "sentinel_executed");
+  assert.equal(result.details.status, "marker_missing");
 });
 
 
@@ -481,10 +607,11 @@ test("setup probe distinguishes no tool attempt from malformed hook context", as
 
   const blocked = hooks.get("before_tool_call").handler(
     {
-      toolName: "openhouse_setup_marker_probe",
-      params: { action: "attempt", channel: "openhouse-analysis", nonce },
+      toolName: "openhouse_setup_marker_attempt",
+      runId: "run-without-channel",
+      params: { channel: "openhouse-analysis", nonce },
     },
-    { agentId },
+    { agentId, runId: "run-without-channel" },
   );
   assert.equal(blocked.block, true);
   const malformed = await tool.execute("status-call", {

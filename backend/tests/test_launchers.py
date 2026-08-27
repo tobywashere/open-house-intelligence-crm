@@ -607,7 +607,65 @@ def test_setup_client_probe_uses_full_production_schemas_and_dashboard_channel(m
         "finish_crm_response",
     ]
     assert payload["tools"] == tools
-    assert "openhouse_setup_marker_probe" in payload["messages"][0]["content"]
+    assert "finish_crm_response" in payload["messages"][0]["content"]
+    assert "openhouse_setup_marker_probe" not in payload["messages"][0]["content"]
+
+
+def test_setup_channel_attempt_pins_one_caller_tool_to_the_trusted_channel(monkeypatch):
+    setup_path = REPO / "scripts" / "setup_openclaw.py"
+    spec = importlib.util.spec_from_file_location(
+        "setup_openclaw_channel_attempt_test", setup_path
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    captured = {}
+
+    def fake_post(_self, path, payload, *, channel, session_key=None):
+        captured.update(
+            path=path,
+            payload=payload,
+            channel=channel,
+            session_key=session_key,
+        )
+        return module.CommandResult(502, '{"error":{"type":"api_error"}}', "")
+
+    monkeypatch.setenv("AGENT_GATEWAY_URL", "http://localhost:18789")
+    monkeypatch.setenv("AGENT_CHAT_PATH", "/v1/chat/completions")
+    monkeypatch.setattr(module.OpenClawCLI, "_post_gateway_json", fake_post)
+
+    result = module.OpenClawCLI().probe_channel_marker_attempt(
+        agent_id="openhouse-setup-probe-safe",
+        nonce="0123456789abcdef0123456789abcdef",
+        channel="openhouse-dashboard",
+        session_key="agent:openhouse-setup-probe-safe:dashboard:setup-test",
+    )
+
+    assert result.returncode == 502
+    assert captured["path"] == "/v1/chat/completions"
+    assert captured["channel"] == "openhouse-dashboard"
+    assert (
+        captured["session_key"]
+        == "agent:openhouse-setup-probe-safe:dashboard:setup-test"
+    )
+    payload = captured["payload"]
+    assert payload["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "openhouse_setup_marker_attempt"},
+    }
+    assert [tool["function"]["name"] for tool in payload["tools"]] == [
+        "openhouse_setup_marker_attempt"
+    ]
+    assert payload["tools"][0]["function"]["parameters"] == {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["channel", "nonce"],
+        "properties": {
+            "channel": {"const": "openhouse-dashboard"},
+            "nonce": {"const": "0123456789abcdef0123456789abcdef"},
+        },
+    }
 
 
 def test_setup_analysis_probe_matches_the_production_no_tools_path(monkeypatch):
@@ -650,7 +708,8 @@ def test_setup_analysis_probe_matches_the_production_no_tools_path(monkeypatch):
     assert captured["payload"]["tools"] == []
     assert captured["payload"]["tool_choice"] == "none"
     assert captured["payload"]["model"] == "openclaw/openhouse-setup-probe-safe"
-    assert "openhouse_setup_marker_probe" in captured["payload"]["messages"][0]["content"]
+    assert "without calling tools" in captured["payload"]["messages"][0]["content"]
+    assert "openhouse_setup_marker_probe" not in captured["payload"]["messages"][0]["content"]
 
 
 def test_setup_channel_status_is_loopback_only_and_uses_no_crm_operation(

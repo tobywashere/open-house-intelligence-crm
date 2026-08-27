@@ -116,6 +116,7 @@ PLUGIN_ID = "openhouse-crm"
 PLUGIN_TOOL = "openhouse_crm"
 REQUIRED_PLUGIN_HOOKS = (
     "after_tool_call",
+    "before_prompt_build",
     "before_tool_call",
     "gateway_stop",
     "reply_payload_sending",
@@ -132,6 +133,7 @@ SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability"
 SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard"
 INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis"
 SETUP_MARKER_TOOL = "openhouse_setup_marker_probe"
+SETUP_MARKER_ATTEMPT_TOOL = "openhouse_setup_marker_attempt"
 SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__"
 GATEWAY_PROBE_TIMEOUT_SECONDS = 30
 GATEWAY_PROBE_MAX_BYTES = 256 * 1024
@@ -447,9 +449,7 @@ class OpenClawCLI:
             )
         else:
             system_content = (
-                f"First call the native {SETUP_MARKER_TOOL} tool with action "
-                f"attempt, channel {DASHBOARD_CHANNEL}, and the exact nonce. "
-                "After that attempt is blocked, call finish_crm_response exactly "
+                "Call finish_crm_response exactly "
                 "once with classification needs_clarification, the nonce as its "
                 "message, and an empty evidence_call_ids array."
             )
@@ -471,6 +471,65 @@ class OpenClawCLI:
             chat_path,
             payload,
             channel=DASHBOARD_CHANNEL,
+            session_key=session_key,
+        )
+
+    def probe_channel_marker_attempt(
+        self,
+        *,
+        agent_id: str,
+        nonce: str,
+        channel: str,
+        session_key: str | None = None,
+    ) -> CommandResult:
+        try:
+            _loopback_gateway_base_url()
+        except SetupConflict as exc:
+            return CommandResult(503, "", str(exc))
+        chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
+        attempt_tool = {
+            "type": "function",
+            "function": {
+                "name": SETUP_MARKER_ATTEMPT_TOOL,
+                "description": (
+                    "Setup-only caller tool used to prove that OpenClaw propagates "
+                    "the trusted request channel to its tool policy hooks."
+                ),
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["channel", "nonce"],
+                    "properties": {
+                        "channel": {"const": channel},
+                        "nonce": {"const": nonce},
+                    },
+                },
+            },
+        }
+        payload = {
+            "model": f"openclaw/{agent_id}",
+            "user": f"setup-channel-marker:{channel}:{nonce}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Call {SETUP_MARKER_ATTEMPT_TOOL} with channel {channel} "
+                        f"and nonce {nonce}."
+                    ),
+                }
+            ],
+            "tools": [attempt_tool],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": SETUP_MARKER_ATTEMPT_TOOL},
+            },
+            "max_completion_tokens": 128,
+        }
+        return self._post_gateway_json(
+            chat_path,
+            payload,
+            channel=channel,
             session_key=session_key,
         )
 
@@ -496,9 +555,8 @@ class OpenClawCLI:
             )
             if production
             else (
-                f"Call the native {SETUP_MARKER_TOOL} tool with action attempt, "
-                f"channel {INTERNAL_ANALYSIS_CHANNEL}, and nonce {nonce}. Then "
-                "reply briefly after the attempt is blocked."
+                "Reply briefly without calling tools. "
+                f"Include this nonce in the reply: {nonce}."
             )
         )
         payload = {
@@ -5906,11 +5964,10 @@ def _verify_setup_probe_behavior(
     session_key: str,
 ) -> None:
     _verify_diagnostic_effective_tools(cli, agent_id, session_key)
-    dashboard_completion = _request_client_tool_capability(
-        cli,
-        agent_id,
-        nonce,
-        tools,
+    cli.probe_channel_marker_attempt(
+        agent_id=agent_id,
+        nonce=nonce,
+        channel=DASHBOARD_CHANNEL,
         session_key=session_key,
     )
     _verify_channel_marker(
@@ -5920,11 +5977,18 @@ def _verify_setup_probe_behavior(
         DASHBOARD_CHANNEL,
         session_key=session_key,
     )
-    _verify_client_tool_completion(dashboard_completion, nonce)
-    analysis_completion = _request_analysis_completion(
+    dashboard_completion = _request_client_tool_capability(
         cli,
         agent_id,
         nonce,
+        tools,
+        session_key=session_key,
+    )
+    _verify_client_tool_completion(dashboard_completion, nonce)
+    cli.probe_channel_marker_attempt(
+        agent_id=agent_id,
+        nonce=nonce,
+        channel=INTERNAL_ANALYSIS_CHANNEL,
         session_key=session_key,
     )
     _verify_channel_marker(
@@ -5932,6 +5996,12 @@ def _verify_setup_probe_behavior(
         agent_id,
         nonce,
         INTERNAL_ANALYSIS_CHANNEL,
+        session_key=session_key,
+    )
+    analysis_completion = _request_analysis_completion(
+        cli,
+        agent_id,
+        nonce,
         session_key=session_key,
     )
     _verify_analysis_completion(analysis_completion)
