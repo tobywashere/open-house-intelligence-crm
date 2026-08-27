@@ -172,11 +172,22 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
               && !Array.isArray(context.requester)
               && typeof context.requester.channel === "string"
             );
+            const directStatusRead = (
+              validSetupProbeParams(params, setupProbe.nonce)
+              && params.action === "status"
+              && context?.agentId === setupProbe.agentId
+              && context?.requester === undefined
+            );
             if (
               validSetupProbeParams(params, setupProbe.nonce)
               && params.action === "status"
-              && contextSupported
-              && context.requester.channel === SETUP_CAPABILITY_CHANNEL
+              && (
+                directStatusRead
+                || (
+                  contextSupported
+                  && context.requester.channel === SETUP_CAPABILITY_CHANNEL
+                )
+              )
             ) return;
             if (
               !validSetupProbeParams(params, setupProbe.nonce)
@@ -203,7 +214,10 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
           if (
             event.toolName === TOOL_NAME
             && context.agentId === crmAgentId
-            && context.requester?.channel === SETUP_CAPABILITY_CHANNEL
+            && (
+              context.requester?.channel === SETUP_CAPABILITY_CHANNEL
+              || context.requester === undefined
+            )
             && event.params?.operation === PRODUCTION_PROBE_OPERATION
           ) {
             const nonce = event.params?.arguments?.nonce;
@@ -261,8 +275,11 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
             }
           }
           if (
-            context.requester?.channel === SETUP_AGENT_GUARD_CHANNEL
-            && context.agentId === crmAgentId
+            context.agentId === crmAgentId
+            && (
+              context.requester?.channel === SETUP_AGENT_GUARD_CHANNEL
+              || context.requester === undefined
+            )
             && event.toolName === TOOL_NAME
             && event.params?.operation === SETUP_AGENT_GUARD_OPERATION
           ) {

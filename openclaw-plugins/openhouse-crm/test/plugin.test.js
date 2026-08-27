@@ -201,7 +201,7 @@ test("production channel proof requires a canonical blocked read and is single-u
   assert.equal(blocked.block, true);
   assert.equal(executions, 0);
   assert.equal(
-    beforeToolCall(statusEvent, statusContext).blockReason,
+    beforeToolCall(statusEvent, { agentId: "portable-crm" }).blockReason,
     `Production CRM channel openhouse-dashboard nonce ${nonce} is protected.`,
   );
   assert.match(
@@ -401,10 +401,7 @@ for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
           toolName: "openhouse_setup_marker_probe",
           params: { action: "status", channel, nonce },
         },
-        {
-          agentId,
-          requester: { channel: "openhouse-setup-capability" },
-        },
+        { agentId },
       ),
       undefined,
     );
@@ -1041,6 +1038,13 @@ test("setup can safely prove the configured custom agent guard without executing
 
   assert.deepEqual(
     beforeToolCall(event, { agentId: "custom-crm", requester }),
+    {
+      block: true,
+      blockReason: "Configured CRM agent custom-crm is protected.",
+    },
+  );
+  assert.deepEqual(
+    beforeToolCall(event, { agentId: "custom-crm" }),
     {
       block: true,
       blockReason: "Configured CRM agent custom-crm is protected.",

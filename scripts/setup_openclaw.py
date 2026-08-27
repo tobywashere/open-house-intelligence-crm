@@ -213,6 +213,18 @@ class CommandResult:
 
 
 @dataclass(frozen=True)
+class DiagnosticSessionHandle:
+    agent_id: str
+    key: str
+    session_id: str
+
+
+@dataclass
+class DiagnosticSessionTracker:
+    active: DiagnosticSessionHandle | None = None
+
+
+@dataclass(frozen=True)
 class AgentRoster:
     schema: str | None
     records: list[dict[str, Any]]
@@ -363,6 +375,7 @@ class OpenClawCLI:
         payload: dict[str, Any],
         *,
         channel: str,
+        session_key: str | None = None,
     ) -> CommandResult:
         try:
             gateway_url = _loopback_gateway_base_url()
@@ -373,6 +386,8 @@ class OpenClawCLI:
             "Content-Type": "application/json",
             "x-openclaw-message-channel": channel,
         }
+        if session_key is not None:
+            headers["x-openclaw-session-key"] = session_key
         gateway_token = os.environ.get("AGENT_GATEWAY_TOKEN", "")
         if gateway_token:
             headers["Authorization"] = f"Bearer {gateway_token}"
@@ -414,6 +429,7 @@ class OpenClawCLI:
         nonce: str,
         tools: list[dict[str, Any]],
         production: bool = False,
+        session_key: str | None = None,
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
@@ -452,11 +468,19 @@ class OpenClawCLI:
             "max_completion_tokens": 256,
         }
         return self._post_gateway_json(
-            chat_path, payload, channel=DASHBOARD_CHANNEL
+            chat_path,
+            payload,
+            channel=DASHBOARD_CHANNEL,
+            session_key=session_key,
         )
 
     def probe_analysis_tool_block(
-        self, *, agent_id: str, nonce: str, production: bool = False
+        self,
+        *,
+        agent_id: str,
+        nonce: str,
+        production: bool = False,
+        session_key: str | None = None,
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
@@ -491,11 +515,19 @@ class OpenClawCLI:
             "max_completion_tokens": 128,
         }
         return self._post_gateway_json(
-            chat_path, payload, channel=INTERNAL_ANALYSIS_CHANNEL
+            chat_path,
+            payload,
+            channel=INTERNAL_ANALYSIS_CHANNEL,
+            session_key=session_key,
         )
 
     def probe_channel_status(
-        self, *, agent_id: str, nonce: str, channel: str
+        self,
+        *,
+        agent_id: str,
+        nonce: str,
+        channel: str,
+        session_key: str | None = None,
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
@@ -505,7 +537,8 @@ class OpenClawCLI:
             "tool": SETUP_MARKER_TOOL,
             "args": {"action": "status", "channel": channel, "nonce": nonce},
             "agentId": agent_id,
-            "sessionKey": f"marker-status:setup-capability:{nonce}:{channel}",
+            "sessionKey": session_key
+            or f"marker-status:setup-capability:{nonce}:{channel}",
             "idempotencyKey": f"setup-marker-status:{nonce}:{channel}",
         }
         return self._post_gateway_json(
@@ -513,7 +546,7 @@ class OpenClawCLI:
         )
 
     def probe_configured_agent_guard(
-        self, *, agent_id: str, nonce: str
+        self, *, agent_id: str, nonce: str, session_key: str | None = None
     ) -> CommandResult:
         payload = {
             "tool": PLUGIN_TOOL,
@@ -522,7 +555,7 @@ class OpenClawCLI:
                 "arguments": {},
             },
             "agentId": agent_id,
-            "sessionKey": f"agent-guard:setup-capability:{nonce}",
+            "sessionKey": session_key or f"agent-guard:setup-capability:{nonce}",
             "idempotencyKey": f"setup-agent-guard:{nonce}",
         }
         return self._post_gateway_json(
@@ -530,7 +563,12 @@ class OpenClawCLI:
         )
 
     def probe_production_channel_guard(
-        self, *, agent_id: str, nonce: str, channel: str
+        self,
+        *,
+        agent_id: str,
+        nonce: str,
+        channel: str,
+        session_key: str | None = None,
     ) -> CommandResult:
         payload = {
             "tool": PLUGIN_TOOL,
@@ -539,7 +577,8 @@ class OpenClawCLI:
                 "arguments": {"nonce": nonce, "channel": channel},
             },
             "agentId": agent_id,
-            "sessionKey": f"production-status:setup-capability:{nonce}:{channel}",
+            "sessionKey": session_key
+            or f"production-status:setup-capability:{nonce}:{channel}",
             "idempotencyKey": f"production-status:{nonce}:{channel}",
         }
         return self._post_gateway_json(
@@ -5494,8 +5533,44 @@ def _delete_diagnostic_session(
         raise SetupConflict("OpenClaw did not confirm diagnostic session deletion")
 
 
-def _verify_diagnostic_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
+def _create_tracked_diagnostic_session(
+    cli: OpenClawCLI,
+    agent_id: str,
+    tracker: DiagnosticSessionTracker,
+) -> DiagnosticSessionHandle:
+    if tracker.active is not None:
+        raise SetupConflict(
+            "A setup-owned diagnostic session is still active; refusing to create "
+            "another session before cleanup is verified"
+        )
     session_key, session_id = _create_diagnostic_session(cli, agent_id)
+    handle = DiagnosticSessionHandle(agent_id, session_key, session_id)
+    tracker.active = handle
+    return handle
+
+
+def _delete_tracked_diagnostic_session(
+    cli: OpenClawCLI,
+    tracker: DiagnosticSessionTracker,
+) -> None:
+    handle = tracker.active
+    if handle is None:
+        return
+    _delete_diagnostic_session(
+        cli,
+        handle.agent_id,
+        handle.key,
+        handle.session_id,
+    )
+    tracker.active = None
+
+
+def _verify_diagnostic_effective_tools(
+    cli: OpenClawCLI, agent_id: str, session_key: str | None = None
+) -> None:
+    owned_session_id: str | None = None
+    if session_key is None:
+        session_key, owned_session_id = _create_diagnostic_session(cli, agent_id)
     params = json.dumps(
         {"sessionKey": session_key, "agentId": agent_id}, separators=(",", ":")
     )
@@ -5588,7 +5663,10 @@ def _verify_diagnostic_effective_tools(cli: OpenClawCLI, agent_id: str) -> None:
                 "OpenClaw diagnostic agent must expose exactly the setup sentinel tool"
             )
     finally:
-        _delete_diagnostic_session(cli, agent_id, session_key, session_id)
+        if owned_session_id is not None:
+            _delete_diagnostic_session(
+                cli, agent_id, session_key, owned_session_id
+            )
 
 
 def _request_client_tool_capability(
@@ -5598,12 +5676,14 @@ def _request_client_tool_capability(
     tools: list[dict[str, Any]],
     *,
     production: bool = False,
+    session_key: str | None = None,
 ) -> CommandResult:
     result = cli.probe_client_tools(
         agent_id=agent_id,
         nonce=nonce,
         tools=tools,
         production=production,
+        session_key=session_key,
     )
     if result.returncode == 400:
         raise SetupConflict(
@@ -5667,9 +5747,13 @@ def _request_analysis_completion(
     nonce: str,
     *,
     production: bool = False,
+    session_key: str | None = None,
 ) -> CommandResult:
     result = cli.probe_analysis_tool_block(
-        agent_id=agent_id, nonce=nonce, production=production
+        agent_id=agent_id,
+        nonce=nonce,
+        production=production,
+        session_key=session_key,
     )
     if result.returncode in {401, 403}:
         raise SetupConflict(
@@ -5741,16 +5825,41 @@ def _channel_probe_details(payload: Any) -> dict[str, Any] | None:
     return details
 
 
+def _safe_gateway_error_evidence(result: CommandResult) -> str:
+    evidence = f"HTTP {result.returncode}"
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return evidence
+    error = payload.get("error") if isinstance(payload, dict) else None
+    error_type = error.get("type") if isinstance(error, dict) else None
+    if (
+        isinstance(error_type, str)
+        and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_type) is not None
+    ):
+        evidence += f", type {error_type}"
+    return evidence
+
+
 def _verify_channel_marker(
-    cli: OpenClawCLI, agent_id: str, nonce: str, channel: str
+    cli: OpenClawCLI,
+    agent_id: str,
+    nonce: str,
+    channel: str,
+    *,
+    session_key: str | None = None,
 ) -> None:
     result = cli.probe_channel_status(
-        agent_id=agent_id, nonce=nonce, channel=channel
+        agent_id=agent_id,
+        nonce=nonce,
+        channel=channel,
+        session_key=session_key,
     )
     label = "dashboard" if channel == DASHBOARD_CHANNEL else "internal-analysis"
     if result.returncode != 200:
         raise SetupConflict(
-            f"the {label} channel marker proof status could not be read"
+            f"the {label} channel marker proof status could not be read "
+            f"({_safe_gateway_error_evidence(result)})"
         )
     try:
         payload = _decode_json(result.stdout, f"{label} channel marker status")
@@ -5789,6 +5898,45 @@ def _verify_channel_marker(
     )
 
 
+def _verify_setup_probe_behavior(
+    cli: OpenClawCLI,
+    agent_id: str,
+    nonce: str,
+    tools: list[dict[str, Any]],
+    session_key: str,
+) -> None:
+    _verify_diagnostic_effective_tools(cli, agent_id, session_key)
+    dashboard_completion = _request_client_tool_capability(
+        cli,
+        agent_id,
+        nonce,
+        tools,
+        session_key=session_key,
+    )
+    _verify_channel_marker(
+        cli,
+        agent_id,
+        nonce,
+        DASHBOARD_CHANNEL,
+        session_key=session_key,
+    )
+    _verify_client_tool_completion(dashboard_completion, nonce)
+    analysis_completion = _request_analysis_completion(
+        cli,
+        agent_id,
+        nonce,
+        session_key=session_key,
+    )
+    _verify_channel_marker(
+        cli,
+        agent_id,
+        nonce,
+        INTERNAL_ANALYSIS_CHANNEL,
+        session_key=session_key,
+    )
+    _verify_analysis_completion(analysis_completion)
+
+
 def _verify_plugin_config(
     cli: OpenClawCLI, expected: dict[str, Any], label: str
 ) -> None:
@@ -5811,9 +5959,13 @@ def _verify_plugin_agent_config(cli: OpenClawCLI, agent_id: str) -> None:
     )
 
 
-def _verify_configured_agent_guard(cli: OpenClawCLI, agent_id: str) -> None:
+def _verify_configured_agent_guard(
+    cli: OpenClawCLI, agent_id: str, *, session_key: str | None = None
+) -> None:
     nonce = secrets.token_hex(16)
-    result = cli.probe_configured_agent_guard(agent_id=agent_id, nonce=nonce)
+    result = cli.probe_configured_agent_guard(
+        agent_id=agent_id, nonce=nonce, session_key=session_key
+    )
     response = f"{result.stdout}\n{result.stderr}".lower()
     expected = f"configured crm agent {agent_id} is protected."
     if result.returncode != 403 or expected not in response:
@@ -5825,10 +5977,18 @@ def _verify_configured_agent_guard(cli: OpenClawCLI, agent_id: str) -> None:
 
 
 def _verify_production_channel_guard(
-    cli: OpenClawCLI, agent_id: str, nonce: str, channel: str
+    cli: OpenClawCLI,
+    agent_id: str,
+    nonce: str,
+    channel: str,
+    *,
+    session_key: str | None = None,
 ) -> None:
     result = cli.probe_production_channel_guard(
-        agent_id=agent_id, nonce=nonce, channel=channel
+        agent_id=agent_id,
+        nonce=nonce,
+        channel=channel,
+        session_key=session_key,
     )
     expected = f"Production CRM channel {channel} nonce {nonce} is protected."
     response = f"{result.stdout}\n{result.stderr}"
@@ -5839,28 +5999,62 @@ def _verify_production_channel_guard(
         )
 
 
+def _fresh_production_behavioral_verification_in_session(
+    cli: OpenClawCLI,
+    agent_id: str,
+    tools: list[dict[str, Any]],
+    session_key: str,
+) -> dict[str, Any]:
+    nonce = secrets.token_hex(16)
+    dashboard = _request_client_tool_capability(
+        cli,
+        agent_id,
+        nonce,
+        tools,
+        production=True,
+        session_key=session_key,
+    )
+    _verify_client_tool_completion(dashboard, nonce)
+    _verify_production_channel_guard(
+        cli,
+        agent_id,
+        nonce,
+        DASHBOARD_CHANNEL,
+        session_key=session_key,
+    )
+    analysis = _request_analysis_completion(
+        cli,
+        agent_id,
+        nonce,
+        production=True,
+        session_key=session_key,
+    )
+    _verify_analysis_completion(analysis)
+    _verify_production_channel_guard(
+        cli,
+        agent_id,
+        nonce,
+        INTERNAL_ANALYSIS_CHANNEL,
+        session_key=session_key,
+    )
+    _verify_configured_agent_guard(cli, agent_id, session_key=session_key)
+    return _behavioral_runtime_verification(agent_id)
+
+
 def _fresh_production_behavioral_verification(
     cli: OpenClawCLI,
     agent_id: str,
     tools: list[dict[str, Any]],
+    tracker: DiagnosticSessionTracker | None = None,
 ) -> dict[str, Any]:
-    nonce = secrets.token_hex(16)
-    dashboard = _request_client_tool_capability(
-        cli, agent_id, nonce, tools, production=True
-    )
-    _verify_client_tool_completion(dashboard, nonce)
-    _verify_production_channel_guard(
-        cli, agent_id, nonce, DASHBOARD_CHANNEL
-    )
-    analysis = _request_analysis_completion(
-        cli, agent_id, nonce, production=True
-    )
-    _verify_analysis_completion(analysis)
-    _verify_production_channel_guard(
-        cli, agent_id, nonce, INTERNAL_ANALYSIS_CHANNEL
-    )
-    _verify_configured_agent_guard(cli, agent_id)
-    return _behavioral_runtime_verification(agent_id)
+    owned_tracker = tracker or DiagnosticSessionTracker()
+    handle = _create_tracked_diagnostic_session(cli, agent_id, owned_tracker)
+    try:
+        return _fresh_production_behavioral_verification_in_session(
+            cli, agent_id, tools, handle.key
+        )
+    finally:
+        _delete_tracked_diagnostic_session(cli, owned_tracker)
 
 
 def _restore_approval_changes(
@@ -6115,6 +6309,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     diagnostic_agent_id: str | None = None
     diagnostic_nonce: str | None = None
     diagnostic_root: Path | None = None
+    diagnostic_session_tracker = DiagnosticSessionTracker()
     diagnostic_agent_creation_attempted = False
     gateway_restart_attempted = False
     try:
@@ -6827,24 +7022,19 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         _verify_installed_client_tools(
             options.workspace, client_tools_snapshot, contract_snapshot
         )
-        _verify_diagnostic_effective_tools(cli, diagnostic_agent_id)
-        dashboard_completion = _request_client_tool_capability(
-            cli,
-            diagnostic_agent_id,
-            diagnostic_nonce,
-            client_tools_snapshot.tools,
+        diagnostic_session = _create_tracked_diagnostic_session(
+            cli, diagnostic_agent_id, diagnostic_session_tracker
         )
-        _verify_channel_marker(
-            cli, diagnostic_agent_id, diagnostic_nonce, DASHBOARD_CHANNEL
-        )
-        _verify_client_tool_completion(dashboard_completion, diagnostic_nonce)
-        analysis_completion = _request_analysis_completion(
-            cli, diagnostic_agent_id, diagnostic_nonce
-        )
-        _verify_channel_marker(
-            cli, diagnostic_agent_id, diagnostic_nonce, INTERNAL_ANALYSIS_CHANNEL
-        )
-        _verify_analysis_completion(analysis_completion)
+        try:
+            _verify_setup_probe_behavior(
+                cli,
+                diagnostic_agent_id,
+                diagnostic_nonce,
+                client_tools_snapshot.tools,
+                diagnostic_session.key,
+            )
+        finally:
+            _delete_tracked_diagnostic_session(cli, diagnostic_session_tracker)
         _verify_plugin_config(
             cli, probe_plugin_config, "temporary setup marker probe readback"
         )
@@ -6908,6 +7098,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 cli,
                 options.agent_id,
                 client_tools_snapshot.tools,
+                diagnostic_session_tracker,
             )
         )
         if skill_rollback is not None:
@@ -6955,12 +7146,32 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
 
         # Reverse the disposable diagnostic state first. Its random ID and exact
         # workspace are both checked before any destructive agent operation.
-        if diagnostic_agent_creation_attempted and diagnostic_agent_id is not None:
-            diagnostic_workspace = (
-                diagnostic_root / "workspace"
-                if diagnostic_root is not None
-                else Path("/__openhouse_missing_diagnostic_workspace__")
+        if diagnostic_session_tracker.active is not None:
+            try:
+                _delete_tracked_diagnostic_session(cli, diagnostic_session_tracker)
+            except (OSError, SetupConflict):
+                rollback_failed = True
+                messages.append(
+                    "Could not delete the setup diagnostic session before agent cleanup."
+                )
+        retained_diagnostic_agent = (
+            diagnostic_session_tracker.active is not None
+            and diagnostic_session_tracker.active.agent_id == diagnostic_agent_id
+        )
+        diagnostic_workspace = (
+            diagnostic_root / "workspace"
+            if diagnostic_root is not None
+            else Path("/__openhouse_missing_diagnostic_workspace__")
+        )
+        if retained_diagnostic_agent:
+            rollback_failed = True
+            messages.append(
+                "OpenClaw could not verify diagnostic session deletion, so setup "
+                "retained the setup diagnostic agent and workspace for safe manual "
+                f"recovery: agent {diagnostic_agent_id}, workspace "
+                f"{diagnostic_workspace}."
             )
+        elif diagnostic_agent_creation_attempted and diagnostic_agent_id is not None:
             if not _delete_agent_and_verify(
                 cli,
                 diagnostic_agent_id,
@@ -6970,9 +7181,13 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 messages.append(
                     "Could not delete or verify absence of the setup diagnostic agent."
                 )
-        if diagnostic_root is not None and not _remove_diagnostic_workspace(
-            diagnostic_root,
-            deadline_check=getattr(cli, "require_time", None),
+        if (
+            not retained_diagnostic_agent
+            and diagnostic_root is not None
+            and not _remove_diagnostic_workspace(
+                diagnostic_root,
+                deadline_check=getattr(cli, "require_time", None),
+            )
         ):
             rollback_failed = True
             messages.append("Could not remove the setup diagnostic workspace.")

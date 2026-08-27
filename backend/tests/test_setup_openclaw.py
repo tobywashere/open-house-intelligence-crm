@@ -258,9 +258,20 @@ class FakeCLI:
         return None, None
 
     def probe_client_tools(
-        self, *, agent_id, nonce, tools=None, production=False
+        self,
+        *,
+        agent_id,
+        nonce,
+        tools=None,
+        production=False,
+        session_key=None,
     ):
-        call = {"agent_id": agent_id, "nonce": nonce, "tools": tools}
+        call = {
+            "agent_id": agent_id,
+            "nonce": nonce,
+            "tools": tools,
+            "session_key": session_key,
+        }
         if production:
             call["production"] = True
         self.client_tool_probe_calls.append(call)
@@ -325,9 +336,13 @@ class FakeCLI:
         )
 
     def probe_analysis_tool_block(
-        self, *, agent_id, nonce, production=False
+        self, *, agent_id, nonce, production=False, session_key=None
     ):
-        call = {"agent_id": agent_id, "nonce": nonce}
+        call = {
+            "agent_id": agent_id,
+            "nonce": nonce,
+            "session_key": session_key,
+        }
         if production:
             call["production"] = True
         self.analysis_tool_probe_calls.append(call)
@@ -348,9 +363,16 @@ class FakeCLI:
             "",
         )
 
-    def probe_channel_status(self, *, agent_id, nonce, channel):
+    def probe_channel_status(
+        self, *, agent_id, nonce, channel, session_key=None
+    ):
         self.channel_probe_status_calls.append(
-            {"agent_id": agent_id, "nonce": nonce, "channel": channel}
+            {
+                "agent_id": agent_id,
+                "nonce": nonce,
+                "channel": channel,
+                "session_key": session_key,
+            }
         )
         status = self.channel_probe_statuses.get(channel, "tool_blocked")
         details = {
@@ -361,12 +383,15 @@ class FakeCLI:
         }
         return CommandResult(200, json.dumps(native_tool_envelope(details)), "")
 
-    def probe_configured_agent_guard(self, *, agent_id, nonce):
+    def probe_configured_agent_guard(
+        self, *, agent_id, nonce, session_key=None
+    ):
         self.configured_agent_guard_probe_calls.append(
             {
                 "agent_id": agent_id,
                 "nonce": nonce,
                 "operation": "__openhouse_agent_guard_probe__",
+                "session_key": session_key,
             }
         )
         if self.configured_agent_guard_probe is not None:
@@ -377,13 +402,16 @@ class FakeCLI:
             f"Configured CRM agent {agent_id} is protected.",
         )
 
-    def probe_production_channel_guard(self, *, agent_id, nonce, channel):
+    def probe_production_channel_guard(
+        self, *, agent_id, nonce, channel, session_key=None
+    ):
         self.production_channel_guard_probe_calls.append(
             {
                 "agent_id": agent_id,
                 "nonce": nonce,
                 "channel": channel,
                 "gateway_restart_count": self.gateway_restart_count,
+                "session_key": session_key,
             }
         )
         if self.production_channel_guard_probe is not None:
@@ -2608,6 +2636,35 @@ def test_setup_channel_marker_rejects_noncanonical_native_tool_envelopes(
         )
 
 
+def test_setup_channel_marker_reports_safe_gateway_error_evidence():
+    cli = FakeCLI()
+    cli.probe_channel_status = lambda **_kwargs: CommandResult(
+        403,
+        json.dumps(
+            {
+                "ok": False,
+                "error": {
+                    "type": "tool_call_blocked",
+                    "message": "sensitive implementation detail",
+                },
+            }
+        ),
+        "",
+    )
+
+    with pytest.raises(
+        SetupConflict, match=r"HTTP 403, type tool_call_blocked"
+    ) as caught:
+        setup_openclaw._verify_channel_marker(
+            cli,
+            "openhouse-crm",
+            "c" * 32,
+            "openhouse-dashboard",
+        )
+
+    assert "sensitive implementation detail" not in str(caught.value)
+
+
 def test_installed_state_reproves_behavior_instead_of_trusting_serialized_label(
     tmp_path,
 ):
@@ -2703,23 +2760,33 @@ def test_setup_proves_full_schema_and_both_production_channel_markers(tmp_path):
     assert result.ok, result.render()
     assert len(cli.client_tool_probe_calls) == 1
     dashboard_call = cli.client_tool_probe_calls[0]
+    assert isinstance(dashboard_call["session_key"], str)
+    assert dashboard_call["session_key"].startswith(
+        f'agent:{dashboard_call["agent_id"]}:dashboard:openhouse-setup-'
+    )
     assert [tool["function"]["name"] for tool in dashboard_call["tools"]] == [
         "openhouse_crm_request",
         "finish_crm_response",
     ]
     assert cli.analysis_tool_probe_calls == [
-        {"agent_id": dashboard_call["agent_id"], "nonce": dashboard_call["nonce"]}
+        {
+            "agent_id": dashboard_call["agent_id"],
+            "nonce": dashboard_call["nonce"],
+            "session_key": dashboard_call["session_key"],
+        }
     ]
     assert cli.channel_probe_status_calls == [
         {
             "agent_id": dashboard_call["agent_id"],
             "nonce": dashboard_call["nonce"],
             "channel": "openhouse-dashboard",
+            "session_key": dashboard_call["session_key"],
         },
         {
             "agent_id": dashboard_call["agent_id"],
             "nonce": dashboard_call["nonce"],
             "channel": "openhouse-analysis",
+            "session_key": dashboard_call["session_key"],
         },
     ]
     assert cli.config_values[PLUGIN_CONFIG_PATH] == {"agentId": "openhouse-crm"}
@@ -2934,6 +3001,11 @@ def test_effective_tools_uses_a_persisted_agent_targeted_diagnostic_session(tmp_
         "agentId": probe_agent,
         "sessionKey": create_params["key"],
     }
+    assert cli.client_tool_probe_calls[0]["session_key"] == create_params["key"]
+    assert cli.analysis_tool_probe_calls[0]["session_key"] == create_params["key"]
+    assert {
+        call["session_key"] for call in cli.channel_probe_status_calls
+    } == {create_params["key"]}
     assert delete_params["key"] == create_params["key"]
     assert delete_params["agentId"] == probe_agent
     assert delete_params["deleteTranscript"] is True
@@ -2942,6 +3014,127 @@ def test_effective_tools_uses_a_persisted_agent_targeted_diagnostic_session(tmp_
     assert cli.calls.index(creates[0]) < cli.calls.index(effective[0]) < cli.calls.index(
         deletes[0]
     )
+    assert cli.sessions == {}
+
+
+def test_failed_probe_deletes_diagnostic_session_before_agent(tmp_path):
+    cli = FakeCLI(
+        channel_probe_statuses={"openhouse-dashboard": "marker_missing"}
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    session_delete = next(
+        call
+        for call in cli.calls
+        if call[1:4] == ["gateway", "call", "sessions.delete"]
+    )
+    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    agent_delete = next(
+        call
+        for call in cli.calls
+        if call[1:3] == ["agents", "delete"] and call[3] == probe_agent
+    )
+    assert cli.calls.index(session_delete) < cli.calls.index(agent_delete)
+    assert cli.sessions == {}
+
+
+def test_session_cleanup_is_retried_before_agent_cleanup(tmp_path):
+    class OneFailedSessionDeleteCLI(FakeCLI):
+        session_delete_attempts = 0
+
+        def run(self, args, *, mutate=False):
+            if args[1:4] == ["gateway", "call", "sessions.delete"]:
+                self.session_delete_attempts += 1
+                if self.session_delete_attempts == 1:
+                    self.calls.append(args)
+                    if mutate:
+                        self.mutating_calls.append(args)
+                    return CommandResult(1, "", "SQLite writer still active")
+            return super().run(args, mutate=mutate)
+
+    cli = OneFailedSessionDeleteCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.session_delete_attempts == 2
+    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    session_deletes = [
+        index
+        for index, call in enumerate(cli.calls)
+        if call[1:4] == ["gateway", "call", "sessions.delete"]
+    ]
+    agent_delete = next(
+        index
+        for index, call in enumerate(cli.calls)
+        if call[1:3] == ["agents", "delete"] and call[3] == probe_agent
+    )
+    assert len(session_deletes) == 2
+    assert session_deletes[-1] < agent_delete
+    assert cli.sessions == {}
+
+
+def test_persistent_session_cleanup_failure_retains_agent_and_workspace(tmp_path):
+    class FailedSessionDeleteCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            if args[1:4] == ["gateway", "call", "sessions.delete"]:
+                self.calls.append(args)
+                if mutate:
+                    self.mutating_calls.append(args)
+                return CommandResult(1, "", "SQLite writer still active")
+            return super().run(args, mutate=mutate)
+
+    cli = FailedSessionDeleteCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    probe_agent = cli.client_tool_probe_calls[0]["agent_id"]
+    assert probe_agent in cli.extra_agents
+    retained_workspace = Path(cli.extra_agents[probe_agent]["workspace"])
+    assert retained_workspace.is_dir()
+    assert "retained the setup diagnostic agent and workspace" in result.render()
+    assert not any(
+        call[1:3] == ["agents", "delete"] and call[3] == probe_agent
+        for call in cli.calls
+    )
+    assert cli.sessions
+
+
+def test_production_fallback_session_cleanup_is_visible_to_rollback(tmp_path):
+    options = make_options(tmp_path)
+
+    class ProductionSessionDeleteFailureCLI(FakeCLI):
+        session_delete_attempts = 0
+
+        def run(self, args, *, mutate=False):
+            if args[1:4] == ["gateway", "call", "sessions.delete"]:
+                self.session_delete_attempts += 1
+                if self.session_delete_attempts == 2:
+                    self.calls.append(args)
+                    if mutate:
+                        self.mutating_calls.append(args)
+                    return CommandResult(1, "", "SQLite writer still active")
+            return super().run(args, mutate=mutate)
+
+    cli = ProductionSessionDeleteFailureCLI(
+        plugin_runtime={
+            "plugin": {
+                "id": "openhouse-crm",
+                "enabled": True,
+                "toolNames": ["openhouse_crm"],
+            },
+            "tools": [{"names": ["openhouse_crm"], "optional": False}],
+            "diagnostics": [],
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert cli.session_delete_attempts == 3
     assert cli.sessions == {}
 
 
@@ -6980,9 +7173,15 @@ def test_existing_agent_rollback_requires_authoritative_exact_readback(tmp_path)
             self.probe_failed = False
 
         def probe_client_tools(
-            self, *, agent_id, nonce, tools, production=False
+            self,
+            *,
+            agent_id,
+            nonce,
+            tools,
+            production=False,
+            session_key=None,
         ):
-            del tools
+            del tools, session_key
             self.probe_failed = True
             return CommandResult(503, "", "provider unavailable")
 

@@ -581,13 +581,20 @@ def test_setup_client_probe_uses_full_production_schemas_and_dashboard_channel(m
     contract = module._capture_canonical_contract(REPO)
     tools = module._capture_dashboard_client_tools(REPO, contract).tools
     result = module.OpenClawCLI().probe_client_tools(
-        agent_id="openhouse-crm", nonce=nonce, tools=tools
+        agent_id="openhouse-crm",
+        nonce=nonce,
+        tools=tools,
+        session_key="agent:openhouse-crm:dashboard:setup-test",
     )
 
     assert result.returncode == 200
     assert captured["url"] == "http://127.0.0.1:18789/v1/chat/completions"
     assert captured["timeout"] <= 30
     assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
+    assert (
+        captured["headers"]["X-openclaw-session-key"]
+        == "agent:openhouse-crm:dashboard:setup-test"
+    )
     assert (
         captured["headers"]["X-openclaw-message-channel"]
         == "openhouse-dashboard"
@@ -614,8 +621,13 @@ def test_setup_analysis_probe_matches_the_production_no_tools_path(monkeypatch):
     spec.loader.exec_module(module)
     captured = {}
 
-    def fake_post(_self, path, payload, *, channel):
-        captured.update(path=path, payload=payload, channel=channel)
+    def fake_post(_self, path, payload, *, channel, session_key=None):
+        captured.update(
+            path=path,
+            payload=payload,
+            channel=channel,
+            session_key=session_key,
+        )
         return module.CommandResult(200, '{"choices":[]}', "")
 
     monkeypatch.setenv("AGENT_GATEWAY_URL", "http://localhost:18789")
@@ -623,12 +635,18 @@ def test_setup_analysis_probe_matches_the_production_no_tools_path(monkeypatch):
     monkeypatch.setattr(module.OpenClawCLI, "_post_gateway_json", fake_post)
 
     result = module.OpenClawCLI().probe_analysis_tool_block(
-        agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
+        agent_id="openhouse-setup-probe-safe",
+        nonce="bounded-nonce",
+        session_key="agent:openhouse-setup-probe-safe:dashboard:setup-test",
     )
 
     assert result.returncode == 200
     assert captured["path"] == "/v1/chat/completions"
     assert captured["channel"] == "openhouse-analysis"
+    assert (
+        captured["session_key"]
+        == "agent:openhouse-setup-probe-safe:dashboard:setup-test"
+    )
     assert captured["payload"]["tools"] == []
     assert captured["payload"]["tool_choice"] == "none"
     assert captured["payload"]["model"] == "openclaw/openhouse-setup-probe-safe"
@@ -648,9 +666,14 @@ def test_setup_channel_status_is_loopback_only_and_uses_no_crm_operation(
     spec.loader.exec_module(module)
     captured = {"calls": 0}
 
-    def fake_post(_self, path, payload, *, channel):
+    def fake_post(_self, path, payload, *, channel, session_key=None):
         captured["calls"] += 1
-        captured.update(path=path, payload=payload, channel=channel)
+        captured.update(
+            path=path,
+            payload=payload,
+            channel=channel,
+            session_key=session_key,
+        )
         return module.CommandResult(
             200,
             json.dumps({"details": {"status": "tool_blocked"}}),
@@ -664,6 +687,7 @@ def test_setup_channel_status_is_loopback_only_and_uses_no_crm_operation(
         agent_id="openhouse-setup-probe-safe",
         nonce="bounded-nonce",
         channel="openhouse-dashboard",
+        session_key="agent:openhouse-setup-probe-safe:dashboard:setup-test",
     )
 
     assert result.returncode == 200
@@ -676,6 +700,10 @@ def test_setup_channel_status_is_loopback_only_and_uses_no_crm_operation(
         "nonce": "bounded-nonce",
     }
     assert captured["payload"]["agentId"] == "openhouse-setup-probe-safe"
+    assert (
+        captured["payload"]["sessionKey"]
+        == "agent:openhouse-setup-probe-safe:dashboard:setup-test"
+    )
     assert captured["calls"] == 1
 
     monkeypatch.setenv("AGENT_GATEWAY_URL", "https://gateway.example.test")
