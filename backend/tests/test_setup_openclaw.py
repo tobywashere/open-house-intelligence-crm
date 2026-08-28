@@ -40,6 +40,7 @@ LEGACY_TOKEN_ENV_PATH = 'skills.entries["crm-db-operations"].env'
 LEGACY_TOKEN_CONFIG_PATH = f"{LEGACY_TOKEN_ENV_PATH}.OHI_API_TOKEN"
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
 PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
+PLUGIN_HOOKS_PATH = 'plugins.entries["openhouse-crm"].hooks'
 TOOL_SEARCH_CONFIG_PATH = "tools.toolSearch"
 
 
@@ -5974,6 +5975,146 @@ def test_setup_fails_closed_when_plugin_agent_config_readback_is_wrong(tmp_path)
     assert cli.configured_agent_guard_probe_calls == []
 
 
+def test_setup_configures_required_conversation_hook_permission(tmp_path):
+    cli = FakeCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.config_values[PLUGIN_HOOKS_PATH] == {
+        "allowConversationAccess": True,
+    }
+
+
+def test_setup_preserves_other_plugin_hook_settings(tmp_path):
+    cli = FakeCLI()
+    cli.config_values[PLUGIN_HOOKS_PATH] = {
+        "allowConversationAccess": False,
+        "allowPromptInjection": False,
+        "timeoutMs": 250,
+    }
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.config_values[PLUGIN_HOOKS_PATH] == {
+        "allowConversationAccess": True,
+        "allowPromptInjection": False,
+        "timeoutMs": 250,
+    }
+
+
+def test_installed_state_rejects_removed_conversation_hook_permission(tmp_path):
+    options = make_options(tmp_path)
+    cli = FakeCLI()
+    result = configure_openclaw(options, cli=cli)
+    assert result.ok, result.render()
+    cli.config_values[PLUGIN_HOOKS_PATH]["allowConversationAccess"] = False
+
+    with pytest.raises(SetupConflict, match="conversation hook permission"):
+        setup_openclaw.capture_installed_state(options, cli)
+
+
+def test_setup_fails_closed_when_plugin_hook_permission_readback_is_wrong(tmp_path):
+    class WrongPluginHooksCLI(FakeCLI):
+        configured_once = False
+
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if mutate and args[1:4] == ["config", "set", PLUGIN_HOOKS_PATH]:
+                self.configured_once = True
+            if (
+                self.configured_once
+                and args
+                == ["openclaw", "config", "get", PLUGIN_HOOKS_PATH, "--json"]
+            ):
+                return CommandResult(
+                    0, json.dumps({"allowConversationAccess": False}), ""
+                )
+            return result
+
+    cli = WrongPluginHooksCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "conversation hook permission" in result.render()
+    assert PLUGIN_HOOKS_PATH not in cli.config_values
+    assert cli.configured_agent_guard_probe_calls == []
+
+
+@pytest.mark.parametrize(
+    "previous_hooks",
+    [
+        None,
+        {
+            "allowConversationAccess": False,
+            "allowPromptInjection": False,
+            "timeoutMs": 250,
+        },
+    ],
+)
+def test_setup_restores_exact_plugin_hooks_after_late_failure(
+    tmp_path, previous_hooks
+):
+    class TrackingPluginHooksCLI(FakeCLI):
+        saw_required_permission = False
+
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if (
+                mutate
+                and args[1:4] == ["config", "set", PLUGIN_HOOKS_PATH]
+                and json.loads(args[-2]).get("allowConversationAccess") is True
+            ):
+                self.saw_required_permission = True
+            return result
+
+    cli = TrackingPluginHooksCLI(
+        client_tool_probe=CommandResult(503, "", "provider unavailable")
+    )
+    if previous_hooks is not None:
+        cli.config_values[PLUGIN_HOOKS_PATH] = dict(previous_hooks)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.saw_required_permission is True
+    if previous_hooks is None:
+        assert PLUGIN_HOOKS_PATH not in cli.config_values
+    else:
+        assert cli.config_values[PLUGIN_HOOKS_PATH] == previous_hooks
+
+
+def test_setup_restores_orphaned_plugin_entry_after_beta_uninstall(tmp_path):
+    class BetaUninstallCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if mutate and args[1:3] == ["plugins", "uninstall"]:
+                self.config_values.pop(PLUGIN_CONFIG_PATH, None)
+                self.config_values.pop(PLUGIN_HOOKS_PATH, None)
+            return result
+
+    previous_config = {"agentId": "legacy-crm"}
+    previous_hooks = {
+        "allowConversationAccess": False,
+        "allowPromptInjection": False,
+        "timeoutMs": 250,
+    }
+    cli = BetaUninstallCLI(
+        client_tool_probe=CommandResult(503, "", "provider unavailable")
+    )
+    cli.config_values[PLUGIN_CONFIG_PATH] = dict(previous_config)
+    cli.config_values[PLUGIN_HOOKS_PATH] = dict(previous_hooks)
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert cli.plugin_path is None
+    assert cli.config_values[PLUGIN_CONFIG_PATH] == previous_config
+    assert cli.config_values[PLUGIN_HOOKS_PATH] == previous_hooks
+
+
 def test_setup_rolls_back_preexisting_plugin_agent_config_after_late_failure(tmp_path):
     options = make_options(tmp_path, agent_id="custom-crm")
     plugin_path = str(REPO_ROOT / "openclaw-plugins" / "openhouse-crm")
@@ -6031,8 +6172,10 @@ def test_custom_agent_dry_run_reports_plugin_config_without_mutating(tmp_path):
 
     assert result.ok, result.render()
     assert "Configure the CRM plugin for agent custom-crm" in result.render()
+    assert "protect trusted conversation channels" in result.render()
     assert cli.mutating_calls == []
     assert PLUGIN_CONFIG_PATH not in cli.config_values
+    assert PLUGIN_HOOKS_PATH not in cli.config_values
 
 
 def test_setup_rejects_agent_id_that_conflicts_with_runtime_env(

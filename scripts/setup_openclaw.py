@@ -148,6 +148,7 @@ CLIENT_TOOLS_RELATIVE_PATH = (
 )
 CRM_URL_CONFIG_PATH = 'skills.entries["crm-db-operations"].env.CRM_API_URL'
 PLUGIN_CONFIG_PATH = 'plugins.entries["openhouse-crm"].config'
+PLUGIN_HOOKS_PATH = 'plugins.entries["openhouse-crm"].hooks'
 TOOL_SEARCH_CONFIG_PATH = "tools.toolSearch"
 DIAGNOSTIC_TOOL_POLICY = {
     "profile": "full",
@@ -5147,6 +5148,15 @@ def capture_installed_state(
     plugin_config = _read_config_snapshot(cli, PLUGIN_CONFIG_PATH)
     if not plugin_config.existed or plugin_config.value != {"agentId": options.agent_id}:
         raise SetupConflict("OpenClaw plugin configuration does not target the CRM agent")
+    plugin_hooks = _read_config_snapshot(cli, PLUGIN_HOOKS_PATH)
+    if (
+        not plugin_hooks.existed
+        or not isinstance(plugin_hooks.value, dict)
+        or plugin_hooks.value.get("allowConversationAccess") is not True
+    ):
+        raise SetupConflict(
+            "OpenClaw plugin conversation hook permission is not enabled"
+        )
 
     roster = _read_agent_roster(
         cli, allow_missing=False, label="installed-state agent config"
@@ -6029,6 +6039,25 @@ def _verify_plugin_agent_config(cli: OpenClawCLI, agent_id: str) -> None:
     )
 
 
+def _required_plugin_hooks(snapshot: ConfigValueSnapshot) -> dict[str, Any]:
+    if snapshot.existed and not isinstance(snapshot.value, dict):
+        raise SetupConflict(
+            "OpenClaw returned an unsupported CRM plugin hooks configuration"
+        )
+    hooks = dict(snapshot.value) if snapshot.existed else {}
+    hooks["allowConversationAccess"] = True
+    return hooks
+
+
+def _verify_plugin_hooks(cli: OpenClawCLI, expected: dict[str, Any]) -> None:
+    snapshot = _read_config_snapshot(cli, PLUGIN_HOOKS_PATH)
+    if not snapshot.existed or snapshot.value != expected:
+        raise SetupConflict(
+            "OpenClaw did not retain the required conversation hook permission "
+            "and existing CRM plugin hook settings"
+        )
+
+
 def _verify_configured_agent_guard(
     cli: OpenClawCLI, agent_id: str, *, session_key: str | None = None
 ) -> None:
@@ -6372,6 +6401,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     plugin_allow_mutation_attempted = False
     plugin_config_snapshot: ConfigValueSnapshot | None = None
     plugin_config_mutation_attempted = False
+    plugin_hooks_snapshot: ConfigValueSnapshot | None = None
+    plugin_hooks_mutation_attempted = False
+    required_plugin_hooks: dict[str, Any] | None = None
     approvals_original: set[str] = set()
     approvals_mutation_attempted = False
     crm_agent_preexisting = False
@@ -6419,6 +6451,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             plugin_allow_original is not None,
             plugin_allow_original,
         )
+        plugin_hooks_snapshot = _read_config_snapshot(cli, PLUGIN_HOOKS_PATH)
+        required_plugin_hooks = _required_plugin_hooks(plugin_hooks_snapshot)
         if token:
             _run_required(
                 cli,
@@ -6516,6 +6550,17 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                             {"agentId": options.agent_id},
                             separators=(",", ":"),
                         ),
+                        "--strict-json",
+                    ],
+                ),
+                Action(
+                    "Allow the CRM plugin to protect trusted conversation channels",
+                    [
+                        "openclaw",
+                        "config",
+                        "set",
+                        PLUGIN_HOOKS_PATH,
+                        json.dumps(required_plugin_hooks, separators=(",", ":")),
                         "--strict-json",
                     ],
                 ),
@@ -6631,6 +6676,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 binding_snapshot,
                 plugin_allow_snapshot,
                 plugin_config_snapshot,
+                plugin_hooks_snapshot,
             ],
             crm_agent_id=options.agent_id,
             agent=configured_agent,
@@ -6716,6 +6762,30 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         _verify_plugin_agent_config(cli, options.agent_id)
         messages.append(f"Configured the CRM plugin for agent {options.agent_id}")
+
+        if required_plugin_hooks is None:
+            raise SetupConflict("CRM plugin hook policy was not captured before setup")
+        plugin_hooks_mutation_attempted = True
+        configure_plugin_hooks = cli.run(
+            [
+                "openclaw",
+                "config",
+                "set",
+                PLUGIN_HOOKS_PATH,
+                json.dumps(required_plugin_hooks, separators=(",", ":")),
+                "--strict-json",
+            ],
+            mutate=True,
+        )
+        if configure_plugin_hooks.returncode != 0:
+            raise SetupConflict(
+                "Bundled OpenClaw CRM plugin conversation hook permission failed: "
+                + (configure_plugin_hooks.stderr or configure_plugin_hooks.stdout).strip()
+            )
+        _verify_plugin_hooks(cli, required_plugin_hooks)
+        messages.append(
+            "Enabled the CRM plugin permission required to protect conversation channels"
+        )
 
         plugin_enable_attempted = True
         enable_plugin = cli.run(
@@ -6986,6 +7056,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             plugin_source,
         )
         _verify_plugin_agent_config(cli, options.agent_id)
+        _verify_plugin_hooks(cli, required_plugin_hooks)
 
         validate = _run_required(
             cli,
@@ -7161,6 +7232,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             plugin_source,
         )
         _verify_plugin_agent_config(cli, options.agent_id)
+        _verify_plugin_hooks(cli, required_plugin_hooks)
         runtime_verification = (
             _inventory_runtime_verification(options.agent_id)
             if final_has_hook_inventory
@@ -7355,12 +7427,6 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         "Could not delete or verify absence of the newly created CRM agent."
                     )
 
-        if plugin_config_mutation_attempted and plugin_config_snapshot is not None:
-            if not _restore_config_snapshot(cli, plugin_config_snapshot):
-                rollback_failed = True
-                messages.append(
-                    "Could not restore the previous CRM plugin agent configuration."
-                )
         if plugin_allow_mutation_attempted and plugin_allow_snapshot is not None:
             if not _restore_config_snapshot(cli, plugin_allow_snapshot):
                 rollback_failed = True
@@ -7426,6 +7492,22 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             if restore_enablement is None or restore_enablement.returncode != 0:
                 rollback_failed = True
                 messages.append("Could not restore the previous CRM plugin enablement.")
+
+        # OpenClaw plugin install and uninstall can rewrite the plugin entry.
+        # Restore setup-owned entry fields only after the plugin lifecycle is back
+        # at its original state so an uninstall cannot discard orphaned settings.
+        if plugin_config_mutation_attempted and plugin_config_snapshot is not None:
+            if not _restore_config_snapshot(cli, plugin_config_snapshot):
+                rollback_failed = True
+                messages.append(
+                    "Could not restore the previous CRM plugin agent configuration."
+                )
+        if plugin_hooks_mutation_attempted and plugin_hooks_snapshot is not None:
+            if not _restore_config_snapshot(cli, plugin_hooks_snapshot):
+                rollback_failed = True
+                messages.append(
+                    "Could not restore the previous CRM plugin hook permissions."
+                )
 
         if (
             (plugin_install_attempted or plugin_enable_attempted)
@@ -7513,6 +7595,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         *(
                             [plugin_config_snapshot]
                             if plugin_config_snapshot is not None
+                            else []
+                        ),
+                        *(
+                            [plugin_hooks_snapshot]
+                            if plugin_hooks_snapshot is not None
                             else []
                         ),
                     ],
