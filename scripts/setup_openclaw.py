@@ -3593,6 +3593,12 @@ def _agents(payload: Any) -> list[dict[str, Any]]:
     return _cli_agents(payload)
 
 
+def _quote_openclaw_cli_arg(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_/:=.,@%+-]+", value):
+        return value
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def _is_missing_config_path(result: CommandResult, path: str) -> bool:
     if result.returncode != 1:
         return False
@@ -3601,9 +3607,14 @@ def _is_missing_config_path(result: CommandResult, path: str) -> bool:
         f"Config path is valid but unset: {path}. The runtime default applies until "
         "you set an authored value with "
     )
+    rendered_paths = {path, _quote_openclaw_cli_arg(path)}
     expected_unset_texts = {
-        expected_unset_prefix + f"`openclaw config set {path} <value>`.",
-        expected_unset_prefix + f"openclaw config set {path} <value>.",
+        expected_unset_prefix + rendered_command
+        for rendered_path in rendered_paths
+        for rendered_command in (
+            f"`openclaw config set {rendered_path} <value>`.",
+            f"openclaw config set {rendered_path} <value>.",
+        )
     }
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()

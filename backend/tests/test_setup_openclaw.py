@@ -1332,6 +1332,40 @@ def test_beta3_native_valid_but_unset_config_path_without_backticks_is_absent(pa
     assert setup_openclaw._is_missing_config_path(result, path) is True
 
 
+@pytest.mark.parametrize("command_wrapper", ["`", ""])
+def test_beta3_bracketed_valid_but_unset_config_path_is_absent(command_wrapper):
+    path = 'plugins.entries["openhouse-crm"].hooks'
+    command = f"openclaw config set '{path}' <value>"
+    rendered_command = (
+        f"{command_wrapper}{command}{command_wrapper}"
+        if command_wrapper
+        else command
+    )
+    message = (
+        f"Config path is valid but unset: {path}. The runtime default applies until "
+        "you set an authored value with "
+        f"{rendered_command}."
+    )
+    cli = FakeCLI(
+        {
+            ("openclaw", "config", "get", path, "--json"): CommandResult(
+                1,
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {"type": "cli_error", "message": message},
+                    }
+                ),
+                "",
+            )
+        }
+    )
+
+    snapshot = setup_openclaw._read_config_snapshot(cli, path)
+
+    assert snapshot == setup_openclaw.ConfigValueSnapshot(path, False, None)
+
+
 @pytest.mark.parametrize(
     ("path", "payload"),
     [
