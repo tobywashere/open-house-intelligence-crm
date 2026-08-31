@@ -138,7 +138,14 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       });
       const updateSetupProbeRecord = (channel, change) => {
         const current = setupProbeState.get(channel) ?? emptySetupProbeRecord(channel);
-        if (current.invalid && !change.invalid) return current;
+        if (current.invalid && !change.invalid) {
+          if (change.sentinelExecuted === true) {
+            const next = { ...current, sentinelExecuted: true };
+            setupProbeState.set(channel, next);
+            return next;
+          }
+          return current;
+        }
         const next = { ...current, ...change };
         setupProbeState.set(channel, next);
         while (setupProbeState.size > MAX_SETUP_PROBE_RUNS) {

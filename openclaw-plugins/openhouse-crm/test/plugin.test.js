@@ -592,6 +592,39 @@ test("setup probe never lets a later exact attempt overwrite invalid evidence", 
 });
 
 
+test("setup sentinel execution remains visible after invalid evidence", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const channel = "openhouse-dashboard";
+  const sessionKey = `agent:${agentId}:dashboard:invalid-then-executed`;
+  const { hooks, registrations } = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  hooks.get("before_prompt_build").handler({}, {
+    agentId,
+    runId: "prompt-invalid-then-executed",
+    sessionKey,
+    channel,
+  });
+  hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel, nonce: "fedcba9876543210fedcba9876543210" },
+    },
+    { agentId, sessionKey, requester: { channel } },
+  );
+  const [factory] = registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const tool = factory({});
+  await tool.execute("unexpected-execution", { action: "attempt", channel, nonce });
+  const status = await tool.execute("status", { action: "status", channel, nonce });
+  assert.equal(status.details.tool_blocked, false);
+  assert.equal(status.details.sentinel_executed, true);
+});
+
+
 test("setup sentinel execution is permanently visible as a failed proof", async () => {
   const nonce = "0123456789abcdef0123456789abcdef";
   const agentId = "openhouse-setup-probe-a1b2c3d4";
