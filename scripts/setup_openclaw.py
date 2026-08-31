@@ -133,7 +133,6 @@ SETUP_CAPABILITY_CHANNEL = "openhouse-setup-capability"
 SETUP_AGENT_GUARD_CHANNEL = "openhouse-setup-agent-guard"
 INTERNAL_ANALYSIS_CHANNEL = "openhouse-analysis"
 SETUP_MARKER_TOOL = "openhouse_setup_marker_probe"
-SETUP_MARKER_ATTEMPT_TOOL = "openhouse_setup_marker_attempt"
 SETUP_AGENT_GUARD_OPERATION = "__openhouse_agent_guard_probe__"
 GATEWAY_PROBE_TIMEOUT_SECONDS = 30
 GATEWAY_PROBE_MAX_BYTES = 256 * 1024
@@ -475,57 +474,28 @@ class OpenClawCLI:
             session_key=session_key,
         )
 
-    def probe_channel_marker_attempt(
+    def probe_channel_prompt(
         self,
         *,
         agent_id: str,
         nonce: str,
         channel: str,
-        session_key: str | None = None,
+        session_key: str,
     ) -> CommandResult:
         try:
             _loopback_gateway_base_url()
         except SetupConflict as exc:
             return CommandResult(503, "", str(exc))
         chat_path = os.environ.get("AGENT_CHAT_PATH", "/v1/chat/completions")
-        attempt_tool = {
-            "type": "function",
-            "function": {
-                "name": SETUP_MARKER_ATTEMPT_TOOL,
-                "description": (
-                    "Setup-only caller tool used to prove that OpenClaw propagates "
-                    "the trusted request channel to its tool policy hooks."
-                ),
-                "strict": True,
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["channel", "nonce"],
-                    "properties": {
-                        "channel": {"const": channel},
-                        "nonce": {"const": nonce},
-                    },
-                },
-            },
-        }
         payload = {
             "model": f"openclaw/{agent_id}",
             "user": f"setup-channel-marker:{channel}:{nonce}",
             "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"Call {SETUP_MARKER_ATTEMPT_TOOL} with channel {channel} "
-                        f"and nonce {nonce}."
-                    ),
-                }
+                {"role": "user", "content": f"Setup channel probe {nonce}"}
             ],
-            "tools": [attempt_tool],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": SETUP_MARKER_ATTEMPT_TOOL},
-            },
-            "max_completion_tokens": 128,
+            "tools": [],
+            "tool_choice": "none",
+            "max_completion_tokens": 32,
         }
         return self._post_gateway_json(
             chat_path,
@@ -533,6 +503,27 @@ class OpenClawCLI:
             channel=channel,
             session_key=session_key,
         )
+
+    def probe_channel_marker_attempt(
+        self,
+        *,
+        agent_id: str,
+        nonce: str,
+        channel: str,
+        session_key: str,
+    ) -> CommandResult:
+        try:
+            _loopback_gateway_base_url()
+        except SetupConflict as exc:
+            return CommandResult(503, "", str(exc))
+        payload = {
+            "tool": SETUP_MARKER_TOOL,
+            "args": {"action": "attempt", "channel": channel, "nonce": nonce},
+            "agentId": agent_id,
+            "sessionKey": session_key,
+            "idempotencyKey": f"setup-marker-attempt:{nonce}:{channel}",
+        }
+        return self._post_gateway_json("/tools/invoke", payload, channel=channel)
 
     def probe_analysis_tool_block(
         self,
@@ -4667,19 +4658,34 @@ def _validate_runtime_plugin(payload: Any, source: Path) -> bool:
     return bool(hook_inventories)
 
 
-def _inventory_runtime_verification(agent_id: str) -> dict[str, Any]:
+def _setup_checks(model_tool_behavior: str) -> dict[str, Any]:
+    return {
+        "channel_policy": [DASHBOARD_CHANNEL, INTERNAL_ANALYSIS_CHANNEL],
+        "schema_transport": "accepted",
+        "model_tool_behavior": model_tool_behavior,
+        "diagnostic_cleanup": "verified",
+    }
+
+
+def _inventory_runtime_verification(
+    agent_id: str, model_tool_behavior: str = "verified"
+) -> dict[str, Any]:
     return {
         "mode": "authoritative_inventory",
         "agent_id": agent_id,
         "hooks": sorted(REQUIRED_PLUGIN_HOOKS),
+        "setup_checks": _setup_checks(model_tool_behavior),
     }
 
 
-def _behavioral_runtime_verification(agent_id: str) -> dict[str, Any]:
+def _behavioral_runtime_verification(
+    agent_id: str, model_tool_behavior: str = "verified"
+) -> dict[str, Any]:
     return {
         "mode": "production_behavioral",
         "agent_id": agent_id,
         "capabilities": sorted(BEHAVIORAL_RUNTIME_CAPABILITIES),
+        "setup_checks": _setup_checks(model_tool_behavior),
     }
 
 
@@ -4688,18 +4694,46 @@ def _validate_runtime_verification(value: Any, agent_id: str) -> dict[str, Any]:
         raise SetupConflict(
             "unsupported installed-state snapshot: runtime verification identity"
         )
+    setup_checks = value.get("setup_checks")
+    valid_model_tool_behaviors = {
+        "verified",
+        "warning_no_tool_call",
+        "warning_invalid_tool_call",
+    }
+    if (
+        not isinstance(setup_checks, dict)
+        or set(setup_checks)
+        != {
+            "channel_policy",
+            "schema_transport",
+            "model_tool_behavior",
+            "diagnostic_cleanup",
+        }
+        or setup_checks.get("channel_policy")
+        != [DASHBOARD_CHANNEL, INTERNAL_ANALYSIS_CHANNEL]
+        or setup_checks.get("schema_transport") != "accepted"
+        or setup_checks.get("model_tool_behavior")
+        not in valid_model_tool_behaviors
+        or setup_checks.get("diagnostic_cleanup") != "verified"
+    ):
+        raise SetupConflict(
+            "unsupported installed-state snapshot: setup verification checks"
+        )
     mode = value.get("mode")
     if mode == "authoritative_inventory":
-        if set(value) != {"mode", "agent_id", "hooks"} or value.get(
+        if set(value) != {"mode", "agent_id", "hooks", "setup_checks"} or value.get(
             "hooks"
         ) != sorted(REQUIRED_PLUGIN_HOOKS):
             raise SetupConflict(
                 "unsupported installed-state snapshot: runtime hook inventory"
             )
     elif mode == "production_behavioral":
-        if set(value) != {"mode", "agent_id", "capabilities"} or value.get(
-            "capabilities"
-        ) != sorted(BEHAVIORAL_RUNTIME_CAPABILITIES):
+        if set(value) != {
+            "mode",
+            "agent_id",
+            "capabilities",
+            "setup_checks",
+        } or value.get("capabilities") != sorted(BEHAVIORAL_RUNTIME_CAPABILITIES):
             raise SetupConflict(
                 "unsupported installed-state snapshot: runtime behavioral proof"
             )
@@ -5108,6 +5142,14 @@ def capture_installed_state(
 ) -> dict[str, Any]:
     """Capture the complete, canonical, secret-free state established by setup."""
     _validate_requested_agent_id(options.agent_id)
+    model_tool_behavior = "verified"
+    if runtime_verification is not None:
+        prior_runtime_verification = _validate_runtime_verification(
+            runtime_verification, options.agent_id
+        )
+        model_tool_behavior = prior_runtime_verification["setup_checks"][
+            "model_tool_behavior"
+        ]
     _validate_global_tool_search_for_client_functions(cli)
     repo = Path(__file__).resolve().parents[1]
     sources = _material_head_state(
@@ -5145,14 +5187,11 @@ def capture_installed_state(
     )
     if has_hook_inventory:
         current_runtime_verification = _inventory_runtime_verification(
-            options.agent_id
+            options.agent_id, model_tool_behavior
         )
     else:
-        del runtime_verification
-        contract = _capture_canonical_contract(repo)
-        tools = _capture_dashboard_client_tools(repo, contract).tools
         current_runtime_verification = _fresh_production_behavioral_verification(
-            cli, options.agent_id, tools
+            cli, options.agent_id, model_tool_behavior
         )
 
     plugin_allow = _read_plugin_allowlist(cli)
@@ -5782,42 +5821,74 @@ def _request_client_tool_capability(
     return result
 
 
-def _verify_client_tool_completion(result: CommandResult, nonce: str) -> None:
+def _classify_client_tool_completion(result: CommandResult, nonce: str) -> str:
+    """Return verified, warning_no_tool_call, or warning_invalid_tool_call."""
     try:
         payload = _decode_json(result.stdout, "client-tool capability probe")
     except SetupConflict as exc:
         raise SetupConflict(
             "OpenClaw returned a structurally incompatible client-tool response"
         ) from exc
-    try:
-        choices = payload["choices"]
-        choice = choices[0] if len(choices) == 1 else None
-        message = choice["message"]
-        tool_calls = message["tool_calls"]
-        call = tool_calls[0] if len(tool_calls) == 1 else None
-        function = call["function"]
-        arguments = _decode_json(
-            function["arguments"], "client-tool capability arguments"
-        )
-        valid = (
-            choice["finish_reason"] == "tool_calls"
-            and call["type"] == "function"
-            and isinstance(call.get("id"), str)
-            and bool(call["id"])
-            and function["name"] == "finish_crm_response"
-            and arguments
-            == {
-                "classification": "needs_clarification",
-                "message": nonce,
-                "evidence_call_ids": [],
-            }
-        )
-    except (KeyError, IndexError, TypeError, SetupConflict):
-        valid = False
-    if not valid:
+    if not isinstance(payload, dict):
         raise SetupConflict(
             "OpenClaw returned a structurally incompatible client-tool response"
         )
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+    choice = choices[0]
+    if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+    message = choice["message"]
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "stop" and isinstance(message.get("content"), str):
+        return "warning_no_tool_call"
+    if finish_reason != "tool_calls":
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+    call = tool_calls[0]
+    if (
+        not isinstance(call, dict)
+        or call.get("type") != "function"
+        or not isinstance(call.get("id"), str)
+        or not call["id"]
+        or not isinstance(call.get("function"), dict)
+    ):
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+    function = call["function"]
+    if (
+        not isinstance(function.get("name"), str)
+        or not function["name"]
+        or not isinstance(function.get("arguments"), str)
+    ):
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        )
+    try:
+        arguments = _decode_json(
+            function["arguments"], "client-tool capability arguments"
+        )
+    except SetupConflict:
+        return "warning_invalid_tool_call"
+    if function["name"] != "finish_crm_response" or arguments != {
+        "classification": "needs_clarification",
+        "message": nonce,
+        "evidence_call_ids": [],
+    }:
+        return "warning_invalid_tool_call"
+    return "verified"
 
 
 def _request_analysis_completion(
@@ -5898,7 +5969,9 @@ def _channel_probe_details(payload: Any) -> dict[str, Any] | None:
         "schema_version",
         "channel",
         "nonce",
-        "status",
+        "prompt_seen",
+        "tool_blocked",
+        "sentinel_executed",
     }:
         return None
     return details
@@ -5928,13 +6001,56 @@ def _verify_channel_marker(
     *,
     session_key: str | None = None,
 ) -> None:
+    label = "dashboard" if channel == DASHBOARD_CHANNEL else "internal-analysis"
+    prompt = cli.probe_channel_prompt(
+        agent_id=agent_id,
+        nonce=nonce,
+        channel=channel,
+        session_key=session_key,
+    )
+    if prompt.returncode != 200:
+        raise SetupConflict(
+            f"the {label} channel prompt request was not accepted "
+            f"({_safe_gateway_error_evidence(prompt)})"
+        )
+    try:
+        prompt_payload = _decode_json(
+            prompt.stdout, f"{label} channel prompt response"
+        )
+        choices = prompt_payload["choices"]
+        choice = choices[0] if isinstance(choices, list) and len(choices) == 1 else None
+        message = choice["message"] if isinstance(choice, dict) else None
+        prompt_valid = (
+            isinstance(choice, dict)
+            and choice.get("finish_reason") == "stop"
+            and isinstance(message, dict)
+            and isinstance(message.get("content"), str)
+            and bool(message["content"].strip())
+            and not message.get("tool_calls")
+        )
+    except (KeyError, TypeError, SetupConflict):
+        prompt_valid = False
+    if not prompt_valid:
+        raise SetupConflict(
+            f"OpenClaw returned a structurally incompatible {label} channel prompt response"
+        )
+    attempt = cli.probe_channel_marker_attempt(
+        agent_id=agent_id,
+        nonce=nonce,
+        channel=channel,
+        session_key=session_key,
+    )
+    if attempt.returncode != 403:
+        raise SetupConflict(
+            f"the {label} setup sentinel attempt was not blocked "
+            f"({_safe_gateway_error_evidence(attempt)})"
+        )
     result = cli.probe_channel_status(
         agent_id=agent_id,
         nonce=nonce,
         channel=channel,
         session_key=session_key,
     )
-    label = "dashboard" if channel == DASHBOARD_CHANNEL else "internal-analysis"
     if result.returncode != 200:
         raise SetupConflict(
             f"the {label} channel marker proof status could not be read "
@@ -5947,34 +6063,26 @@ def _verify_channel_marker(
             f"the {label} channel marker proof returned an incompatible status"
         ) from exc
     details = _channel_probe_details(payload)
-    if (
-        details is None
-        or details.get("schema_version") != 1
-        or details.get("channel") != channel
-        or details.get("nonce") != nonce
-        or not isinstance(details.get("status"), str)
-    ):
+    if details is None:
         raise SetupConflict(
             f"the {label} channel marker proof returned an incompatible status"
         )
-    status = details["status"]
-    if status == "tool_blocked":
-        return
-    if status == "tool_not_attempted":
+    if details["schema_version"] != 2:
         raise SetupConflict(
-            f"the {label} model did not attempt the setup sentinel; channel protection "
-            "is unverified"
+            f"the {label} channel marker schema version was incompatible"
         )
-    if status in {"sentinel_executed", "marker_missing"}:
+    if details["channel"] != channel:
         raise SetupConflict(
-            f"the {label} channel marker was not propagated and the setup sentinel "
-            "was not safely blocked"
+            f"the {label} channel marker channel was not correlated"
         )
-    if status == "hook_context_unsupported":
-        raise SetupConflict(f"the {label} hook context was unsupported")
-    raise SetupConflict(
-        f"the {label} channel marker proof returned an incompatible status"
-    )
+    if details["nonce"] != nonce:
+        raise SetupConflict(f"the {label} channel marker nonce was not correlated")
+    if details["prompt_seen"] is not True:
+        raise SetupConflict(f"the {label} prompt was not observed")
+    if details["tool_blocked"] is not True:
+        raise SetupConflict(f"the {label} setup sentinel was not blocked")
+    if details["sentinel_executed"] is not False:
+        raise SetupConflict(f"the {label} setup sentinel executed")
 
 
 def _verify_setup_probe_behavior(
@@ -5983,33 +6091,13 @@ def _verify_setup_probe_behavior(
     nonce: str,
     tools: list[dict[str, Any]],
     session_key: str,
-) -> None:
+) -> str:
     _verify_diagnostic_effective_tools(cli, agent_id, session_key)
-    cli.probe_channel_marker_attempt(
-        agent_id=agent_id,
-        nonce=nonce,
-        channel=DASHBOARD_CHANNEL,
-        session_key=session_key,
-    )
     _verify_channel_marker(
         cli,
         agent_id,
         nonce,
         DASHBOARD_CHANNEL,
-        session_key=session_key,
-    )
-    dashboard_completion = _request_client_tool_capability(
-        cli,
-        agent_id,
-        nonce,
-        tools,
-        session_key=session_key,
-    )
-    _verify_client_tool_completion(dashboard_completion, nonce)
-    cli.probe_channel_marker_attempt(
-        agent_id=agent_id,
-        nonce=nonce,
-        channel=INTERNAL_ANALYSIS_CHANNEL,
         session_key=session_key,
     )
     _verify_channel_marker(
@@ -6019,13 +6107,14 @@ def _verify_setup_probe_behavior(
         INTERNAL_ANALYSIS_CHANNEL,
         session_key=session_key,
     )
-    analysis_completion = _request_analysis_completion(
+    dashboard_completion = _request_client_tool_capability(
         cli,
         agent_id,
         nonce,
+        tools,
         session_key=session_key,
     )
-    _verify_analysis_completion(analysis_completion)
+    return _classify_client_tool_completion(dashboard_completion, nonce)
 
 
 def _verify_plugin_config(
@@ -6112,19 +6201,10 @@ def _verify_production_channel_guard(
 def _fresh_production_behavioral_verification_in_session(
     cli: OpenClawCLI,
     agent_id: str,
-    tools: list[dict[str, Any]],
+    model_tool_behavior: str,
     session_key: str,
 ) -> dict[str, Any]:
     nonce = secrets.token_hex(16)
-    dashboard = _request_client_tool_capability(
-        cli,
-        agent_id,
-        nonce,
-        tools,
-        production=True,
-        session_key=session_key,
-    )
-    _verify_client_tool_completion(dashboard, nonce)
     _verify_production_channel_guard(
         cli,
         agent_id,
@@ -6148,20 +6228,20 @@ def _fresh_production_behavioral_verification_in_session(
         session_key=session_key,
     )
     _verify_configured_agent_guard(cli, agent_id, session_key=session_key)
-    return _behavioral_runtime_verification(agent_id)
+    return _behavioral_runtime_verification(agent_id, model_tool_behavior)
 
 
 def _fresh_production_behavioral_verification(
     cli: OpenClawCLI,
     agent_id: str,
-    tools: list[dict[str, Any]],
+    model_tool_behavior: str,
     tracker: DiagnosticSessionTracker | None = None,
 ) -> dict[str, Any]:
     owned_tracker = tracker or DiagnosticSessionTracker()
     handle = _create_tracked_diagnostic_session(cli, agent_id, owned_tracker)
     try:
         return _fresh_production_behavioral_verification_in_session(
-            cli, agent_id, tools, handle.key
+            cli, agent_id, model_tool_behavior, handle.key
         )
     finally:
         _delete_tracked_diagnostic_session(cli, owned_tracker)
@@ -6425,6 +6505,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     diagnostic_session_tracker = DiagnosticSessionTracker()
     diagnostic_agent_creation_attempted = False
     gateway_restart_attempted = False
+    model_tool_behavior = "verified"
     try:
         _validate_requested_agent_id(options.agent_id)
         token = os.environ.get("OHI_API_TOKEN", "")
@@ -6626,12 +6707,13 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 "Would verify exact openhouse_crm registration and the required CRM outcome hooks."
             )
             messages.append(
-                "Would prove the dashboard and internal-analysis channel markers through "
-                "the production Chat Completions path with one isolated no-CRM sentinel."
+                "Would prove protected channel propagation and native-tool blocking "
+                "through one isolated diagnostic session."
             )
             messages.append(
                 "Would verify Chat Completions with the full production CRM and finish "
-                'schemas and tool_choice:"required".'
+                'schemas and tool_choice:"required" separately; model behavior is '
+                "reported, not trusted."
             )
             if gateway_env_path is not None:
                 messages.append(
@@ -7178,7 +7260,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             cli, diagnostic_agent_id, diagnostic_session_tracker
         )
         try:
-            _verify_setup_probe_behavior(
+            model_tool_behavior = _verify_setup_probe_behavior(
                 cli,
                 diagnostic_agent_id,
                 diagnostic_nonce,
@@ -7245,12 +7327,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         _verify_plugin_agent_config(cli, options.agent_id)
         _verify_plugin_hooks(cli, required_plugin_hooks)
         runtime_verification = (
-            _inventory_runtime_verification(options.agent_id)
+            _inventory_runtime_verification(options.agent_id, model_tool_behavior)
             if final_has_hook_inventory
             else _fresh_production_behavioral_verification(
                 cli,
                 options.agent_id,
-                client_tools_snapshot.tools,
+                model_tool_behavior,
                 diagnostic_session_tracker,
             )
         )
@@ -7270,11 +7352,19 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
             skill_rollback = None
         rollback = None
+        if model_tool_behavior != "verified":
+            messages.append(
+                "Compatibility warning: the configured model accepted the production "
+                "schemas but did not produce a valid CRM client-tool call. Setup proved "
+                "channel policy only. Run doctor and live acceptance before using CRM chat."
+            )
         messages.append(
             "Validated the native CRM tool, required CRM outcome hooks, full production "
-            "CRM and finish schemas, dashboard and internal-analysis channel markers, "
+            "CRM and finish schemas transport separately, protected channel propagation and native-tool "
+            "blocking through an isolated session, "
             "configured-agent guard, and restricted agent configuration, "
             "then restarted the OpenClaw Gateway for validation and diagnostic cleanup. "
+            "Model behavior is reported, not trusted. "
             "Runtime CRM verification is still required: "
             "python scripts/doctor.py --live-agent --live-crm"
         )
