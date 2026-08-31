@@ -178,6 +178,9 @@ TOKEN_SECRETREF_REDACTED = {
     "id": "__OPENCLAW_REDACTED__",
 }
 VALID_AGENT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
+SETUP_DIAGNOSTIC_AGENT_ID_RE = re.compile(
+    r"openhouse-setup-probe-[0-9a-f]{12}"
+)
 RESERVED_AGENT_IDS = frozenset({"main", "openclaw", "crestodian"})
 LEGACY_AGENT_PREFIX_RE = re.compile(r"agents\.list\[\d+\]")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -224,6 +227,12 @@ class DiagnosticSessionHandle:
 @dataclass
 class DiagnosticSessionTracker:
     active: DiagnosticSessionHandle | None = None
+
+
+@dataclass(frozen=True)
+class DiagnosticAgentOwnership:
+    agent_id: str
+    workspace: Path
 
 
 @dataclass(frozen=True)
@@ -5079,6 +5088,19 @@ def canonical_installed_state_digest(value: Any) -> str:
     return hashlib.sha256(_canonical_json_bytes(validated)).hexdigest()
 
 
+def canonical_installed_security_state_digest(value: Any) -> str:
+    """Hash installed/security state without probabilistic model observations."""
+    validated = validate_installed_state_snapshot(value)
+    normalized = _decode_json(
+        _canonical_json_bytes(validated).decode("utf-8"),
+        "validated installed-state snapshot",
+    )
+    del normalized["plugin"]["runtime_verification"]["setup_checks"][
+        "model_tool_behavior"
+    ]
+    return hashlib.sha256(_canonical_json_bytes(normalized)).hexdigest()
+
+
 def _validated_private_path(value: Any, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -5456,8 +5478,49 @@ def _agent_cleanup_inventory(
     return listed_records, roster, absent
 
 
-def _delete_agent_and_verify(
+def _diagnostic_cleanup_ownership_matches(
+    ownership: DiagnosticAgentOwnership,
+    agent_id: str,
+    expected_workspace: Path,
+) -> bool:
+    return (
+        ownership.agent_id == agent_id
+        and SETUP_DIAGNOSTIC_AGENT_ID_RE.fullmatch(agent_id) is not None
+        and _workspace_paths_same(
+            str(ownership.workspace), str(expected_workspace)
+        )
+    )
+
+
+def _agent_cleanup_target_is_current(
     cli: OpenClawCLI, agent_id: str, *, expected_workspace: Path
+) -> bool:
+    try:
+        listed_records, roster, _ = _agent_cleanup_inventory(
+            cli, agent_id, label="agent cleanup ownership check"
+        )
+    except (OSError, SetupConflict):
+        return False
+    records = [
+        record
+        for record in [*listed_records, *roster.records]
+        if record["id"] == agent_id
+    ]
+    return bool(records) and all(
+        _same_workspace(
+            record.get("workspace") or record.get("workspacePath"),
+            expected_workspace,
+        )
+        for record in records
+    )
+
+
+def _delete_agent_and_verify(
+    cli: OpenClawCLI,
+    agent_id: str,
+    *,
+    expected_workspace: Path,
+    diagnostic_ownership: DiagnosticAgentOwnership | None = None,
 ) -> AgentDeletionReport:
     retry_restart_performed = False
     known_retained_paths: tuple[str, ...] = ()
@@ -5476,11 +5539,9 @@ def _delete_agent_and_verify(
         "--json",
     ]
     try:
-        listed_records, roster, _ = _agent_cleanup_inventory(
+        listed_records, roster, initially_absent = _agent_cleanup_inventory(
             cli, agent_id, label="agent cleanup"
         )
-        # Callers reach this helper only after creation was attempted. Inventory
-        # absence can be a concurrent removal with an unfinished deletion journal.
         owned_records = [
             record
             for record in [*listed_records, *roster.records]
@@ -5494,6 +5555,13 @@ def _delete_agent_and_verify(
             for record in owned_records
         ):
             return incomplete()
+        if initially_absent:
+            if diagnostic_ownership is None:
+                return AgentDeletionReport(True, False, ())
+            if not _diagnostic_cleanup_ownership_matches(
+                diagnostic_ownership, agent_id, expected_workspace
+            ):
+                return incomplete()
 
         deleted = cli.run(delete_argv, mutate=True)
         if deleted.returncode != 0:
@@ -6600,9 +6668,11 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     approvals_mutation_attempted = False
     crm_agent_preexisting = False
     crm_agent_creation_attempted = False
+    crm_agent_creation_confirmed = False
     diagnostic_agent_id: str | None = None
     diagnostic_nonce: str | None = None
     diagnostic_root: Path | None = None
+    diagnostic_agent_ownership: DiagnosticAgentOwnership | None = None
     diagnostic_session_tracker = DiagnosticSessionTracker()
     diagnostic_agent_creation_attempted = False
     diagnostic_cleanup_report: AgentDeletionReport | None = None
@@ -7056,6 +7126,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 raise SetupConflict(
                     "agents add --json returned a different agentId than requested"
                 )
+            crm_agent_creation_confirmed = True
             messages.append(action.description)
 
         refreshed_roster = _read_agent_roster(
@@ -7306,6 +7377,9 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         diagnostic_root.chmod(0o700)
         diagnostic_workspace = diagnostic_root / "workspace"
         diagnostic_workspace.mkdir(mode=0o700)
+        diagnostic_agent_ownership = DiagnosticAgentOwnership(
+            diagnostic_agent_id, diagnostic_workspace
+        )
         diagnostic_agent_creation_attempted = True
         _create_diagnostic_agent(cli, diagnostic_agent_id, diagnostic_workspace)
         _verify_diagnostic_agent_unbound(cli, diagnostic_agent_id)
@@ -7395,7 +7469,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             )
         _verify_plugin_agent_config(cli, options.agent_id)
         diagnostic_cleanup_report = _delete_agent_and_verify(
-            cli, diagnostic_agent_id, expected_workspace=diagnostic_workspace
+            cli,
+            diagnostic_agent_id,
+            expected_workspace=diagnostic_workspace,
+            diagnostic_ownership=diagnostic_agent_ownership,
         )
         if not diagnostic_cleanup_report.complete:
             raise SetupConflict(
@@ -7457,7 +7534,8 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
         rollback = None
         if model_tool_behavior != "verified":
             messages.append(
-                "Compatibility warning: the configured model accepted the production "
+                f"Compatibility warning for openclaw/{options.agent_id}: the configured "
+                "model accepted the production "
                 "schemas but did not produce a valid CRM client-tool call. Setup proved "
                 "channel policy only. Run doctor and live acceptance before using CRM chat."
             )
@@ -7523,6 +7601,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                     cli,
                     diagnostic_agent_id,
                     expected_workspace=diagnostic_workspace,
+                    diagnostic_ownership=diagnostic_agent_ownership,
                 )
             if not diagnostic_cleanup_report.complete:
                 rollback_failed = True
@@ -7631,7 +7710,17 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         "Restored the previous dedicated-agent configuration after "
                         "setup failed."
                     )
-            elif not crm_agent_preexisting and crm_agent_creation_attempted:
+            elif not crm_agent_preexisting and (
+                crm_agent_creation_confirmed
+                or (
+                    crm_agent_creation_attempted
+                    and _agent_cleanup_target_is_current(
+                        cli,
+                        options.agent_id,
+                        expected_workspace=options.workspace,
+                    )
+                )
+            ):
                 crm_agent_deletion = _delete_agent_and_verify(
                     cli,
                     options.agent_id,

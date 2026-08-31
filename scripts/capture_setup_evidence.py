@@ -219,6 +219,9 @@ if _VERIFIED_HEAD_ENTRYPOINT:
     _redact_api_token = _setup_module._redact_api_token
     _material_head_state = _setup_module._material_head_state
     canonical_installed_state_digest = _setup_module.canonical_installed_state_digest
+    canonical_installed_security_state_digest = (
+        _setup_module.canonical_installed_security_state_digest
+    )
     capture_installed_state = _setup_module.capture_installed_state
     validate_installed_state_snapshot = _setup_module.validate_installed_state_snapshot
 else:
@@ -235,6 +238,7 @@ else:
         _redact_api_token,
         _material_head_state,
         canonical_installed_state_digest,
+        canonical_installed_security_state_digest,
         capture_installed_state,
         validate_installed_state_snapshot,
     )
@@ -744,7 +748,7 @@ def _evidence_succeeded(manifest: dict) -> bool:
             )
         ):
             return False
-        states = []
+        security_state_hashes = []
         for run in runs:
             if run.get("exit_code") != 0 or run.get("state_capture_exit_code") != 0:
                 return False
@@ -753,8 +757,10 @@ def _evidence_succeeded(manifest: dict) -> bool:
                 return False
             if state["sources"]["material_tree_sha256"] != checks[0]["material_tree_sha256"]:
                 return False
-            states.append(state)
-        return states[0] == states[1]
+            security_state_hashes.append(
+                canonical_installed_security_state_digest(state)
+            )
+        return len(set(security_state_hashes)) == 1
     except (KeyError, SetupConflict, TypeError):
         return False
 

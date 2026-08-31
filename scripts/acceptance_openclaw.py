@@ -223,6 +223,9 @@ if _VERIFIED_HEAD_ENTRYPOINT:
     _material_head_state = _setup_module._material_head_state
     _validate_requested_agent_id = _setup_module._validate_requested_agent_id
     canonical_installed_state_digest = _setup_module.canonical_installed_state_digest
+    canonical_installed_security_state_digest = (
+        _setup_module.canonical_installed_security_state_digest
+    )
     capture_installed_state = _setup_module.capture_installed_state
     validate_installed_state_snapshot = _setup_module.validate_installed_state_snapshot
 else:
@@ -238,6 +241,7 @@ else:
         _material_head_state,
         _validate_requested_agent_id,
         canonical_installed_state_digest,
+        canonical_installed_security_state_digest,
         capture_installed_state,
         validate_installed_state_snapshot,
     )
@@ -614,7 +618,7 @@ def _setup_evidence_entry(
     previous_finish: datetime | None = None
     exits: list[int] = []
     capture_exits: list[int] = []
-    state_hashes: list[str] = []
+    security_state_hashes: list[str] = []
     states: list[dict] = []
     for expected_sequence, run in enumerate(runs, start=1):
         if not isinstance(run, dict) or set(run) != SETUP_RUN_KEYS:
@@ -670,6 +674,9 @@ def _setup_evidence_entry(
             try:
                 validated_state = validate_installed_state_snapshot(state)
                 canonical_hash = canonical_installed_state_digest(validated_state)
+                security_hash = canonical_installed_security_state_digest(
+                    validated_state
+                )
             except SetupConflict:
                 return _entry(
                     "FAIL",
@@ -694,7 +701,7 @@ def _setup_evidence_entry(
                     "setup state did not match the exact HEAD material tree",
                     base_evidence,
                 )
-            state_hashes.append(state_hash)
+            security_state_hashes.append(security_hash)
             states.append(validated_state)
     if not valid_runs:
         return _entry(
@@ -702,7 +709,9 @@ def _setup_evidence_entry(
         )
     both_succeeded = exits == [0, 0]
     state_verified = capture_exits == [0, 0]
-    state_matches = len(states) == 2 and states[0] == states[1]
+    state_matches = len(security_state_hashes) == 2 and len(
+        set(security_state_hashes)
+    ) == 1
     base_evidence.update(
         {
             "both_succeeded": both_succeeded,
@@ -739,6 +748,9 @@ def _setup_evidence_entry(
         )
         current_state = validate_installed_state_snapshot(current_state_value)
         canonical_installed_state_digest(current_state)
+        current_security_hash = canonical_installed_security_state_digest(
+            current_state
+        )
     except Exception:
         return _entry(
             "FAIL",
@@ -764,7 +776,11 @@ def _setup_evidence_entry(
             "current setup material drifted after evidence capture",
             base_evidence,
         )
-    current_state_matches = all(current_state == state for state in states)
+    current_state_matches = all(
+        current_security_hash
+        == canonical_installed_security_state_digest(state)
+        for state in states
+    )
     base_evidence["current_state_matches"] = current_state_matches
     if not current_state_matches:
         return _entry(

@@ -256,4 +256,3 @@ This change is complete when:
   retained with a precise failure report;
 - two-pass setup is idempotent on the WSL beta.3 environment;
 - automated verification passes without unrelated application changes.
-

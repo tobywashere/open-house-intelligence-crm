@@ -1842,6 +1842,56 @@ def test_two_successful_setup_runs_are_a_required_machine_verified_prerequisite(
 
 
 @pytest.mark.parametrize(
+    ("first_behavior", "second_behavior"),
+    [
+        ("warning_no_tool_call", "verified"),
+        ("verified", "warning_no_tool_call"),
+    ],
+)
+def test_setup_model_observation_flip_preserves_evidence_and_stays_idempotent(
+    first_behavior, second_behavior
+):
+    first = installed_state()
+    second = installed_state()
+    first["plugin"]["runtime_verification"]["setup_checks"][
+        "model_tool_behavior"
+    ] = first_behavior
+    second["plugin"]["runtime_verification"]["setup_checks"][
+        "model_tool_behavior"
+    ] = second_behavior
+    evidence = setup_evidence(states=(first, second))
+
+    result = run(FakeAPI(), evidence=evidence)
+
+    setup = by_name(result, "Setup twice")
+    assert setup["level"] == "PASS"
+    assert setup["evidence"]["idempotent"] is True
+    assert setup["evidence"]["current_state_matches"] is True
+    assert evidence["runs"][0]["state"]["plugin"]["runtime_verification"][
+        "setup_checks"
+    ]["model_tool_behavior"] == first_behavior
+    assert evidence["runs"][1]["state"]["plugin"]["runtime_verification"][
+        "setup_checks"
+    ]["model_tool_behavior"] == second_behavior
+    assert evidence["runs"][0]["state_sha256"] != evidence["runs"][1][
+        "state_sha256"
+    ]
+
+
+def test_setup_evidence_capture_treats_model_observation_flip_as_idempotent():
+    first = installed_state()
+    second = installed_state()
+    first["plugin"]["runtime_verification"]["setup_checks"][
+        "model_tool_behavior"
+    ] = "warning_no_tool_call"
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+
+    assert capture._evidence_succeeded(
+        setup_evidence(states=(first, second))
+    ) is True
+
+
+@pytest.mark.parametrize(
     ("evidence", "expected_detail"),
     [
         (None, "setup evidence was not provided"),

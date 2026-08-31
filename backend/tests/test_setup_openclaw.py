@@ -3092,6 +3092,7 @@ def test_text_only_model_is_warning_after_deterministic_channel_proof(tmp_path):
     assert result.runtime_verification["setup_checks"]["model_tool_behavior"] == (
         "warning_no_tool_call"
     )
+    assert "openclaw/openhouse-crm" in result.render()
     assert len(cli.client_tool_probe_calls) == 1
     state = setup_openclaw.capture_installed_state(
         options,
@@ -3548,7 +3549,7 @@ def test_agent_cleanup_rejects_malformed_deletion_json(tmp_path):
 
 
 def test_attempted_agent_cleanup_completes_journal_when_initially_absent(tmp_path):
-    agent_id = "openhouse-setup-probe-concurrently-removed"
+    agent_id = "openhouse-setup-probe-a1b2c3d4e5f6"
     workspace = tmp_path / "diagnostic-workspace"
     workspace.mkdir()
 
@@ -3564,13 +3565,43 @@ def test_attempted_agent_cleanup_completes_journal_when_initially_absent(tmp_pat
     cli = InitiallyAbsentCLI()
 
     report = setup_openclaw._delete_agent_and_verify(
-        cli, agent_id, expected_workspace=workspace
+        cli,
+        agent_id,
+        expected_workspace=workspace,
+        diagnostic_ownership=setup_openclaw.DiagnosticAgentOwnership(
+            agent_id, workspace
+        ),
     )
 
     assert report == setup_openclaw.AgentDeletionReport(True, False, ())
     assert [
         call for call in cli.mutating_calls if call[1:3] == ["agents", "delete"]
     ] == [["openclaw", "agents", "delete", agent_id, "--force", "--json"]]
+
+
+def test_failed_production_agent_add_does_not_delete_an_absent_predictable_id(
+    tmp_path,
+):
+    options = make_options(tmp_path)
+    add_argv = next(
+        action.argv
+        for action in build_setup_actions(options, agents=[])
+        if action.argv[1:3] == ["agents", "add"]
+    )
+    cli = FakeCLI(
+        responses={
+            tuple(add_argv): CommandResult(1, "", "simulated agent creation failure")
+        }
+    )
+
+    result = configure_openclaw(options, cli=cli)
+
+    assert not result.ok
+    assert "simulated agent creation failure" in result.render()
+    assert not any(
+        call[1:4] == ["agents", "delete", options.agent_id]
+        for call in cli.mutating_calls
+    )
 
 
 @pytest.mark.parametrize(
