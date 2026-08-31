@@ -274,6 +274,15 @@ Strict generated Python caches are isolated and never copied or loaded.
 Sanitized run logs are manual diagnostics only and do not make this pass. The
 JSON report names the structured prerequisite `Setup twice`.
 
+This setup proves the OpenClaw policy. It proves the bundled plugin, its
+channel restrictions, the CRM schemas, and supported diagnostic cleanup. It
+does not prove that your model can use the CRM for ordinary requests.
+
+A **Compatibility warning** means setup can continue safely, but dashboard CRM
+use must wait for the doctor and acceptance checks. First run the read-only
+doctor and confirm its audited CRM read passes. Do not run write acceptance
+until that read passes.
+
 ```bash
 python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
 ```
@@ -438,12 +447,10 @@ CRM fields can create a new proposal for review.
   It repairs partial dedicated-agent setup, relinks the bundled plugin, verifies
   the `openhouse_crm` runtime tool, and removes the obsolete CRM wrapper
   approval. Do not change global `tools.exec` settings.
-- **Setup says the model/provider capability was not proven:** the model answered
-  without making the required structured tool call. Setup already turns thinking
-  and lean tool compaction off for the CRM agent, so confirm OpenClaw is using a
-  tool-capable model and its native provider configuration, then rerun setup. Do
-  not bypass this check; it prevents the dashboard from trusting a model that
-  only says a CRM action worked.
+- **Compatibility warning:** the model did not make a valid structured CRM tool
+  call during setup. The OpenClaw policy is still proved, but the dashboard is
+  not ready for CRM use. Confirm the doctor has an audited CRM read, then run
+  read-only acceptance. Do not run write acceptance until that read passes.
 - **Setup says global Tool Search would hide CRM functions:** this is an explicit
   machine-wide OpenClaw setting, so setup leaves it alone. Disable Tool Search,
   or configure `directory` mode if other agents need it, then rerun setup.

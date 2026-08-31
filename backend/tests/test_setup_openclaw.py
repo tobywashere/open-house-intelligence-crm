@@ -3314,6 +3314,19 @@ def test_setup_and_dashboard_share_the_exact_full_client_tool_contract():
     )
 
 
+def test_documented_operator_guides_explain_setup_compatibility_and_supported_cleanup():
+    local_ai = (REPO_ROOT / "docs" / "LOCAL-AI.md").read_text(encoding="utf-8")
+    wsl_guide = (REPO_ROOT / "docs" / "WINDOWS-WSL-SETUP.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "setup proves the OpenClaw policy" in local_ai
+    assert "does not prove that your model can use the CRM" in local_ai
+    assert "Compatibility warning" in local_ai
+    assert "Do not delete OpenClaw agent folders manually" in wsl_guide
+    assert "python3 -I scripts/acceptance_openclaw.py" in wsl_guide
+
+
 def test_setup_proves_full_schema_and_both_production_channel_markers(tmp_path):
     cli = FakeCLI()
 

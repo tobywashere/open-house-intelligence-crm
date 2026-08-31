@@ -191,6 +191,18 @@ on the exec allowlist. Do not manually edit the agent's plugin, exec host, mode,
 security, or global `tools.exec` settings between runs. If setup fails, stop here
 and keep the evidence file and sanitized run logs for the maintainer.
 
+This setup proves the OpenClaw policy. It proves the plugin, channel
+restrictions, CRM schemas, and supported diagnostic cleanup. It does not prove
+that your model can use the CRM for ordinary requests. A **Compatibility
+warning** means setup can continue safely, but dashboard CRM use must wait for
+doctor and acceptance. Do not run write acceptance until the doctor has an
+audited CRM read.
+
+Do not delete OpenClaw agent folders manually. If diagnostic cleanup fails,
+keep the report and send it to the maintainer. The installer will retry
+OpenClaw's supported cleanup once and otherwise leave the recoverable state
+untouched.
+
 ## 7. Start the product
 
 In the same WSL terminal:
@@ -223,11 +235,12 @@ After that read-only check reports `crm_verified`, the automated CRM chat
 acceptance proves an audited CRM read, exact lead count, invalid-write safety,
 truthful briefing, one disposable create-lead proposal, one natural-language
 booking proposal, and session cleanup. Neither proposal is approved. Both are
-denied and cleaned up. It does not automate voice or Discord delivery. Run it
-only if you want to authorize those disposable proposals:
+denied and cleaned up. It does not automate voice or Discord delivery. Run the
+read-only form first. Run the write form only after that audited read passes:
 
 ```bash
 set -o pipefail
+python3 -I scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json | tee openhouse-acceptance-read-only.json
 python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json | tee openhouse-acceptance.json
 ```
 
