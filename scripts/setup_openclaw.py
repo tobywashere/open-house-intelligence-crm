@@ -5845,7 +5845,11 @@ def _classify_client_tool_completion(result: CommandResult, nonce: str) -> str:
         )
     message = choice["message"]
     finish_reason = choice.get("finish_reason")
-    if finish_reason == "stop" and isinstance(message.get("content"), str):
+    if finish_reason == "stop":
+        if not isinstance(message.get("content"), str) or "tool_calls" in message:
+            raise SetupConflict(
+                "OpenClaw returned a structurally incompatible client-tool response"
+            )
         return "warning_no_tool_call"
     if finish_reason != "tool_calls":
         raise SetupConflict(
@@ -5880,8 +5884,10 @@ def _classify_client_tool_completion(result: CommandResult, nonce: str) -> str:
         arguments = _decode_json(
             function["arguments"], "client-tool capability arguments"
         )
-    except SetupConflict:
-        return "warning_invalid_tool_call"
+    except SetupConflict as exc:
+        raise SetupConflict(
+            "OpenClaw returned a structurally incompatible client-tool response"
+        ) from exc
     if function["name"] != "finish_crm_response" or arguments != {
         "classification": "needs_clarification",
         "message": nonce,
@@ -5961,8 +5967,10 @@ def _channel_probe_details(payload: Any) -> dict[str, Any] | None:
     ):
         return None
     try:
-        mirrored = json.loads(content[0]["text"])
-    except (TypeError, ValueError, json.JSONDecodeError):
+        mirrored = _decode_json(
+            content[0]["text"], "mirrored channel marker status"
+        )
+    except SetupConflict:
         return None
     details = result["details"]
     if mirrored != details or set(details) != {

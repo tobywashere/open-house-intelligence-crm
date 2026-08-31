@@ -611,7 +611,7 @@ def test_setup_client_probe_uses_full_production_schemas_and_dashboard_channel(m
     assert "openhouse_setup_marker_probe" not in payload["messages"][0]["content"]
 
 
-def test_setup_channel_attempt_pins_one_caller_tool_to_the_trusted_channel(monkeypatch):
+def test_setup_channel_attempt_invokes_native_marker_on_the_trusted_channel(monkeypatch):
     setup_path = REPO / "scripts" / "setup_openclaw.py"
     spec = importlib.util.spec_from_file_location(
         "setup_openclaw_channel_attempt_test", setup_path
@@ -643,28 +643,22 @@ def test_setup_channel_attempt_pins_one_caller_tool_to_the_trusted_channel(monke
     )
 
     assert result.returncode == 502
-    assert captured["path"] == "/v1/chat/completions"
+    assert captured["path"] == "/tools/invoke"
     assert captured["channel"] == "openhouse-dashboard"
-    assert (
-        captured["session_key"]
-        == "agent:openhouse-setup-probe-safe:dashboard:setup-test"
-    )
-    payload = captured["payload"]
-    assert payload["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "openhouse_setup_marker_attempt"},
-    }
-    assert [tool["function"]["name"] for tool in payload["tools"]] == [
-        "openhouse_setup_marker_attempt"
-    ]
-    assert payload["tools"][0]["function"]["parameters"] == {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["channel", "nonce"],
-        "properties": {
-            "channel": {"const": "openhouse-dashboard"},
-            "nonce": {"const": "0123456789abcdef0123456789abcdef"},
+    assert captured["session_key"] is None
+    assert captured["payload"] == {
+        "tool": "openhouse_setup_marker_probe",
+        "args": {
+            "action": "attempt",
+            "channel": "openhouse-dashboard",
+            "nonce": "0123456789abcdef0123456789abcdef",
         },
+        "agentId": "openhouse-setup-probe-safe",
+        "sessionKey": "agent:openhouse-setup-probe-safe:dashboard:setup-test",
+        "idempotencyKey": (
+            "setup-marker-attempt:0123456789abcdef0123456789abcdef:"
+            "openhouse-dashboard"
+        ),
     }
 
 

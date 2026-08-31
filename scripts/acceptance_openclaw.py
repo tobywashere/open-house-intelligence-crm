@@ -782,12 +782,16 @@ def _setup_evidence_entry(
 
 
 def _capture_current_setup_state(
-    _runtime_verification: dict[str, Any],
+    runtime_verification: dict[str, Any],
 ) -> tuple[dict, str]:
     """Recapture installed state, then independently rescan current HEAD material."""
     options = _parse_args([], repo=REPO)
     cli = OpenClawCLI()
-    state = capture_installed_state(options, cli)
+    state = capture_installed_state(
+        options,
+        cli,
+        runtime_verification=runtime_verification,
+    )
     material = _material_head_state(
         REPO, deadline_check=getattr(cli, "require_time", None)
     )

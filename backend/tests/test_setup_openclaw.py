@@ -2826,6 +2826,43 @@ def test_setup_channel_marker_rejects_noncanonical_native_tool_envelopes(
         )
 
 
+def test_setup_channel_marker_rejects_duplicate_keys_in_mirrored_receipt():
+    nonce = "d" * 32
+    channel = "openhouse-dashboard"
+    details = {
+        "schema_version": 2,
+        "channel": channel,
+        "nonce": nonce,
+        "prompt_seen": True,
+        "tool_blocked": True,
+        "sentinel_executed": False,
+    }
+    mirrored = (
+        '{"schema_version":1,"schema_version":2,'
+        f'"channel":"{channel}","nonce":"{nonce}",'
+        '"prompt_seen":true,"tool_blocked":true,"sentinel_executed":false}'
+    )
+    payload = {
+        "ok": True,
+        "result": {
+            "content": [{"type": "text", "text": mirrored}],
+            "details": details,
+        },
+    }
+    cli = FakeCLI()
+    cli.probe_channel_status = lambda **_kwargs: CommandResult(
+        200, json.dumps(payload), ""
+    )
+
+    with pytest.raises(SetupConflict, match="incompatible status"):
+        setup_openclaw._verify_channel_marker(
+            cli,
+            "openhouse-crm",
+            nonce,
+            channel,
+        )
+
+
 def test_setup_channel_marker_reports_safe_gateway_error_evidence():
     cli = FakeCLI()
     cli.probe_channel_status = lambda **_kwargs: CommandResult(
@@ -3092,6 +3129,70 @@ def test_exact_finish_model_tool_call_is_recorded_as_verified(tmp_path):
         "verified"
     )
     assert "Compatibility warning" not in result.render()
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [],
+        "malformed-tool-calls",
+    ],
+    ids=("present-empty", "malformed"),
+)
+def test_text_completion_rejects_present_or_malformed_tool_calls(tool_calls):
+    result = CommandResult(
+        200,
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": "ordinary text",
+                            "tool_calls": tool_calls,
+                        },
+                    }
+                ]
+            }
+        ),
+        "",
+    )
+
+    with pytest.raises(SetupConflict, match="structurally incompatible"):
+        setup_openclaw._classify_client_tool_completion(result, "a" * 32)
+
+
+def test_tool_completion_rejects_malformed_function_arguments_json():
+    result = CommandResult(
+        200,
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "setup-call-malformed",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "finish_crm_response",
+                                        "arguments": "not-json",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ),
+        "",
+    )
+
+    with pytest.raises(SetupConflict, match="structurally incompatible"):
+        setup_openclaw._classify_client_tool_completion(result, "b" * 32)
 
 
 @pytest.mark.parametrize(

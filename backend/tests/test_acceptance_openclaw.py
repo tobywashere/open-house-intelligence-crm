@@ -368,6 +368,15 @@ def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> di
                     "gateway_stop",
                     "reply_payload_sending",
                 ],
+                "setup_checks": {
+                    "channel_policy": [
+                        "openhouse-dashboard",
+                        "openhouse-analysis",
+                    ],
+                    "schema_transport": "accepted",
+                    "model_tool_behavior": "verified",
+                    "diagnostic_cleanup": "verified",
+                },
             },
         },
         "agent": {
@@ -2065,14 +2074,18 @@ def test_setup_evidence_reports_live_state_capture_failure_without_private_detai
     assert secret not in rendered
 
 
-def test_live_state_recapture_does_not_reuse_serialized_behavioral_proof(
+def test_live_state_recapture_reproves_security_and_preserves_model_classification(
     monkeypatch,
 ):
     state = installed_state()
+    prior_runtime_verification = state["plugin"]["runtime_verification"]
+    prior_runtime_verification["setup_checks"]["model_tool_behavior"] = (
+        "warning_no_tool_call"
+    )
     calls = []
 
-    def fresh_capture(options, cli):
-        calls.append((options.agent_id, cli))
+    def fresh_capture(options, cli, *, runtime_verification):
+        calls.append((options.agent_id, cli, runtime_verification))
         return state
 
     monkeypatch.setattr(acceptance, "_parse_args", lambda *_args, **_kwargs: type(
@@ -2087,12 +2100,14 @@ def test_live_state_recapture_does_not_reuse_serialized_behavioral_proof(
     )
 
     captured, material = _REAL_CAPTURE_CURRENT_SETUP_STATE(
-        state["plugin"]["runtime_verification"]
+        prior_runtime_verification
     )
 
     assert captured == state
     assert material == "a" * 64
     assert len(calls) == 1
+    assert calls[0][0] == "openhouse-crm"
+    assert calls[0][2] is prior_runtime_verification
 
 
 def test_setup_evidence_is_strict_and_never_echoes_paths_urls_or_secrets(monkeypatch):
