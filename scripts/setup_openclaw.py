@@ -5459,7 +5459,14 @@ def _agent_cleanup_inventory(
 def _delete_agent_and_verify(
     cli: OpenClawCLI, agent_id: str, *, expected_workspace: Path
 ) -> AgentDeletionReport:
-    incomplete = AgentDeletionReport(False, False, ())
+    retry_restart_performed = False
+    known_retained_paths: tuple[str, ...] = ()
+
+    def incomplete() -> AgentDeletionReport:
+        return AgentDeletionReport(
+            False, retry_restart_performed, known_retained_paths
+        )
+
     delete_argv = [
         "openclaw",
         "agents",
@@ -5469,9 +5476,11 @@ def _delete_agent_and_verify(
         "--json",
     ]
     try:
-        listed_records, roster, initially_absent = _agent_cleanup_inventory(
+        listed_records, roster, _ = _agent_cleanup_inventory(
             cli, agent_id, label="agent cleanup"
         )
+        # Callers reach this helper only after creation was attempted. Inventory
+        # absence can be a concurrent removal with an unfinished deletion journal.
         owned_records = [
             record
             for record in [*listed_records, *roster.records]
@@ -5484,32 +5493,35 @@ def _delete_agent_and_verify(
             )
             for record in owned_records
         ):
-            return incomplete
-        if initially_absent:
-            return AgentDeletionReport(True, False, ())
+            return incomplete()
 
         deleted = cli.run(delete_argv, mutate=True)
         if deleted.returncode != 0:
-            return incomplete
+            return incomplete()
         first_report = _parse_agent_deletion_result(
             deleted, agent_id, expected_workspace=expected_workspace
         )
+        known_retained_paths = first_report.retained_paths
         _, _, first_absent = _agent_cleanup_inventory(
             cli, agent_id, label="agent cleanup verification"
         )
         if not first_absent:
-            return incomplete
+            return incomplete()
         if first_report.complete:
             return first_report
 
         restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
+        retry_restart_performed = True
         if restart.returncode != 0:
-            return AgentDeletionReport(False, True, first_report.retained_paths)
+            return incomplete()
         retried = cli.run(delete_argv, mutate=True)
         if retried.returncode != 0:
-            return AgentDeletionReport(False, True, first_report.retained_paths)
+            return incomplete()
         retry_report = _parse_agent_deletion_result(
             retried, agent_id, expected_workspace=expected_workspace
+        )
+        known_retained_paths = tuple(
+            dict.fromkeys((*known_retained_paths, *retry_report.retained_paths))
         )
         _, _, finally_absent = _agent_cleanup_inventory(
             cli, agent_id, label="agent cleanup retry verification"
@@ -5520,7 +5532,7 @@ def _delete_agent_and_verify(
             retained_paths=retry_report.retained_paths,
         )
     except (OSError, SetupConflict):
-        return incomplete
+        return incomplete()
 
 
 def _agent_is_absent(cli: OpenClawCLI, agent_id: str) -> bool:

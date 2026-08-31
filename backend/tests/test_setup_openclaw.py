@@ -3534,6 +3534,32 @@ def test_agent_cleanup_rejects_malformed_deletion_json(tmp_path):
     assert cli.gateway_restart_count == 0
 
 
+def test_attempted_agent_cleanup_completes_journal_when_initially_absent(tmp_path):
+    agent_id = "openhouse-setup-probe-concurrently-removed"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+
+    class InitiallyAbsentCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            if args[1:3] == ["agents", "delete"]:
+                self.calls.append(args)
+                if mutate:
+                    self.mutating_calls.append(args)
+                return agent_deletion_envelope(agent_id, workspace)
+            return super().run(args, mutate=mutate)
+
+    cli = InitiallyAbsentCLI()
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(True, False, ())
+    assert [
+        call for call in cli.mutating_calls if call[1:3] == ["agents", "delete"]
+    ] == [["openclaw", "agents", "delete", agent_id, "--force", "--json"]]
+
+
 @pytest.mark.parametrize(
     "override",
     [
@@ -3658,6 +3684,53 @@ def test_diagnostic_agent_cleanup_retries_supported_deletion_journal_once(
         if index > deletes[1] and call == ["openclaw", "agents", "list", "--json"]
     )
     assert deletes[0] < retry_restart_index < deletes[1] < final_inventory_index
+
+
+@pytest.mark.parametrize("malformed_phase", ["retry", "final-inventory"])
+def test_agent_cleanup_preserves_retry_state_when_later_evidence_is_malformed(
+    tmp_path, malformed_phase
+):
+    agent_id = "openhouse-setup-probe-malformed-retry"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+    failed_path = "/safe/openclaw/agents/probe/sessions"
+
+    class MalformedRetryEvidenceCLI(FakeCLI):
+        delete_attempts = 0
+
+        def run(self, args, *, mutate=False):
+            if (
+                malformed_phase == "final-inventory"
+                and self.delete_attempts == 2
+                and args == ["openclaw", "agents", "list", "--json"]
+            ):
+                self.calls.append(args)
+                return CommandResult(0, "not-json", "")
+            result = super().run(args, mutate=mutate)
+            if args[1:3] != ["agents", "delete"]:
+                return result
+            self.delete_attempts += 1
+            if self.delete_attempts == 1:
+                return agent_deletion_envelope(
+                    agent_id,
+                    workspace,
+                    failed=[{"path": failed_path, "reason": "still busy"}],
+                )
+            if malformed_phase == "retry":
+                return CommandResult(0, "not-json", "")
+            return agent_deletion_envelope(agent_id, workspace)
+
+    cli = MalformedRetryEvidenceCLI()
+    cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(
+        False, True, (failed_path,)
+    )
+    assert cli.gateway_restart_count == 1
 
 
 def test_agent_cleanup_requires_roster_and_cli_absence_after_structured_success(
