@@ -16,8 +16,8 @@ const PRODUCTION_PROBE_OPERATION = "__openhouse_behavior_probe_status__";
 const PRODUCTION_PROBE_READ_OPERATION = "generate_dashboard_insights";
 const MAX_PRODUCTION_PROBE_RECORDS = 64;
 const SETUP_MARKER_TOOL = "openhouse_setup_marker_probe";
-const SETUP_MARKER_ATTEMPT_TOOL = "openhouse_setup_marker_attempt";
 const MAX_SETUP_PROBE_RUNS = 64;
+const SETUP_PROBE_TTL_MS = 2 * 60 * 1000;
 const SETUP_NONCE_PATTERN = /^[a-f0-9]{32}$/;
 const TOOL_BLOCKED_CHANNELS = new Set([
   DASHBOARD_CHANNEL,
@@ -90,7 +90,7 @@ function setupProbeParameters(nonce) {
     additionalProperties: false,
     required: ["action", "channel", "nonce"],
     properties: {
-      action: { type: "string", enum: ["status"] },
+      action: { type: "string", enum: ["attempt", "status"] },
       channel: {
         type: "string",
         enum: [DASHBOARD_CHANNEL, INTERNAL_ANALYSIS_CHANNEL],
@@ -107,19 +107,7 @@ function validSetupProbeParams(params, nonce) {
     && typeof params === "object"
     && !Array.isArray(params)
     && Object.keys(params).length === 3
-    && params.action === "status"
-    && TOOL_BLOCKED_CHANNELS.has(params.channel)
-    && params.nonce === nonce
-  );
-}
-
-
-function validSetupAttemptParams(params, nonce) {
-  return (
-    params !== null
-    && typeof params === "object"
-    && !Array.isArray(params)
-    && Object.keys(params).length === 2
+    && (params.action === "attempt" || params.action === "status")
     && TOOL_BLOCKED_CHANNELS.has(params.channel)
     && params.nonce === nonce
   );
@@ -136,12 +124,43 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       const crmAgentId = configuredAgentId(api.pluginConfig);
       const setupProbe = configuredSetupProbe(api.pluginConfig);
       const setupProbeState = new Map();
-      const setupProbeRunChannels = new Map();
       const productionProbeState = new Map();
-      const recordSetupProbeStatus = (channel, status) => {
-        const current = setupProbeState.get(channel);
-        if (current === "hook_context_unsupported" || current === "marker_missing") return;
-        setupProbeState.set(channel, status);
+      const emptySetupProbeRecord = (channel) => ({
+        agentId: setupProbe.agentId,
+        channel,
+        nonce: setupProbe.nonce,
+        sessionKey: undefined,
+        promptSeen: false,
+        toolBlocked: false,
+        sentinelExecuted: false,
+        invalid: false,
+        observedAt: undefined,
+      });
+      const updateSetupProbeRecord = (channel, change) => {
+        const current = setupProbeState.get(channel) ?? emptySetupProbeRecord(channel);
+        if (current.invalid && !change.invalid) return current;
+        const next = { ...current, ...change };
+        setupProbeState.set(channel, next);
+        while (setupProbeState.size > MAX_SETUP_PROBE_RUNS) {
+          setupProbeState.delete(setupProbeState.keys().next().value);
+        }
+        return next;
+      };
+      const invalidateSetupProbe = (channel) => {
+        for (const target of channel ? [channel] : TOOL_BLOCKED_CHANNELS) {
+          updateSetupProbeRecord(target, { invalid: true, toolBlocked: false });
+        }
+      };
+      const setupProbeDetails = (channel) => {
+        const record = setupProbeState.get(channel) ?? emptySetupProbeRecord(channel);
+        return {
+          schema_version: 2,
+          channel,
+          nonce: setupProbe.nonce,
+          prompt_seen: record.promptSeen,
+          tool_blocked: record.toolBlocked,
+          sentinel_executed: record.sentinelExecuted,
+        };
       };
       const markProductionProbeExecuted = (params, context) => {
         if (
@@ -183,45 +202,26 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
           || context?.agentId !== setupProbe.agentId
           || typeof context?.runId !== "string"
           || !context.runId
+          || typeof context?.sessionKey !== "string"
+          || !context.sessionKey
           || !TOOL_BLOCKED_CHANNELS.has(context.channel)
         ) return;
-        setupProbeRunChannels.set(context.runId, context.channel);
-        while (setupProbeRunChannels.size > MAX_SETUP_PROBE_RUNS) {
-          setupProbeRunChannels.delete(setupProbeRunChannels.keys().next().value);
-        }
+        updateSetupProbeRecord(context.channel, {
+          agentId: setupProbe.agentId,
+          channel: context.channel,
+          nonce: setupProbe.nonce,
+          sessionKey: context.sessionKey,
+          promptSeen: true,
+          toolBlocked: false,
+          sentinelExecuted: false,
+          invalid: false,
+          observedAt: Date.now(),
+        });
       });
 
       api.on(
         "before_tool_call",
         (event, context) => {
-          if (setupProbe && event.toolName === SETUP_MARKER_ATTEMPT_TOOL) {
-            const params = event.params;
-            const channel = TOOL_BLOCKED_CHANNELS.has(params?.channel)
-              ? params.channel
-              : undefined;
-            const runId = exactRunId(event, context);
-            const trustedChannel = runId
-              ? setupProbeRunChannels.get(runId)
-              : undefined;
-            if (
-              !validSetupAttemptParams(params, setupProbe.nonce)
-              || context?.agentId !== setupProbe.agentId
-              || !runId
-              || !trustedChannel
-            ) {
-              for (const target of channel ? [channel] : TOOL_BLOCKED_CHANNELS) {
-                recordSetupProbeStatus(target, "hook_context_unsupported");
-              }
-            } else if (trustedChannel === params.channel) {
-              recordSetupProbeStatus(params.channel, "tool_blocked");
-            } else {
-              recordSetupProbeStatus(params.channel, "marker_missing");
-            }
-            return {
-              block: true,
-              blockReason: "Internal analysis and dashboard turns must not execute setup probe tools.",
-            };
-          }
           if (setupProbe && event.toolName === SETUP_MARKER_TOOL) {
             const params = event.params;
             const channel = TOOL_BLOCKED_CHANNELS.has(params?.channel)
@@ -251,18 +251,43 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
                 )
               )
             ) return;
-            if (!validSetupProbeParams(params, setupProbe.nonce)) {
-              for (const target of channel ? [channel] : TOOL_BLOCKED_CHANNELS) {
-                setupProbeState.set(target, "hook_context_unsupported");
+            if (params?.action === "attempt") {
+              const record = channel ? setupProbeState.get(channel) : undefined;
+              const freshPrompt = (
+                record?.promptSeen === true
+                && typeof record.observedAt === "number"
+                && Date.now() - record.observedAt <= SETUP_PROBE_TTL_MS
+              );
+              const exactAttempt = (
+                validSetupProbeParams(params, setupProbe.nonce)
+                && context?.agentId === setupProbe.agentId
+                && typeof context?.sessionKey === "string"
+                && !!context.sessionKey
+                && contextSupported
+                && context.requester.channel === params.channel
+                && record?.agentId === setupProbe.agentId
+                && record?.channel === params.channel
+                && record?.nonce === setupProbe.nonce
+                && record?.sessionKey === context.sessionKey
+                && freshPrompt
+                && record?.invalid === false
+              );
+              if (exactAttempt) {
+                updateSetupProbeRecord(params.channel, { toolBlocked: true });
+              } else {
+                invalidateSetupProbe(channel);
               }
               return {
                 block: true,
-                blockReason: "Setup marker probe hook context is unsupported.",
+                blockReason: "Internal analysis and dashboard turns must not execute setup probe tools.",
               };
             }
+            if (!validSetupProbeParams(params, setupProbe.nonce)) invalidateSetupProbe(channel);
             return {
               block: true,
-              blockReason: "Setup marker status is available only through the bounded setup capability path.",
+              blockReason: validSetupProbeParams(params, setupProbe.nonce)
+                ? "Setup marker status is available only through the bounded setup capability path."
+                : "Setup marker probe hook context is unsupported.",
             };
           }
           if (
@@ -415,7 +440,6 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
       api.on("gateway_stop", () => {
         outcomeGuard.clear();
         setupProbeState.clear();
-        setupProbeRunChannels.clear();
         productionProbeState.clear();
       });
 
@@ -447,12 +471,10 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
               if (!validSetupProbeParams(params, setupProbe.nonce)) {
                 throw new TypeError("Invalid setup marker probe arguments");
               }
-              const details = {
-                schema_version: 1,
-                channel: params.channel,
-                nonce: setupProbe.nonce,
-                status: setupProbeState.get(params.channel) ?? "tool_not_attempted",
-              };
+              if (params.action === "attempt") {
+                updateSetupProbeRecord(params.channel, { sentinelExecuted: true });
+              }
+              const details = setupProbeDetails(params.channel);
               return {
                 content: [{ type: "text", text: JSON.stringify(details) }],
                 details,

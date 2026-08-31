@@ -380,107 +380,244 @@ test("setup probe registers one config-gated marker tool without changing normal
 
 
 for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
-  test(`setup probe correlates and blocks a pinned ${channel} client-tool attempt`, async () => {
+  test(`setup probe deterministically blocks a native ${channel} attempt`, async () => {
     const nonce = "0123456789abcdef0123456789abcdef";
     const agentId = "openhouse-setup-probe-a1b2c3d4";
+    const sessionKey = `agent:${agentId}:dashboard:openhouse-setup-test`;
     const { hooks, registrations } = registerPlugin(undefined, {
       agentId: "portable-crm",
       setupProbe: { agentId, nonce },
     });
-    hooks.get("before_prompt_build").handler(
-      {},
-      { agentId, runId: `run-${channel}`, channel },
-    );
-    const beforeToolCall = hooks.get("before_tool_call").handler;
-    const blocked = beforeToolCall(
+    hooks.get("before_prompt_build").handler({}, {
+      agentId,
+      runId: `prompt-${channel}`,
+      sessionKey,
+      channel,
+    });
+    const blocked = hooks.get("before_tool_call").handler(
       {
-        toolName: "openhouse_setup_marker_attempt",
-        runId: `run-${channel}`,
-        params: { channel, nonce },
+        toolName: "openhouse_setup_marker_probe",
+        params: { action: "attempt", channel, nonce },
       },
-      { agentId, runId: `run-${channel}` },
+      { agentId, sessionKey, requester: { channel } },
     );
     assert.equal(blocked.block, true);
-    const repeated = beforeToolCall(
-      {
-        toolName: "openhouse_setup_marker_attempt",
-        runId: `run-${channel}`,
-        params: { channel, nonce },
-      },
-      { agentId, runId: `run-${channel}` },
-    );
-    assert.equal(repeated.block, true);
-
-    assert.equal(
-      beforeToolCall(
-        {
-          toolName: "openhouse_setup_marker_probe",
-          params: { action: "status", channel, nonce },
-        },
-        { agentId },
-      ),
-      undefined,
-    );
-
     const [factory] = registrations.find(
       ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
     );
-    const result = await factory({}).execute("status-call", {
+    const status = await factory({}).execute("status-call", {
       action: "status",
       channel,
       nonce,
     });
-    assert.deepEqual(result.details, {
-      schema_version: 1,
+    assert.deepEqual(status.details, {
+      schema_version: 2,
       channel,
       nonce,
-      status: "tool_blocked",
+      prompt_seen: true,
+      tool_blocked: true,
+      sentinel_executed: false,
     });
   });
 }
 
 
-test("setup probe keeps malformed attempt evidence fail-closed across a later retry", async () => {
+test("setup probe fails closed for uncorrelated native attempts", async () => {
   const nonce = "0123456789abcdef0123456789abcdef";
   const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const cases = [
+    {
+      name: "wrong agent",
+      channel: "openhouse-dashboard",
+      context: (sessionKey) => ({
+        agentId: "other-agent",
+        sessionKey,
+        requester: { channel: "openhouse-dashboard" },
+      }),
+    },
+    {
+      name: "wrong session",
+      channel: "openhouse-dashboard",
+      context: () => ({
+        agentId,
+        sessionKey: "agent:other:dashboard:setup",
+        requester: { channel: "openhouse-dashboard" },
+      }),
+    },
+    {
+      name: "wrong channel",
+      channel: "openhouse-analysis",
+      context: (sessionKey) => ({
+        agentId,
+        sessionKey,
+        requester: { channel: "openhouse-analysis" },
+      }),
+    },
+    {
+      name: "missing requester",
+      channel: "openhouse-dashboard",
+      context: (sessionKey) => ({ agentId, sessionKey }),
+    },
+    {
+      name: "missing prompt record",
+      channel: "openhouse-dashboard",
+      skipPrompt: true,
+      context: (sessionKey) => ({
+        agentId,
+        sessionKey,
+        requester: { channel: "openhouse-dashboard" },
+      }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    const { hooks, registrations } = registerPlugin(undefined, {
+      agentId: "portable-crm",
+      setupProbe: { agentId, nonce },
+    });
+    const sessionKey = `agent:${agentId}:dashboard:${scenario.name}`;
+    if (!scenario.skipPrompt) {
+      hooks.get("before_prompt_build").handler({}, {
+        agentId,
+        runId: `prompt-${scenario.name}`,
+        sessionKey,
+        channel: "openhouse-dashboard",
+      });
+    }
+    const blocked = hooks.get("before_tool_call").handler(
+      {
+        toolName: "openhouse_setup_marker_probe",
+        params: { action: "attempt", channel: scenario.channel, nonce },
+      },
+      scenario.context(sessionKey),
+    );
+    assert.equal(blocked.block, true, scenario.name);
+    const [factory] = registrations.find(
+      ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+    );
+    const status = await factory({}).execute("status", {
+      action: "status",
+      channel: scenario.channel,
+      nonce,
+    });
+    assert.notEqual(
+      status.details.prompt_seen && status.details.tool_blocked && !status.details.sentinel_executed,
+      true,
+      scenario.name,
+    );
+  }
+});
+
+
+test("setup probe treats expired prompt evidence as failed", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const sessionKey = `agent:${agentId}:dashboard:expired`;
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    const { hooks, registrations } = registerPlugin(undefined, {
+      agentId: "portable-crm",
+      setupProbe: { agentId, nonce },
+    });
+    hooks.get("before_prompt_build").handler({}, {
+      agentId,
+      runId: "prompt-expired",
+      sessionKey,
+      channel: "openhouse-dashboard",
+    });
+    now += (2 * 60 * 1000) + 1;
+    const blocked = hooks.get("before_tool_call").handler(
+      {
+        toolName: "openhouse_setup_marker_probe",
+        params: { action: "attempt", channel: "openhouse-dashboard", nonce },
+      },
+      { agentId, sessionKey, requester: { channel: "openhouse-dashboard" } },
+    );
+    assert.equal(blocked.block, true);
+    const [factory] = registrations.find(
+      ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+    );
+    const status = await factory({}).execute("status", {
+      action: "status",
+      channel: "openhouse-dashboard",
+      nonce,
+    });
+    assert.notEqual(
+      status.details.prompt_seen && status.details.tool_blocked && !status.details.sentinel_executed,
+      true,
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+
+test("setup probe never lets a later exact attempt overwrite invalid evidence", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const channel = "openhouse-dashboard";
+  const sessionKey = `agent:${agentId}:dashboard:invalid-terminal`;
   const { hooks, registrations } = registerPlugin(undefined, {
     agentId: "portable-crm",
     setupProbe: { agentId, nonce },
   });
-  const runId = "run-malformed-then-valid";
-  const channel = "openhouse-dashboard";
-  hooks.get("before_prompt_build").handler({}, { agentId, runId, channel });
+  hooks.get("before_prompt_build").handler({}, {
+    agentId,
+    runId: "prompt-invalid-terminal",
+    sessionKey,
+    channel,
+  });
   const beforeToolCall = hooks.get("before_tool_call").handler;
   beforeToolCall(
     {
-      toolName: "openhouse_setup_marker_attempt",
-      runId,
-      params: { channel, nonce: "fedcba9876543210fedcba9876543210" },
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel, nonce: "fedcba9876543210fedcba9876543210" },
     },
-    { agentId, runId },
+    { agentId, sessionKey, requester: { channel } },
   );
   beforeToolCall(
     {
-      toolName: "openhouse_setup_marker_attempt",
-      runId,
-      params: { channel, nonce },
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel, nonce },
     },
-    { agentId, runId },
+    { agentId, sessionKey, requester: { channel } },
   );
-
   const [factory] = registrations.find(
     ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
   );
-  const result = await factory({}).execute("status-call", {
-    action: "status",
-    channel,
-    nonce,
-  });
-  assert.equal(result.details.status, "hook_context_unsupported");
+  const status = await factory({}).execute("status", { action: "status", channel, nonce });
+  assert.equal(status.details.tool_blocked, false);
 });
 
 
-test("setup probe bounds and clears trusted run correlations", async () => {
+test("setup sentinel execution is permanently visible as a failed proof", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const { registrations } = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+  const [factory] = registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const tool = factory({});
+  await tool.execute("unexpected-execution", {
+    action: "attempt",
+    channel: "openhouse-dashboard",
+    nonce,
+  });
+  const status = await tool.execute("status", {
+    action: "status",
+    channel: "openhouse-dashboard",
+    nonce,
+  });
+  assert.equal(status.details.sentinel_executed, true);
+});
+
+
+test("setup probe bounds and clears session correlations", async () => {
   const nonce = "0123456789abcdef0123456789abcdef";
   const agentId = "openhouse-setup-probe-a1b2c3d4";
   const channel = "openhouse-dashboard";
@@ -489,137 +626,67 @@ test("setup probe bounds and clears trusted run correlations", async () => {
     setupProbe: { agentId, nonce },
   });
   for (let index = 0; index < 65; index += 1) {
-    registered.hooks.get("before_prompt_build").handler(
-      {},
-      { agentId, runId: `bounded-run-${index}`, channel },
-    );
+    registered.hooks.get("before_prompt_build").handler({}, {
+      agentId,
+      runId: `bounded-run-${index}`,
+      sessionKey: `agent:${agentId}:dashboard:${index}`,
+      channel,
+    });
   }
   const beforeToolCall = registered.hooks.get("before_tool_call").handler;
-  beforeToolCall(
+  const stale = beforeToolCall(
     {
-      toolName: "openhouse_setup_marker_attempt",
-      runId: "bounded-run-64",
-      params: { channel, nonce },
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel, nonce },
     },
-    { agentId, runId: "bounded-run-64" },
+    {
+      agentId,
+      sessionKey: `agent:${agentId}:dashboard:0`,
+      requester: { channel },
+    },
   );
+  assert.equal(stale.block, true);
   const [factory] = registered.registrations.find(
     ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
   );
-  const status = (tool) => tool.execute("status-call", {
-    action: "status",
-    channel,
-    nonce,
-  });
-  assert.equal((await status(factory({}))).details.status, "tool_blocked");
-  beforeToolCall(
-    {
-      toolName: "openhouse_setup_marker_attempt",
-      runId: "bounded-run-0",
-      params: { channel, nonce },
-    },
-    { agentId, runId: "bounded-run-0" },
-  );
-  assert.equal(
-    (await status(factory({}))).details.status,
-    "hook_context_unsupported",
+  const status = (tool) => tool.execute("status-call", { action: "status", channel, nonce });
+  assert.notEqual(
+    (await status(factory({}))).details.prompt_seen
+      && (await status(factory({}))).details.tool_blocked
+      && !(await status(factory({}))).details.sentinel_executed,
+    true,
   );
 
   const restarted = registerPlugin(undefined, {
     agentId: "portable-crm",
     setupProbe: { agentId, nonce },
   });
-  restarted.hooks.get("before_prompt_build").handler(
-    {},
-    { agentId, runId: "cleared-run", channel },
-  );
+  const sessionKey = `agent:${agentId}:dashboard:cleared`;
+  restarted.hooks.get("before_prompt_build").handler({}, {
+    agentId,
+    runId: "cleared-run",
+    sessionKey,
+    channel,
+  });
   restarted.hooks.get("gateway_stop").handler();
-  restarted.hooks.get("before_tool_call").handler(
+  const cleared = restarted.hooks.get("before_tool_call").handler(
     {
-      toolName: "openhouse_setup_marker_attempt",
-      runId: "cleared-run",
-      params: { channel, nonce },
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel, nonce },
     },
-    { agentId, runId: "cleared-run" },
+    { agentId, sessionKey, requester: { channel } },
   );
+  assert.equal(cleared.block, true);
   const [restartedFactory] = restarted.registrations.find(
     ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
   );
-  assert.equal(
-    (await status(restartedFactory({}))).details.status,
-    "hook_context_unsupported",
+  const clearedStatus = await status(restartedFactory({}));
+  assert.notEqual(
+    clearedStatus.details.prompt_seen
+      && clearedStatus.details.tool_blocked
+      && !clearedStatus.details.sentinel_executed,
+    true,
   );
-});
-
-
-test("setup probe distinguishes a mismatched trusted run channel", async () => {
-  const nonce = "0123456789abcdef0123456789abcdef";
-  const agentId = "openhouse-setup-probe-a1b2c3d4";
-  const { hooks, registrations } = registerPlugin(undefined, {
-    agentId: "portable-crm",
-    setupProbe: { agentId, nonce },
-  });
-  const [factory] = registrations.find(
-    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
-  );
-  const tool = factory({});
-  hooks.get("before_prompt_build").handler(
-    {},
-    { agentId, runId: "run-mismatch", channel: "openhouse-analysis" },
-  );
-  const blocked = hooks.get("before_tool_call").handler(
-    {
-      toolName: "openhouse_setup_marker_attempt",
-      runId: "run-mismatch",
-      params: { channel: "openhouse-dashboard", nonce },
-    },
-    { agentId, runId: "run-mismatch" },
-  );
-  assert.equal(blocked.block, true);
-
-  const result = await tool.execute("status-call", {
-    action: "status",
-    channel: "openhouse-dashboard",
-    nonce,
-  });
-  assert.equal(result.details.status, "marker_missing");
-});
-
-
-test("setup probe distinguishes no tool attempt from malformed hook context", async () => {
-  const nonce = "0123456789abcdef0123456789abcdef";
-  const agentId = "openhouse-setup-probe-a1b2c3d4";
-  const { hooks, registrations } = registerPlugin(undefined, {
-    agentId: "portable-crm",
-    setupProbe: { agentId, nonce },
-  });
-  const [factory] = registrations.find(
-    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
-  );
-  const tool = factory({});
-
-  const untouched = await tool.execute("status-call", {
-    action: "status",
-    channel: "openhouse-dashboard",
-    nonce,
-  });
-  assert.equal(untouched.details.status, "tool_not_attempted");
-
-  const blocked = hooks.get("before_tool_call").handler(
-    {
-      toolName: "openhouse_setup_marker_attempt",
-      runId: "run-without-channel",
-      params: { channel: "openhouse-analysis", nonce },
-    },
-    { agentId, runId: "run-without-channel" },
-  );
-  assert.equal(blocked.block, true);
-  const malformed = await tool.execute("status-call", {
-    action: "status",
-    channel: "openhouse-analysis",
-    nonce,
-  });
-  assert.equal(malformed.details.status, "hook_context_unsupported");
 });
 
 
