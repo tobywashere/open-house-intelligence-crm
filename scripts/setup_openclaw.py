@@ -227,6 +227,13 @@ class DiagnosticSessionTracker:
 
 
 @dataclass(frozen=True)
+class AgentDeletionReport:
+    complete: bool
+    retry_restart_performed: bool
+    retained_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AgentRoster:
     schema: str | None
     records: list[dict[str, Any]]
@@ -5386,19 +5393,85 @@ def _restore_config_snapshot(
     return _config_value_matches(cli, snapshot)
 
 
+def _parse_agent_deletion_result(
+    result: CommandResult,
+    agent_id: str,
+    *,
+    expected_workspace: Path,
+) -> AgentDeletionReport:
+    payload = _json(result, "agent deletion")
+    if not isinstance(payload, dict):
+        raise SetupConflict("agent deletion returned an unsupported JSON shape")
+    if payload.get("agentId") != agent_id:
+        raise SetupConflict("agent deletion returned the wrong agent ID")
+    if not _same_workspace(payload.get("workspace"), expected_workspace):
+        raise SetupConflict("agent deletion returned the wrong workspace")
+    for field in ("agentDir", "sessionsDir"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise SetupConflict(f"agent deletion returned an invalid {field}")
+    removed = payload.get("removed")
+    if not isinstance(removed, list) or not all(
+        isinstance(path, str) for path in removed
+    ):
+        raise SetupConflict("agent deletion returned an invalid removed-path list")
+    failed = payload.get("failed")
+    if not isinstance(failed, list):
+        raise SetupConflict("agent deletion returned an invalid failed-path list")
+    retained_paths: list[str] = []
+    for entry in failed:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"path", "reason"}
+            or not isinstance(entry.get("path"), str)
+            or not isinstance(entry.get("reason"), str)
+        ):
+            raise SetupConflict("agent deletion returned an invalid failed-path entry")
+        retained_paths.append(entry["path"])
+    purge_failed = payload.get("purgeFailed", False)
+    if not isinstance(purge_failed, bool):
+        raise SetupConflict("agent deletion returned an invalid purgeFailed value")
+    if "transport" in payload:
+        transport = payload["transport"]
+        if not isinstance(transport, str) or not transport.strip():
+            raise SetupConflict("agent deletion returned an invalid transport")
+    return AgentDeletionReport(
+        complete=not retained_paths and not purge_failed,
+        retry_restart_performed=False,
+        retained_paths=tuple(retained_paths),
+    )
+
+
+def _agent_cleanup_inventory(
+    cli: OpenClawCLI, agent_id: str, *, label: str
+) -> tuple[list[dict[str, Any]], AgentRoster, bool]:
+    listed = _run_required(
+        cli, ["openclaw", "agents", "list", "--json"], f"{label} list"
+    )
+    listed_records = _cli_agents(_json(listed, f"{label} list"))
+    roster = _read_agent_roster(cli, allow_missing=True, label=f"{label} config")
+    absent = agent_id not in {record["id"] for record in listed_records} and (
+        agent_id not in {record["id"] for record in roster.records}
+    )
+    return listed_records, roster, absent
+
+
 def _delete_agent_and_verify(
     cli: OpenClawCLI, agent_id: str, *, expected_workspace: Path
-) -> bool:
+) -> AgentDeletionReport:
+    incomplete = AgentDeletionReport(False, False, ())
+    delete_argv = [
+        "openclaw",
+        "agents",
+        "delete",
+        agent_id,
+        "--force",
+        "--json",
+    ]
     try:
-        listed = _run_required(
-            cli, ["openclaw", "agents", "list", "--json"], "agent cleanup list"
+        listed_records, roster, initially_absent = _agent_cleanup_inventory(
+            cli, agent_id, label="agent cleanup"
         )
-        listed_records = _cli_agents(_json(listed, "agent cleanup list"))
-        listed_ids = {record["id"] for record in listed_records}
-        roster = _read_agent_roster(
-            cli, allow_missing=True, label="agent cleanup config"
-        )
-        configured_ids = {record["id"] for record in roster.records}
         owned_records = [
             record
             for record in [*listed_records, *roster.records]
@@ -5411,35 +5484,43 @@ def _delete_agent_and_verify(
             )
             for record in owned_records
         ):
-            return False
-        if agent_id in listed_ids or agent_id in configured_ids:
-            deleted = cli.run(
-                [
-                    "openclaw",
-                    "agents",
-                    "delete",
-                    agent_id,
-                    "--force",
-                    "--json",
-                ],
-                mutate=True,
-            )
-            if deleted.returncode != 0:
-                return False
-        listed = _run_required(
-            cli,
-            ["openclaw", "agents", "list", "--json"],
-            "agent cleanup verification list",
+            return incomplete
+        if initially_absent:
+            return AgentDeletionReport(True, False, ())
+
+        deleted = cli.run(delete_argv, mutate=True)
+        if deleted.returncode != 0:
+            return incomplete
+        first_report = _parse_agent_deletion_result(
+            deleted, agent_id, expected_workspace=expected_workspace
         )
-        roster = _read_agent_roster(
-            cli, allow_missing=True, label="agent cleanup verification config"
+        _, _, first_absent = _agent_cleanup_inventory(
+            cli, agent_id, label="agent cleanup verification"
         )
-        return agent_id not in {
-            record["id"]
-            for record in _cli_agents(_json(listed, "agent cleanup verification list"))
-        } and agent_id not in {record["id"] for record in roster.records}
+        if not first_absent:
+            return incomplete
+        if first_report.complete:
+            return first_report
+
+        restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
+        if restart.returncode != 0:
+            return AgentDeletionReport(False, True, first_report.retained_paths)
+        retried = cli.run(delete_argv, mutate=True)
+        if retried.returncode != 0:
+            return AgentDeletionReport(False, True, first_report.retained_paths)
+        retry_report = _parse_agent_deletion_result(
+            retried, agent_id, expected_workspace=expected_workspace
+        )
+        _, _, finally_absent = _agent_cleanup_inventory(
+            cli, agent_id, label="agent cleanup retry verification"
+        )
+        return AgentDeletionReport(
+            complete=retry_report.complete and finally_absent,
+            retry_restart_performed=True,
+            retained_paths=retry_report.retained_paths,
+        )
     except (OSError, SetupConflict):
-        return False
+        return incomplete
 
 
 def _agent_is_absent(cli: OpenClawCLI, agent_id: str) -> bool:
@@ -6512,6 +6593,7 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     diagnostic_root: Path | None = None
     diagnostic_session_tracker = DiagnosticSessionTracker()
     diagnostic_agent_creation_attempted = False
+    diagnostic_cleanup_report: AgentDeletionReport | None = None
     gateway_restart_attempted = False
     model_tool_behavior = "verified"
     try:
@@ -7300,9 +7382,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 + (remove_probe.stderr or remove_probe.stdout).strip()
             )
         _verify_plugin_agent_config(cli, options.agent_id)
-        if not _delete_agent_and_verify(
+        diagnostic_cleanup_report = _delete_agent_and_verify(
             cli, diagnostic_agent_id, expected_workspace=diagnostic_workspace
-        ):
+        )
+        if not diagnostic_cleanup_report.complete:
             raise SetupConflict(
                 "Could not delete and verify absence of the setup diagnostic agent"
             )
@@ -7423,17 +7506,28 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 f"{diagnostic_workspace}."
             )
         elif diagnostic_agent_creation_attempted and diagnostic_agent_id is not None:
-            if not _delete_agent_and_verify(
-                cli,
-                diagnostic_agent_id,
-                expected_workspace=diagnostic_workspace,
-            ):
+            if diagnostic_cleanup_report is None:
+                diagnostic_cleanup_report = _delete_agent_and_verify(
+                    cli,
+                    diagnostic_agent_id,
+                    expected_workspace=diagnostic_workspace,
+                )
+            if not diagnostic_cleanup_report.complete:
                 rollback_failed = True
                 messages.append(
                     "Could not delete or verify absence of the setup diagnostic agent."
                 )
+                if diagnostic_cleanup_report.retained_paths:
+                    messages.append(
+                        "OpenClaw retained diagnostic state paths: "
+                        + ", ".join(diagnostic_cleanup_report.retained_paths)
+                    )
         if (
             not retained_diagnostic_agent
+            and (
+                diagnostic_cleanup_report is None
+                or diagnostic_cleanup_report.complete
+            )
             and diagnostic_root is not None
             and not _remove_diagnostic_workspace(
                 diagnostic_root,
@@ -7526,11 +7620,12 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                         "setup failed."
                     )
             elif not crm_agent_preexisting and crm_agent_creation_attempted:
-                if not _delete_agent_and_verify(
+                crm_agent_deletion = _delete_agent_and_verify(
                     cli,
                     options.agent_id,
                     expected_workspace=options.workspace,
-                ):
+                )
+                if not crm_agent_deletion.complete:
                     rollback_failed = True
                     messages.append(
                         "Could not delete or verify absence of the newly created CRM agent."

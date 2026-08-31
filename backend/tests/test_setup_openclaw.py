@@ -165,6 +165,21 @@ def native_tool_envelope(receipt):
     }
 
 
+def agent_deletion_envelope(agent_id, reported_workspace, **overrides):
+    payload = {
+        "agentId": agent_id,
+        "workspace": str(reported_workspace),
+        "agentDir": f"/safe/openclaw/agents/{agent_id}",
+        "sessionsDir": f"/safe/openclaw/agents/{agent_id}/sessions",
+        "removed": [],
+        "failed": [],
+        "removedBindings": 0,
+        "removedAllow": 0,
+    }
+    payload.update(overrides)
+    return CommandResult(0, json.dumps(payload), "")
+
+
 class FakeCLI:
     def __init__(
         self,
@@ -482,6 +497,7 @@ class FakeCLI:
         self.calls.append(args)
         key = tuple(args)
         response = self.responses.get(key)
+        agent_deletion_result = None
         if mutate:
             self.mutating_calls.append(args)
             if args == ["openclaw", "gateway", "restart"]:
@@ -500,6 +516,30 @@ class FakeCLI:
                     self.extra_agents[args[3]] = agent
             elif args[1:3] == ["agents", "delete"]:
                 agent_id = args[3]
+                agent = (
+                    self.created_agent
+                    if self.created_agent and self.created_agent["id"] == agent_id
+                    else self.extra_agents.get(agent_id)
+                )
+                workspace = agent["workspace"] if agent else "/safe/workspace"
+                agent_deletion_result = CommandResult(
+                    0,
+                    json.dumps(
+                        {
+                            "agentId": agent_id,
+                            "workspace": workspace,
+                            "agentDir": f"/safe/openclaw/agents/{agent_id}",
+                            "sessionsDir": (
+                                f"/safe/openclaw/agents/{agent_id}/sessions"
+                            ),
+                            "removed": [],
+                            "failed": [],
+                            "removedBindings": 0,
+                            "removedAllow": 0,
+                        }
+                    ),
+                    "",
+                )
                 if self.created_agent and self.created_agent["id"] == agent_id:
                     self.created_agent = None
                 self.extra_agents.pop(agent_id, None)
@@ -588,6 +628,8 @@ class FakeCLI:
             ):
                 return self._with_extra_agents(response)
             return response
+        if agent_deletion_result is not None:
+            return agent_deletion_result
         if args[-1:] == ["--help"]:
             return CommandResult(
                 0,
@@ -3460,6 +3502,282 @@ def test_setup_rolls_back_when_temporary_probe_config_cannot_be_removed(tmp_path
     assert PLUGIN_CONFIG_PATH not in cli.config_values
 
 
+def _run_agent_cleanup(tmp_path, deletion_result):
+    agent_id = "openhouse-setup-probe-cleanup"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+    cli = FakeCLI(
+        responses={
+            (
+                "openclaw",
+                "agents",
+                "delete",
+                agent_id,
+                "--force",
+                "--json",
+            ): deletion_result(agent_id, workspace)
+        }
+    )
+    cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+    return cli, report, workspace
+
+
+def test_agent_cleanup_rejects_malformed_deletion_json(tmp_path):
+    cli, report, _ = _run_agent_cleanup(
+        tmp_path, lambda _agent_id, _workspace: CommandResult(0, "not-json", "")
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(False, False, ())
+    assert cli.gateway_restart_count == 0
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"agentId": "wrong-agent"},
+        {"workspace": "/wrong/workspace"},
+        {"agentDir": ""},
+        {"sessionsDir": None},
+        {"removed": "not-a-list"},
+        {"removed": [7]},
+        {"failed": "not-a-list"},
+        {"purgeFailed": "yes"},
+        {"transport": ""},
+    ],
+    ids=(
+        "wrong-agent-id",
+        "wrong-workspace",
+        "empty-agent-dir",
+        "non-string-sessions-dir",
+        "non-list-removed",
+        "non-string-removed-path",
+        "non-list-failed",
+        "non-boolean-purge-failed",
+        "empty-transport",
+    ),
+)
+def test_agent_cleanup_rejects_invalid_deletion_envelope(tmp_path, override):
+    cli, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda agent_id, workspace: agent_deletion_envelope(
+            agent_id, workspace, **override
+        ),
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(False, False, ())
+    assert cli.gateway_restart_count == 0
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [
+        ["/safe/openclaw/agents/probe"],
+        [{"path": "/safe/openclaw/agents/probe"}],
+        [{"path": "/safe/openclaw/agents/probe", "reason": 7}],
+        [
+            {
+                "path": "/safe/openclaw/agents/probe",
+                "reason": "busy",
+                "extra": "unsupported",
+            }
+        ],
+    ],
+    ids=("not-object", "missing-reason", "non-string-reason", "extra-key"),
+)
+def test_agent_cleanup_rejects_malformed_failed_entries(tmp_path, failed):
+    cli, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda agent_id, workspace: agent_deletion_envelope(
+            agent_id, workspace, failed=failed
+        ),
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(False, False, ())
+    assert cli.gateway_restart_count == 0
+
+
+@pytest.mark.parametrize(
+    "first_incomplete",
+    [
+        {"purgeFailed": True},
+        {
+            "failed": [
+                {
+                    "path": "/safe/openclaw/agents/probe/sessions",
+                    "reason": "SQLite writer still active",
+                }
+            ]
+        },
+    ],
+    ids=("purge-failed", "failed-path"),
+)
+def test_diagnostic_agent_cleanup_retries_supported_deletion_journal_once(
+    tmp_path, first_incomplete
+):
+    agent_id = "openhouse-setup-probe-retry"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+
+    class RetryDeletionCLI(FakeCLI):
+        delete_attempts = 0
+
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if args[1:3] != ["agents", "delete"]:
+                return result
+            self.delete_attempts += 1
+            if self.delete_attempts == 1:
+                return agent_deletion_envelope(
+                    agent_id, workspace, **first_incomplete
+                )
+            return agent_deletion_envelope(agent_id, workspace)
+
+    cli = RetryDeletionCLI()
+    cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(True, True, ())
+    deletes = [
+        index
+        for index, call in enumerate(cli.calls)
+        if call[1:3] == ["agents", "delete"] and call[3] == agent_id
+    ]
+    assert len(deletes) == 2
+    retry_restart_index = cli.calls.index(
+        ["openclaw", "gateway", "restart"], deletes[0] + 1
+    )
+    final_inventory_index = next(
+        index
+        for index, call in enumerate(cli.calls)
+        if index > deletes[1] and call == ["openclaw", "agents", "list", "--json"]
+    )
+    assert deletes[0] < retry_restart_index < deletes[1] < final_inventory_index
+
+
+def test_agent_cleanup_requires_roster_and_cli_absence_after_structured_success(
+    tmp_path,
+):
+    agent_id = "openhouse-setup-probe-retained"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+
+    class RetainedInventoryCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            if args[1:3] == ["agents", "delete"]:
+                self.calls.append(args)
+                if mutate:
+                    self.mutating_calls.append(args)
+                return agent_deletion_envelope(agent_id, workspace)
+            return super().run(args, mutate=mutate)
+
+    cli = RetainedInventoryCLI()
+    cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(False, False, ())
+    assert agent_id in cli.extra_agents
+
+
+def test_persistent_agent_cleanup_failure_retains_reported_paths(tmp_path):
+    agent_id = "openhouse-setup-probe-persistent"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+    agent_dir = tmp_path / "openclaw-state" / "agents" / agent_id
+    sessions_dir = agent_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+
+    class PersistentDeletionCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            result = super().run(args, mutate=mutate)
+            if args[1:3] != ["agents", "delete"]:
+                return result
+            return agent_deletion_envelope(
+                agent_id,
+                workspace,
+                agentDir=str(agent_dir),
+                sessionsDir=str(sessions_dir),
+                failed=[{"path": str(sessions_dir), "reason": "still busy"}],
+                purgeFailed=True,
+                transport="gateway",
+            )
+
+    cli = PersistentDeletionCLI()
+    cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(
+        False, True, (str(sessions_dir),)
+    )
+    assert cli.gateway_restart_count == 1
+    assert sessions_dir.is_dir()
+    assert agent_dir.is_dir()
+    assert workspace.is_dir()
+    assert len(
+        [call for call in cli.calls if call[1:3] == ["agents", "delete"]]
+    ) == 2
+
+
+def test_persistent_diagnostic_agent_purge_failure_retains_installer_workspace(
+    tmp_path,
+):
+    class PersistentPurgeCLI(FakeCLI):
+        diagnostic_agent_id = None
+        diagnostic_workspace = None
+
+        def run(self, args, *, mutate=False):
+            if mutate and args[1:3] == ["agents", "delete"]:
+                agent_id = args[3]
+                agent = self.extra_agents.get(agent_id)
+                if agent is not None:
+                    self.diagnostic_agent_id = agent_id
+                    self.diagnostic_workspace = Path(agent["workspace"])
+                result = super().run(args, mutate=mutate)
+                return agent_deletion_envelope(
+                    agent_id,
+                    self.diagnostic_workspace,
+                    failed=[
+                        {
+                            "path": str(self.diagnostic_workspace),
+                            "reason": "shared workspace retained",
+                        }
+                    ],
+                    purgeFailed=True,
+                )
+            return super().run(args, mutate=mutate)
+
+    cli = PersistentPurgeCLI()
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "Could not delete and verify absence" in result.render()
+    assert "shared workspace" not in result.render()
+    assert cli.diagnostic_workspace is not None
+    assert str(cli.diagnostic_workspace) in result.render()
+    assert cli.diagnostic_workspace.is_dir()
+    assert cli.gateway_restart_count >= 2
+    assert len(
+        [
+            call
+            for call in cli.calls
+            if call[1:3] == ["agents", "delete"]
+            and call[3] == cli.diagnostic_agent_id
+        ]
+    ) == 2
+
+
 def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path):
     options = make_options(tmp_path)
     cli = FakeCLI()
@@ -3467,6 +3785,7 @@ def test_client_tool_probe_uses_deleted_sentinel_only_diagnostic_agent(tmp_path)
     result = configure_openclaw(options, cli=cli)
 
     assert result.ok, result.render()
+    assert "/safe/openclaw/agents/" not in result.render()
     assert len(cli.client_tool_probe_calls) == 1
     probe_agent = cli.channel_probe_attempt_calls[0]["agent_id"]
     assert probe_agent != options.agent_id
