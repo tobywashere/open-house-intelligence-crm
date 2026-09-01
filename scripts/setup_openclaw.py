@@ -4715,6 +4715,7 @@ def _validate_runtime_verification(value: Any, agent_id: str) -> dict[str, Any]:
         "verified",
         "warning_no_tool_call",
         "warning_invalid_tool_call",
+        "warning_provider_timeout",
     }
     if (
         not isinstance(setup_checks, dict)
@@ -5565,6 +5566,36 @@ def _delete_agent_and_verify(
 
         deleted = cli.run(delete_argv, mutate=True)
         if deleted.returncode != 0:
+            if not initially_absent:
+                return incomplete()
+            # Beta releases can remove the configuration before their deletion
+            # journal reports success. Retry only for this run-owned diagnostic ID,
+            # then trust the supported inventories rather than touching state folders.
+            restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
+            retry_restart_performed = True
+            if restart.returncode != 0:
+                return incomplete()
+            retried_absent_delete = cli.run(delete_argv, mutate=True)
+            if retried_absent_delete.returncode == 0:
+                retry_report = _parse_agent_deletion_result(
+                    retried_absent_delete,
+                    agent_id,
+                    expected_workspace=expected_workspace,
+                )
+                known_retained_paths = retry_report.retained_paths
+                _, _, finally_absent = _agent_cleanup_inventory(
+                    cli, agent_id, label="agent cleanup retry verification"
+                )
+                return AgentDeletionReport(
+                    complete=retry_report.complete and finally_absent,
+                    retry_restart_performed=True,
+                    retained_paths=retry_report.retained_paths,
+                )
+            _, _, finally_absent = _agent_cleanup_inventory(
+                cli, agent_id, label="agent cleanup retry verification"
+            )
+            if finally_absent:
+                return AgentDeletionReport(True, True, ())
             return incomplete()
         first_report = _parse_agent_deletion_result(
             deleted, agent_id, expected_workspace=expected_workspace
@@ -5974,6 +6005,8 @@ def _request_client_tool_capability(
             "OpenClaw client-tool capability was not proven because Gateway "
             "authentication failed; configure the matching AGENT_GATEWAY_TOKEN"
         )
+    if _is_upstream_provider_timeout(result):
+        return result
     if result.returncode != 200:
         raise SetupConflict(
             "OpenClaw provider/model capability was not proven by the bounded "
@@ -5983,7 +6016,9 @@ def _request_client_tool_capability(
 
 
 def _classify_client_tool_completion(result: CommandResult, nonce: str) -> str:
-    """Return verified, warning_no_tool_call, or warning_invalid_tool_call."""
+    """Classify model selection without treating a provider timeout as policy drift."""
+    if _is_upstream_provider_timeout(result):
+        return "warning_provider_timeout"
     try:
         payload = _decode_json(result.stdout, "client-tool capability probe")
     except SetupConflict as exc:
@@ -6162,6 +6197,36 @@ def _safe_gateway_error_evidence(result: CommandResult) -> str:
     return evidence
 
 
+def _is_upstream_provider_timeout(result: CommandResult) -> bool:
+    """Recognize only OpenClaw's bounded mapped provider-timeout envelope."""
+    if result.returncode not in {408, 504}:
+        return False
+    try:
+        payload = _decode_json(result.stdout, "OpenClaw provider timeout")
+    except SetupConflict:
+        return False
+    if not isinstance(payload, dict) or set(payload) != {"error"}:
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict) or set(error) not in (
+        {"message", "type"},
+        {"message", "type", "code"},
+    ):
+        return False
+    code = error.get("code")
+    return (
+        error.get("message") == "upstream provider timeout"
+        and error.get("type") == "api_error"
+        and (
+            code is None
+            or (
+                isinstance(code, str)
+                and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code) is not None
+            )
+        )
+    )
+
+
 def _verify_channel_marker(
     cli: OpenClawCLI,
     agent_id: str,
@@ -6177,32 +6242,40 @@ def _verify_channel_marker(
         channel=channel,
         session_key=session_key,
     )
-    if prompt.returncode != 200:
+    prompt_timed_out = _is_upstream_provider_timeout(prompt)
+    if prompt.returncode != 200 and not prompt_timed_out:
         raise SetupConflict(
             f"the {label} channel prompt request was not accepted "
             f"({_safe_gateway_error_evidence(prompt)})"
         )
-    try:
-        prompt_payload = _decode_json(
-            prompt.stdout, f"{label} channel prompt response"
-        )
-        choices = prompt_payload["choices"]
-        choice = choices[0] if isinstance(choices, list) and len(choices) == 1 else None
-        message = choice["message"] if isinstance(choice, dict) else None
-        prompt_valid = (
-            isinstance(choice, dict)
-            and choice.get("finish_reason") == "stop"
-            and isinstance(message, dict)
-            and isinstance(message.get("content"), str)
-            and bool(message["content"].strip())
-            and not message.get("tool_calls")
-        )
-    except (KeyError, TypeError, SetupConflict):
-        prompt_valid = False
-    if not prompt_valid:
-        raise SetupConflict(
-            f"OpenClaw returned a structurally incompatible {label} channel prompt response"
-        )
+    # The correlated marker is the policy proof. A mapped provider timeout can
+    # happen after before_prompt_build recorded it, so model text is optional.
+    if not prompt_timed_out:
+        try:
+            prompt_payload = _decode_json(
+                prompt.stdout, f"{label} channel prompt response"
+            )
+            choices = prompt_payload["choices"]
+            choice = (
+                choices[0]
+                if isinstance(choices, list) and len(choices) == 1
+                else None
+            )
+            message = choice["message"] if isinstance(choice, dict) else None
+            prompt_valid = (
+                isinstance(choice, dict)
+                and choice.get("finish_reason") == "stop"
+                and isinstance(message, dict)
+                and isinstance(message.get("content"), str)
+                and bool(message["content"].strip())
+                and not message.get("tool_calls")
+            )
+        except (KeyError, TypeError, SetupConflict):
+            prompt_valid = False
+        if not prompt_valid:
+            raise SetupConflict(
+                f"OpenClaw returned a structurally incompatible {label} channel prompt response"
+            )
     attempt = cli.probe_channel_marker_attempt(
         agent_id=agent_id,
         nonce=nonce,
@@ -7533,12 +7606,20 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
             skill_rollback = None
         rollback = None
         if model_tool_behavior != "verified":
-            messages.append(
-                f"Compatibility warning for openclaw/{options.agent_id}: the configured "
-                "model accepted the production "
-                "schemas but did not produce a valid CRM client-tool call. Setup proved "
-                "channel policy only. Run doctor and live acceptance before using CRM chat."
-            )
+            if model_tool_behavior == "warning_provider_timeout":
+                messages.append(
+                    f"Compatibility warning for openclaw/{options.agent_id}: the "
+                    "provider timed out after accepting the production schemas. Setup "
+                    "proved channel policy only. Run doctor and live acceptance before "
+                    "using CRM chat."
+                )
+            else:
+                messages.append(
+                    f"Compatibility warning for openclaw/{options.agent_id}: the configured "
+                    "model accepted the production schemas but did not produce a valid CRM "
+                    "client-tool call. Setup proved channel policy only. Run doctor and live "
+                    "acceptance before using CRM chat."
+                )
         messages.append(
             "Validated the native CRM tool, required CRM outcome hooks, full production "
             "CRM and finish schemas transport separately, protected channel propagation and native-tool "

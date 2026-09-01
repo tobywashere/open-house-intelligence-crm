@@ -165,6 +165,20 @@ def native_tool_envelope(receipt):
     }
 
 
+def upstream_provider_timeout(status=408, code=None):
+    error = {
+        "message": "upstream provider timeout",
+        "type": "api_error",
+    }
+    if code is not None:
+        error["code"] = code
+    return CommandResult(
+        status,
+        json.dumps({"error": error}),
+        "",
+    )
+
+
 def agent_deletion_envelope(agent_id, reported_workspace, **overrides):
     payload = {
         "agentId": agent_id,
@@ -2983,6 +2997,21 @@ def test_installed_state_reproves_behavior_instead_of_trusting_serialized_label(
             "provider/model capability was not proven",
         ),
         (
+            CommandResult(
+                408,
+                json.dumps(
+                    {
+                        "error": {
+                            "message": "unrelated request timeout",
+                            "type": "api_error",
+                        }
+                    }
+                ),
+                "",
+            ),
+            "provider/model capability was not proven",
+        ),
+        (
             CommandResult(200, '{"choices": []}', ""),
             "structurally incompatible client-tool response",
         ),
@@ -3055,6 +3084,24 @@ def test_setup_rejects_unproven_client_tool_capability_and_rolls_back(
     assert cli.plugin_path is None
     assert cli.plugin_enabled is False
     assert "Validated the native CRM tool" not in result.render()
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(408, None), (504, None), (408, "ETIMEDOUT")],
+)
+def test_provider_timeout_after_schema_acceptance_is_compatibility_warning(
+    tmp_path, status, code
+):
+    cli = FakeCLI(client_tool_probe=upstream_provider_timeout(status, code))
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert result.runtime_verification["setup_checks"]["model_tool_behavior"] == (
+        "warning_provider_timeout"
+    )
+    assert "provider timed out after accepting the production schemas" in result.render()
 
 
 def test_text_only_model_is_warning_after_deterministic_channel_proof(tmp_path):
@@ -3246,6 +3293,21 @@ def test_tool_completion_rejects_malformed_function_arguments_json():
             "dashboard channel prompt request was not accepted",
         ),
         (
+            CommandResult(
+                408,
+                json.dumps(
+                    {
+                        "error": {
+                            "message": "unrelated request timeout",
+                            "type": "api_error",
+                        }
+                    }
+                ),
+                "",
+            ),
+            "dashboard channel prompt request was not accepted",
+        ),
+        (
             CommandResult(200, '{"choices":[]}', ""),
             "structurally incompatible dashboard channel prompt",
         ),
@@ -3259,6 +3321,40 @@ def test_setup_fails_when_channel_prompt_is_unproven(tmp_path, prompt_result, me
     assert not result.ok
     assert message in result.render()
     assert cli.channel_probe_attempt_calls == []
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(408, None), (504, None), (408, "ETIMEDOUT")],
+)
+def test_setup_uses_marker_status_after_channel_provider_timeout(
+    tmp_path, status, code
+):
+    cli = FakeCLI(channel_prompt=upstream_provider_timeout(status, code))
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert result.ok, result.render()
+    assert cli.channel_verification_calls == [
+        ("prompt", "openhouse-dashboard"),
+        ("attempt", "openhouse-dashboard"),
+        ("status", "openhouse-dashboard"),
+        ("prompt", "openhouse-analysis"),
+        ("attempt", "openhouse-analysis"),
+        ("status", "openhouse-analysis"),
+    ]
+
+
+def test_channel_provider_timeout_still_requires_correlated_prompt_marker(tmp_path):
+    cli = FakeCLI(
+        channel_prompt=upstream_provider_timeout(),
+        channel_probe_statuses={"openhouse-dashboard": {"prompt_seen": False}},
+    )
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "dashboard prompt was not observed" in result.render()
 
 
 def test_setup_fails_when_native_marker_attempt_is_not_blocked(tmp_path):
@@ -3577,6 +3673,43 @@ def test_attempted_agent_cleanup_completes_journal_when_initially_absent(tmp_pat
     assert [
         call for call in cli.mutating_calls if call[1:3] == ["agents", "delete"]
     ] == [["openclaw", "agents", "delete", agent_id, "--force", "--json"]]
+
+
+def test_absent_diagnostic_cleanup_accepts_verified_absence_after_delete_not_found(
+    tmp_path,
+):
+    agent_id = "openhouse-setup-probe-a1b2c3d4e5f6"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+
+    class AlreadyAbsentCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            if args[1:3] == ["agents", "delete"]:
+                self.calls.append(args)
+                if mutate:
+                    self.mutating_calls.append(args)
+                return CommandResult(1, "", "agent not found")
+            return super().run(args, mutate=mutate)
+
+    cli = AlreadyAbsentCLI()
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli,
+        agent_id,
+        expected_workspace=workspace,
+        diagnostic_ownership=setup_openclaw.DiagnosticAgentOwnership(
+            agent_id, workspace
+        ),
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(True, True, ())
+    assert cli.gateway_restart_count == 1
+    assert [
+        call for call in cli.mutating_calls if call[1:3] == ["agents", "delete"]
+    ] == [
+        ["openclaw", "agents", "delete", agent_id, "--force", "--json"],
+        ["openclaw", "agents", "delete", agent_id, "--force", "--json"],
+    ]
 
 
 def test_failed_production_agent_add_does_not_delete_an_absent_predictable_id(
