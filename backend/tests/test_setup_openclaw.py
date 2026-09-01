@@ -179,6 +179,47 @@ def upstream_provider_timeout(status=408, code=None):
     )
 
 
+MALFORMED_PROVIDER_TIMEOUT_PAYLOADS = [
+    pytest.param(
+        '{"error":{"message":"upstream provider timeout","type":"api_error",'
+        '"code":null}}',
+        id="null-code",
+    ),
+    pytest.param(
+        '{"error":{"message":"upstream provider timeout","type":"api_error",'
+        '"code":""}}',
+        id="empty-code",
+    ),
+    pytest.param(
+        '{"error":{"message":"upstream provider timeout","type":"api_error",'
+        '"code":7}}',
+        id="non-string-code",
+    ),
+    pytest.param(
+        json.dumps(
+            {
+                "error": {
+                    "message": "upstream provider timeout",
+                    "type": "api_error",
+                    "code": "x" * 65,
+                }
+            }
+        ),
+        id="oversized-code",
+    ),
+    pytest.param(
+        '{"error":{"message":"upstream provider timeout","type":"api_error",'
+        '"code":"ETIMEDOUT","code":"ETIMEDOUT"}}',
+        id="duplicate-code",
+    ),
+    pytest.param(
+        '{"error":{"message":"upstream provider timeout","type":"api_error",'
+        '"retryable":true}}',
+        id="extra-error-field",
+    ),
+]
+
+
 def agent_deletion_envelope(agent_id, reported_workspace, **overrides):
     payload = {
         "agentId": agent_id,
@@ -3104,6 +3145,18 @@ def test_provider_timeout_after_schema_acceptance_is_compatibility_warning(
     assert "provider timed out after accepting the production schemas" in result.render()
 
 
+@pytest.mark.parametrize("payload", MALFORMED_PROVIDER_TIMEOUT_PAYLOADS)
+def test_malformed_provider_timeout_is_not_a_schema_compatibility_warning(
+    tmp_path, payload
+):
+    cli = FakeCLI(client_tool_probe=CommandResult(408, payload, ""))
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "provider/model capability was not proven" in result.render()
+
+
 def test_text_only_model_is_warning_after_deterministic_channel_proof(tmp_path):
     options = make_options(tmp_path)
     cli = FakeCLI(
@@ -3355,6 +3408,19 @@ def test_channel_provider_timeout_still_requires_correlated_prompt_marker(tmp_pa
 
     assert not result.ok
     assert "dashboard prompt was not observed" in result.render()
+
+
+@pytest.mark.parametrize("payload", MALFORMED_PROVIDER_TIMEOUT_PAYLOADS)
+def test_malformed_provider_timeout_does_not_advance_channel_proof(
+    tmp_path, payload
+):
+    cli = FakeCLI(channel_prompt=CommandResult(408, payload, ""))
+
+    result = configure_openclaw(make_options(tmp_path), cli=cli)
+
+    assert not result.ok
+    assert "dashboard channel prompt request was not accepted" in result.render()
+    assert cli.channel_probe_attempt_calls == []
 
 
 def test_setup_fails_when_native_marker_attempt_is_not_blocked(tmp_path):
@@ -3710,6 +3776,46 @@ def test_absent_diagnostic_cleanup_accepts_verified_absence_after_delete_not_fou
         ["openclaw", "agents", "delete", agent_id, "--force", "--json"],
         ["openclaw", "agents", "delete", agent_id, "--force", "--json"],
     ]
+
+
+def test_absent_diagnostic_cleanup_rechecks_ownership_after_restart(tmp_path):
+    agent_id = "openhouse-setup-probe-a1b2c3d4e5f6"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+    conflicting_workspace = tmp_path / "unrelated-workspace"
+    conflicting_workspace.mkdir()
+
+    class OwnershipCollisionCLI(FakeCLI):
+        def run(self, args, *, mutate=False):
+            if args[1:3] == ["agents", "delete"]:
+                self.calls.append(args)
+                if mutate:
+                    self.mutating_calls.append(args)
+                return CommandResult(1, "", "agent not found")
+            result = super().run(args, mutate=mutate)
+            if args == ["openclaw", "gateway", "restart"]:
+                self.extra_agents[agent_id] = {
+                    "id": agent_id,
+                    "workspace": str(conflicting_workspace),
+                }
+            return result
+
+    cli = OwnershipCollisionCLI()
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli,
+        agent_id,
+        expected_workspace=workspace,
+        diagnostic_ownership=setup_openclaw.DiagnosticAgentOwnership(
+            agent_id, workspace
+        ),
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(False, True, ())
+    assert [
+        call for call in cli.mutating_calls if call[1:3] == ["agents", "delete"]
+    ] == [["openclaw", "agents", "delete", agent_id, "--force", "--json"]]
+    assert cli.extra_agents[agent_id]["workspace"] == str(conflicting_workspace)
 
 
 def test_failed_production_agent_add_does_not_delete_an_absent_predictable_id(

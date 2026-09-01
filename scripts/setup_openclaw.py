@@ -5531,6 +5531,19 @@ def _delete_agent_and_verify(
             False, retry_restart_performed, known_retained_paths
         )
 
+    def retry_ownership_is_safe() -> bool:
+        listed_records, roster, _ = _agent_cleanup_inventory(
+            cli, agent_id, label="agent cleanup post-restart ownership check"
+        )
+        return all(
+            _same_workspace(
+                record.get("workspace") or record.get("workspacePath"),
+                expected_workspace,
+            )
+            for record in [*listed_records, *roster.records]
+            if record["id"] == agent_id
+        )
+
     delete_argv = [
         "openclaw",
         "agents",
@@ -5575,6 +5588,8 @@ def _delete_agent_and_verify(
             retry_restart_performed = True
             if restart.returncode != 0:
                 return incomplete()
+            if not retry_ownership_is_safe():
+                return incomplete()
             retried_absent_delete = cli.run(delete_argv, mutate=True)
             if retried_absent_delete.returncode == 0:
                 retry_report = _parse_agent_deletion_result(
@@ -5612,6 +5627,8 @@ def _delete_agent_and_verify(
         restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
         retry_restart_performed = True
         if restart.returncode != 0:
+            return incomplete()
+        if not retry_ownership_is_safe():
             return incomplete()
         retried = cli.run(delete_argv, mutate=True)
         if retried.returncode != 0:
@@ -6213,18 +6230,16 @@ def _is_upstream_provider_timeout(result: CommandResult) -> bool:
         {"message", "type", "code"},
     ):
         return False
-    code = error.get("code")
-    return (
-        error.get("message") == "upstream provider timeout"
-        and error.get("type") == "api_error"
-        and (
-            code is None
-            or (
-                isinstance(code, str)
-                and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code) is not None
-            )
-        )
-    )
+    if error.get("message") != "upstream provider timeout" or error.get(
+        "type"
+    ) != "api_error":
+        return False
+    if "code" not in error:
+        return True
+    code = error["code"]
+    return isinstance(code, str) and re.fullmatch(
+        r"[A-Za-z0-9_.-]{1,64}", code
+    ) is not None
 
 
 def _verify_channel_marker(
