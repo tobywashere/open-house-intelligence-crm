@@ -276,14 +276,17 @@ JSON report names the structured prerequisite `Setup twice`.
 
 This setup proves the OpenClaw policy. It proves the bundled plugin, its
 channel restrictions, the CRM schemas, and supported diagnostic cleanup. It
-does not prove that your model can use the CRM for ordinary requests.
+does not prove that your model can use the CRM for ordinary requests. The
+channel check is answered by a setup-only plugin hook before the local model is
+called, so a slow or unavailable model cannot make that policy check ambiguous.
 
 A **Compatibility warning** means setup can continue safely, but dashboard CRM
-use must wait for the doctor and acceptance checks. A local model can time out
-after OpenClaw has already accepted the CRM schemas and proved the protected
-channel policy; setup reports that model/provider problem as a warning instead
-of undoing the safe configuration. First run the read-only doctor and confirm
-its audited CRM read passes. Do not run write acceptance until that read passes.
+use must wait for the doctor and acceptance checks. After OpenClaw accepts the
+CRM schemas and the plugin proves the protected channel policy, a separate
+model check can still time out or return plain text. Setup reports that model
+problem as a warning instead of undoing the safe configuration. First run the
+read-only doctor and confirm its audited CRM read passes. Do not run write
+acceptance until that read passes.
 
 ```bash
 python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json

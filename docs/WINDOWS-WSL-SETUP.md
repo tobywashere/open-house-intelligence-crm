@@ -193,12 +193,14 @@ and keep the evidence file and sanitized run logs for the maintainer.
 
 This setup proves the OpenClaw policy. It proves the plugin, channel
 restrictions, CRM schemas, and supported diagnostic cleanup. It does not prove
-that your model can use the CRM for ordinary requests. A **Compatibility
+that your model can use the CRM for ordinary requests. The channel check is
+answered by a setup-only plugin hook before the local model is called, so a
+slow or unavailable model cannot make that check ambiguous. A **Compatibility
 warning** means setup can continue safely, but dashboard CRM use must wait for
-doctor and acceptance. A local-model provider timeout may appear here after the
-schemas and channel policy have already been proven; it is not treated as a
-safe CRM chat result. Do not run write acceptance until the doctor has an
-audited CRM read.
+doctor and acceptance. A separate model check may time out after the schemas
+and channel policy have already been proven; it is not treated as a safe CRM
+chat result. Do not run write acceptance until the doctor has an audited CRM
+read.
 
 Do not delete OpenClaw agent folders manually. If diagnostic cleanup fails,
 keep the report and send it to the maintainer. The installer will retry

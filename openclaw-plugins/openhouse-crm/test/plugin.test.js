@@ -28,6 +28,14 @@ function registerPlugin(executeCrm = async () => ({
 }
 
 
+function recordSetupChannelPrompt(hooks, { agentId, nonce, runId, sessionKey, channel }) {
+  return hooks.get("before_agent_reply").handler(
+    { cleanedBody: `Setup channel probe ${nonce}` },
+    { agentId, runId, sessionKey, channel, trigger: "user" },
+  );
+}
+
+
 function pendingReceipt() {
   return {
     ok: true,
@@ -117,17 +125,110 @@ test("plugin registers the five supported scoped hooks", () => {
   const { hooks } = registerPlugin();
 
   assert.deepEqual([...hooks.keys()], [
-    "before_prompt_build",
+    "before_agent_reply",
     "before_tool_call",
     "after_tool_call",
     "reply_payload_sending",
     "gateway_stop",
   ]);
-  assert.equal(hooks.get("before_prompt_build").options, undefined);
+  assert.deepEqual(hooks.get("before_agent_reply").options, {
+    eligibleTriggers: ["user"],
+  });
   assert.equal(hooks.get("before_tool_call").options, undefined);
   assert.deepEqual(hooks.get("after_tool_call").options, { matcher: ["openhouse_crm"] });
   assert.equal(hooks.get("reply_payload_sending").options, undefined);
   assert.equal(hooks.get("gateway_stop").options, undefined);
+});
+
+
+test("setup channel proof is acknowledged before the model provider runs", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const channel = "openhouse-dashboard";
+  const sessionKey = `agent:${agentId}:dashboard:openhouse-setup-test`;
+  const { hooks, registrations } = registerPlugin(undefined, {
+    agentId: "portable-crm",
+    setupProbe: { agentId, nonce },
+  });
+
+  const beforeAgentReply = hooks.get("before_agent_reply");
+  assert.ok(beforeAgentReply);
+  assert.deepEqual(beforeAgentReply.options, { eligibleTriggers: ["user"] });
+  const reply = await beforeAgentReply.handler(
+    { cleanedBody: `Setup channel probe ${nonce}` },
+    {
+      agentId,
+      runId: "setup-channel-run",
+      sessionKey,
+      channel,
+      trigger: "user",
+    },
+  );
+  assert.deepEqual(reply, {
+    handled: true,
+    reply: { text: "Setup channel marker accepted." },
+    reason: "openhouse_setup_channel_marker",
+  });
+
+  const blocked = hooks.get("before_tool_call").handler(
+    {
+      toolName: "openhouse_setup_marker_probe",
+      params: { action: "attempt", channel, nonce },
+    },
+    { agentId, sessionKey, requester: { channel } },
+  );
+  assert.equal(blocked.block, true);
+  const [factory] = registrations.find(
+    ([, metadata]) => metadata.name === "openhouse_setup_marker_probe",
+  );
+  const status = await factory({}).execute("status", {
+    action: "status",
+    channel,
+    nonce,
+  });
+  assert.equal(status.details.prompt_seen, true);
+  assert.equal(status.details.tool_blocked, true);
+  assert.equal(status.details.sentinel_executed, false);
+});
+
+
+test("setup channel proof never claims ordinary or uncorrelated turns", async () => {
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const agentId = "openhouse-setup-probe-a1b2c3d4";
+  const exactEvent = { cleanedBody: `Setup channel probe ${nonce}` };
+  const exactContext = {
+    agentId,
+    runId: "setup-channel-run",
+    sessionKey: `agent:${agentId}:dashboard:openhouse-setup-test`,
+    channel: "openhouse-dashboard",
+    trigger: "user",
+  };
+  const cases = [
+    ["wrong body", { cleanedBody: "List my CRM leads" }, exactContext],
+    ["wrong agent", exactEvent, { ...exactContext, agentId: "openhouse-crm" }],
+    ["missing run", exactEvent, { ...exactContext, runId: undefined }],
+    ["missing session", exactEvent, { ...exactContext, sessionKey: undefined }],
+    ["wrong channel", exactEvent, { ...exactContext, channel: "discord" }],
+    ["wrong trigger", exactEvent, { ...exactContext, trigger: "heartbeat" }],
+  ];
+
+  for (const [name, event, context] of cases) {
+    const { hooks } = registerPlugin(undefined, {
+      agentId: "portable-crm",
+      setupProbe: { agentId, nonce },
+    });
+    assert.equal(
+      await hooks.get("before_agent_reply").handler(event, context),
+      undefined,
+      name,
+    );
+  }
+
+  const normal = registerPlugin();
+  assert.equal(
+    await normal.hooks.get("before_agent_reply").handler(exactEvent, exactContext),
+    undefined,
+  );
 });
 
 
@@ -388,8 +489,9 @@ for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
       agentId: "portable-crm",
       setupProbe: { agentId, nonce },
     });
-    hooks.get("before_prompt_build").handler({}, {
+    recordSetupChannelPrompt(hooks, {
       agentId,
+      nonce,
       runId: `prompt-${channel}`,
       sessionKey,
       channel,
@@ -477,8 +579,9 @@ test("setup probe fails closed for uncorrelated native attempts", async () => {
     });
     const sessionKey = `agent:${agentId}:dashboard:${scenario.name}`;
     if (!scenario.skipPrompt) {
-      hooks.get("before_prompt_build").handler({}, {
+      recordSetupChannelPrompt(hooks, {
         agentId,
+        nonce,
         runId: `prompt-${scenario.name}`,
         sessionKey,
         channel: "openhouse-dashboard",
@@ -521,8 +624,9 @@ test("setup probe treats expired prompt evidence as failed", async () => {
       agentId: "portable-crm",
       setupProbe: { agentId, nonce },
     });
-    hooks.get("before_prompt_build").handler({}, {
+    recordSetupChannelPrompt(hooks, {
       agentId,
+      nonce,
       runId: "prompt-expired",
       sessionKey,
       channel: "openhouse-dashboard",
@@ -563,8 +667,9 @@ test("setup probe never lets a later exact attempt overwrite invalid evidence", 
     agentId: "portable-crm",
     setupProbe: { agentId, nonce },
   });
-  hooks.get("before_prompt_build").handler({}, {
+  recordSetupChannelPrompt(hooks, {
     agentId,
+    nonce,
     runId: "prompt-invalid-terminal",
     sessionKey,
     channel,
@@ -601,8 +706,9 @@ test("setup sentinel execution remains visible after invalid evidence", async ()
     agentId: "portable-crm",
     setupProbe: { agentId, nonce },
   });
-  hooks.get("before_prompt_build").handler({}, {
+  recordSetupChannelPrompt(hooks, {
     agentId,
+    nonce,
     runId: "prompt-invalid-then-executed",
     sessionKey,
     channel,
@@ -659,8 +765,9 @@ test("setup probe bounds and clears session correlations", async () => {
     setupProbe: { agentId, nonce },
   });
   for (let index = 0; index < 65; index += 1) {
-    registered.hooks.get("before_prompt_build").handler({}, {
+    recordSetupChannelPrompt(registered.hooks, {
       agentId,
+      nonce,
       runId: `bounded-run-${index}`,
       sessionKey: `agent:${agentId}:dashboard:${index}`,
       channel,
@@ -695,8 +802,9 @@ test("setup probe bounds and clears session correlations", async () => {
     setupProbe: { agentId, nonce },
   });
   const sessionKey = `agent:${agentId}:dashboard:cleared`;
-  restarted.hooks.get("before_prompt_build").handler({}, {
+  recordSetupChannelPrompt(restarted.hooks, {
     agentId,
+    nonce,
     runId: "cleared-run",
     sessionKey,
     channel,

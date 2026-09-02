@@ -116,7 +116,7 @@ PLUGIN_ID = "openhouse-crm"
 PLUGIN_TOOL = "openhouse_crm"
 REQUIRED_PLUGIN_HOOKS = (
     "after_tool_call",
-    "before_prompt_build",
+    "before_agent_reply",
     "before_tool_call",
     "gateway_stop",
     "reply_payload_sending",
@@ -5632,6 +5632,18 @@ def _delete_agent_and_verify(
             return incomplete()
         retried = cli.run(delete_argv, mutate=True)
         if retried.returncode != 0:
+            _, _, finally_absent = _agent_cleanup_inventory(
+                cli, agent_id, label="agent cleanup retry verification"
+            )
+            if (
+                finally_absent
+                and not known_retained_paths
+                and diagnostic_ownership is not None
+                and _diagnostic_cleanup_ownership_matches(
+                    diagnostic_ownership, agent_id, expected_workspace
+                )
+            ):
+                return AgentDeletionReport(True, True, ())
             return incomplete()
         retry_report = _parse_agent_deletion_result(
             retried, agent_id, expected_workspace=expected_workspace
@@ -6257,40 +6269,35 @@ def _verify_channel_marker(
         channel=channel,
         session_key=session_key,
     )
-    prompt_timed_out = _is_upstream_provider_timeout(prompt)
-    if prompt.returncode != 200 and not prompt_timed_out:
+    if prompt.returncode != 200:
         raise SetupConflict(
             f"the {label} channel prompt request was not accepted "
             f"({_safe_gateway_error_evidence(prompt)})"
         )
-    # The correlated marker is the policy proof. A mapped provider timeout can
-    # happen after before_prompt_build recorded it, so model text is optional.
-    if not prompt_timed_out:
-        try:
-            prompt_payload = _decode_json(
-                prompt.stdout, f"{label} channel prompt response"
-            )
-            choices = prompt_payload["choices"]
-            choice = (
-                choices[0]
-                if isinstance(choices, list) and len(choices) == 1
-                else None
-            )
-            message = choice["message"] if isinstance(choice, dict) else None
-            prompt_valid = (
-                isinstance(choice, dict)
-                and choice.get("finish_reason") == "stop"
-                and isinstance(message, dict)
-                and isinstance(message.get("content"), str)
-                and bool(message["content"].strip())
-                and not message.get("tool_calls")
-            )
-        except (KeyError, TypeError, SetupConflict):
-            prompt_valid = False
-        if not prompt_valid:
-            raise SetupConflict(
-                f"OpenClaw returned a structurally incompatible {label} channel prompt response"
-            )
+    try:
+        prompt_payload = _decode_json(
+            prompt.stdout, f"{label} channel prompt response"
+        )
+        choices = prompt_payload["choices"]
+        choice = (
+            choices[0]
+            if isinstance(choices, list) and len(choices) == 1
+            else None
+        )
+        message = choice["message"] if isinstance(choice, dict) else None
+        prompt_valid = (
+            isinstance(choice, dict)
+            and choice.get("finish_reason") == "stop"
+            and isinstance(message, dict)
+            and message.get("content") == "Setup channel marker accepted."
+            and not message.get("tool_calls")
+        )
+    except (KeyError, TypeError, SetupConflict):
+        prompt_valid = False
+    if not prompt_valid:
+        raise SetupConflict(
+            f"OpenClaw returned a structurally incompatible {label} channel prompt response"
+        )
     attempt = cli.probe_channel_marker_attempt(
         agent_id=agent_id,
         nonce=nonce,

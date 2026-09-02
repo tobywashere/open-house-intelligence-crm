@@ -83,11 +83,12 @@ For each protected channel, `openhouse-dashboard` and
 - a cryptographically random run nonce;
 - a short expiration time.
 
-Setup sends one ordinary chat request with no client tools and no requirement
-that the model call anything. The plugin's `before_prompt_build` hook records
-that the exact diagnostic agent, session, channel, and nonce reached the
-protected conversation path. The record is bounded by count and time and is
-not exposed to ordinary agents.
+Setup sends one ordinary chat request with no client tools. The plugin's
+`before_agent_reply` hook matches the exact diagnostic body, agent, session,
+channel, user trigger, and nonce, records that the protected conversation path
+was reached, then returns a fixed setup-only reply before the model provider is
+called. The record is bounded by count and time and is not exposed to ordinary
+agents.
 
 If the prompt hook does not run, receives the wrong channel, cannot correlate
 the diagnostic identity, or produces malformed state, setup fails closed.
@@ -112,8 +113,9 @@ surface. A passing result requires `prompt_seen=true`, `tool_blocked=true`,
 and `sentinel_executed=false` for both protected channels.
 
 Any missing field, unknown status, nonce mismatch, execution of the sentinel,
-or inability to read the status is fatal. A successful model reply is never
-accepted as evidence.
+or inability to read the status is fatal. Only the exact setup-hook reply plus
+the correlated status record is accepted as evidence; model output is never
+accepted as policy evidence.
 
 The setup marker remains unavailable to the production CRM agent. Its input
 schema distinguishes the direct `attempt` action from the read-only `status`

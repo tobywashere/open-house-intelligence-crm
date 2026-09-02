@@ -363,7 +363,7 @@ def installed_state(*, agent_id: str = "openhouse-crm", marker: str = "a") -> di
                 "agent_id": agent_id,
                 "hooks": [
                     "after_tool_call",
-                    "before_prompt_build",
+                    "before_agent_reply",
                     "before_tool_call",
                     "gateway_stop",
                     "reply_payload_sending",

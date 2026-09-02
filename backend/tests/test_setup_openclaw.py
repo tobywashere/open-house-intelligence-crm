@@ -478,7 +478,10 @@ class FakeCLI:
                     "choices": [
                         {
                             "finish_reason": "stop",
-                            "message": {"role": "assistant", "content": "observed"},
+                            "message": {
+                                "role": "assistant",
+                                "content": "Setup channel marker accepted.",
+                            },
                         }
                     ]
                 }
@@ -762,7 +765,7 @@ class FakeCLI:
                         "toolNames": ["openhouse_crm"],
                         "hookNames": [
                             "after_tool_call",
-                            "before_prompt_build",
+                            "before_agent_reply",
                             "before_tool_call",
                             "gateway_stop",
                             "reply_payload_sending",
@@ -770,7 +773,7 @@ class FakeCLI:
                     },
                     "typedHooks": [
                         {"name": "after_tool_call"},
-                        {"name": "before_prompt_build"},
+                        {"name": "before_agent_reply"},
                         {"name": "before_tool_call"},
                         {"name": "gateway_stop"},
                         {"name": "reply_payload_sending"},
@@ -3380,34 +3383,16 @@ def test_setup_fails_when_channel_prompt_is_unproven(tmp_path, prompt_result, me
     ("status", "code"),
     [(408, None), (504, None), (408, "ETIMEDOUT")],
 )
-def test_setup_uses_marker_status_after_channel_provider_timeout(
+def test_channel_provider_timeout_does_not_count_as_pre_model_channel_proof(
     tmp_path, status, code
 ):
     cli = FakeCLI(channel_prompt=upstream_provider_timeout(status, code))
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
-    assert result.ok, result.render()
-    assert cli.channel_verification_calls == [
-        ("prompt", "openhouse-dashboard"),
-        ("attempt", "openhouse-dashboard"),
-        ("status", "openhouse-dashboard"),
-        ("prompt", "openhouse-analysis"),
-        ("attempt", "openhouse-analysis"),
-        ("status", "openhouse-analysis"),
-    ]
-
-
-def test_channel_provider_timeout_still_requires_correlated_prompt_marker(tmp_path):
-    cli = FakeCLI(
-        channel_prompt=upstream_provider_timeout(),
-        channel_probe_statuses={"openhouse-dashboard": {"prompt_seen": False}},
-    )
-
-    result = configure_openclaw(make_options(tmp_path), cli=cli)
-
     assert not result.ok
-    assert "dashboard prompt was not observed" in result.render()
+    assert "dashboard channel prompt request was not accepted" in result.render()
+    assert cli.channel_probe_attempt_calls == []
 
 
 @pytest.mark.parametrize("payload", MALFORMED_PROVIDER_TIMEOUT_PAYLOADS)
@@ -3967,6 +3952,81 @@ def test_diagnostic_agent_cleanup_retries_supported_deletion_journal_once(
         if index > deletes[1] and call == ["openclaw", "agents", "list", "--json"]
     )
     assert deletes[0] < retry_restart_index < deletes[1] < final_inventory_index
+
+
+def test_diagnostic_agent_cleanup_accepts_absence_after_purge_warning_and_retry_not_found(
+    tmp_path,
+):
+    agent_id = "openhouse-setup-probe-a1b2c3d4e5f6"
+    workspace = tmp_path / "diagnostic-workspace"
+    workspace.mkdir()
+
+    class PurgeWarningThenAbsentCLI(FakeCLI):
+        delete_attempts = 0
+
+        def run(self, args, *, mutate=False):
+            if args[1:3] != ["agents", "delete"]:
+                return super().run(args, mutate=mutate)
+            self.delete_attempts += 1
+            if self.delete_attempts == 1:
+                super().run(args, mutate=mutate)
+                return agent_deletion_envelope(
+                    agent_id, workspace, purgeFailed=True
+                )
+            self.calls.append(args)
+            if mutate:
+                self.mutating_calls.append(args)
+            return CommandResult(1, "", "agent not found")
+
+    cli = PurgeWarningThenAbsentCLI()
+    cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli,
+        agent_id,
+        expected_workspace=workspace,
+        diagnostic_ownership=setup_openclaw.DiagnosticAgentOwnership(
+            agent_id, workspace
+        ),
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(True, True, ())
+    assert cli.gateway_restart_count == 1
+    assert cli.delete_attempts == 2
+
+
+def test_production_agent_cleanup_does_not_ignore_a_purge_warning(tmp_path):
+    agent_id = "openhouse-crm"
+    workspace = tmp_path / "crm-workspace"
+    workspace.mkdir()
+
+    class PurgeWarningThenAbsentCLI(FakeCLI):
+        delete_attempts = 0
+
+        def run(self, args, *, mutate=False):
+            if args[1:3] != ["agents", "delete"]:
+                return super().run(args, mutate=mutate)
+            self.delete_attempts += 1
+            if self.delete_attempts == 1:
+                super().run(args, mutate=mutate)
+                return agent_deletion_envelope(
+                    agent_id, workspace, purgeFailed=True
+                )
+            self.calls.append(args)
+            if mutate:
+                self.mutating_calls.append(args)
+            return CommandResult(1, "", "agent not found")
+
+    cli = PurgeWarningThenAbsentCLI(primary_agent_id=agent_id)
+    cli.created_agent = {"id": agent_id, "workspace": str(workspace)}
+
+    report = setup_openclaw._delete_agent_and_verify(
+        cli, agent_id, expected_workspace=workspace
+    )
+
+    assert report == setup_openclaw.AgentDeletionReport(False, True, ())
+    assert cli.gateway_restart_count == 1
+    assert cli.delete_attempts == 2
 
 
 @pytest.mark.parametrize("malformed_phase", ["retry", "final-inventory"])

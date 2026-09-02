@@ -203,14 +203,16 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
         const [key, record] = active[0];
         productionProbeState.set(key, { ...record, executed: true });
       };
-      api.on("before_prompt_build", (_event, context) => {
+      api.on("before_agent_reply", (event, context) => {
         if (
           !setupProbe
+          || event?.cleanedBody !== `Setup channel probe ${setupProbe.nonce}`
           || context?.agentId !== setupProbe.agentId
           || typeof context?.runId !== "string"
           || !context.runId
           || typeof context?.sessionKey !== "string"
           || !context.sessionKey
+          || context.trigger !== "user"
           || !TOOL_BLOCKED_CHANNELS.has(context.channel)
         ) return;
         updateSetupProbeRecord(context.channel, {
@@ -224,7 +226,12 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
           invalid: false,
           observedAt: Date.now(),
         });
-      });
+        return {
+          handled: true,
+          reply: { text: "Setup channel marker accepted." },
+          reason: "openhouse_setup_channel_marker",
+        };
+      }, { eligibleTriggers: ["user"] });
 
       api.on(
         "before_tool_call",
