@@ -7,21 +7,28 @@ metadata: {"openclaw":{"primaryEnv":"OHI_API_TOKEN"}}
 # Open House CRM — lead database skill
 
 You are Annie's local real-estate CRM assistant, running through a dedicated
-OpenClaw agent. This skill is your only way to read or write the client-lead
-database. It exists so the model never touches SQL directly and every action
-is auditable.
+OpenClaw agent. This skill explains how to use the `openhouse_crm` tool to read
+or propose changes to the client-lead database. It exists so the model never
+touches SQL directly and every action is auditable.
 
-The dedicated agent intentionally has only `exec`, with gateway execution
-restricted to this skill's wrapper and the deterministic daily-brief runner.
-It has no general web, network, browser, or filesystem tools. Do not try to
-work around that boundary; use the named CRM operations below.
+`crm-db-operations` is this skill's name. It is not a callable tool ID. The
+callable tool is `openhouse_crm`, with input shaped like
+`{"operation":"list_lead_directory","arguments":{"sort":"priority","limit":25}}`. OpenClaw may
+show that tool directly or place it behind the compact `tool_search` and
+`tool_call` controls. When it is direct, call `openhouse_crm`. When only the
+compact controls are visible, use `tool_search` to resolve the exact
+`openhouse_crm` entry, then pass the returned ID and the same input to
+`tool_call`. Never search for or call the `crm-db-operations` skill name, and
+never use `exec` for a CRM operation. The dedicated agent retains `exec` only
+for the deterministic daily brief runner. It has no general web, network,
+browser, or filesystem tools.
 
 ## Rules
 
 1. Use only the tools below for CRM facts and writes — never invent a lead,
    ID, contact field, note, appointment, or score.
 2. Every write must resolve a real `lead_id` first. If a name could match more
-   than one lead, call `find_duplicate_leads` (or `list_leads`) and ask the
+   than one lead, call `find_duplicate_leads` (or `list_lead_directory`) and ask the
    user to disambiguate rather than guessing.
 3. Preserve the user's exact factual content when creating or updating a lead
    — do not embellish or invent details that weren't said.
@@ -43,13 +50,18 @@ work around that boundary; use the named CRM operations below.
    the user clearly says the opportunity was **won** or **lost**. If they only
    say "close it," ask which outcome applies; never guess. Do not set
    `status="closed"` through `update_lead`.
-9. `create_lead`, `update_lead`, `add_note`, `book_appointment`,
+9. Every tool call returns a structured receipt. An `{"ok":false,...}` receipt
+   means the operation failed and **nothing was queued or changed**. Do not
+   describe it as submitted, pending, saved, booked, or complete. An
+   `{"ok":true,"kind":"proposal",...}` receipt means a real pending proposal
+   exists, but human review is still required and the change has not been
+   applied. `create_lead`, `update_lead`, `add_note`, `book_appointment`,
    `schedule_followup`, `close_lead`, `delete_lead`, and `merge_leads`
    are **queued for operator approval**, not applied immediately — the
    backend records your proposed change and a human approves or denies it
-   from the dashboard. A successful call to one of these returns
-   `{"pending": true, "id", "operation", "summary", "status": "pending"}`
-   instead of the usual lead/result shape. **Do not treat a `pending` response
+   from the dashboard. Their successful receipt contains
+   `{"ok":true,"operation":"...","kind":"proposal","result":{"pending":true,"id":4,"operation":"...","summary":"...","status":"pending"}}`.
+   **Do not treat a `pending` response
    as if the write happened** — tell the user their request was submitted and
    is awaiting the operator's review (e.g. "I've queued that lead for your
    approval"), not that it's done. There's nothing to retry or poll for; the
@@ -62,12 +74,18 @@ work around that boundary; use the named CRM operations below.
 
 ## Setup
 
-These tools are a thin HTTP client (`tools.py`, stdlib only, no pip install
-needed) over the backend REST API. The backend (FastAPI + SQLite) must be
-running and reachable on the same local machine.
+The native `openhouse_crm` tool validates the operation, then uses the shipped
+thin HTTP client (`tools.py`, stdlib only, no pip install needed) over the
+backend REST API. The backend (FastAPI + SQLite) must be running and reachable
+on the same local machine.
 
-```bash
-{baseDir}/cli.py list_leads --args '{"sort":"priority"}'
+For ordinary lead lists, counts, prioritization, or light filtering, prefer the
+compact `list_lead_directory` operation. It returns the exact total before
+pagination and only the summary fields needed for a directory answer. Use
+`list_leads` only when compatibility or its fuller record shape is required.
+
+```json
+{"operation":"list_lead_directory","arguments":{"sort":"priority","offset":0,"limit":25}}
 ```
 
 `CRM_API_URL` is supplied by the OpenClaw skill configuration. Do not export it
@@ -80,8 +98,31 @@ this skill's environment too — `tools.py` reads it and sends it as the
 `X-API-Token` header on every call. Without it, every call 401s once the
 backend's guard is on.
 
-```bash
-{baseDir}/cli.py create_lead --args '{"raw_text":"Met at open house, Bellevue, $1.1M budget","source":"form"}'
+```json
+{"operation":"create_lead","arguments":{"raw_text":"Met at open house, Bellevue, $1.1M budget","source":"form"}}
+```
+
+Canonical reviewed-write and scheduling examples (all argument names come from
+the strict contract):
+
+```json
+{"operation":"update_lead","arguments":{"lead_id":12,"area":"Bellevue"}}
+```
+
+```json
+{"operation":"add_note","arguments":{"lead_id":12,"content":"Asked for eastside school information."}}
+```
+
+```json
+{"operation":"check_availability","arguments":{"date":"2026-08-25"}}
+```
+
+```json
+{"operation":"book_appointment","arguments":{"lead_id":12,"start_ts":"2026-08-25T14:00:00-04:00","end_ts":"2026-08-25T14:30:00-04:00","location":"Bellevue office"}}
+```
+
+```json
+{"operation":"schedule_followup","arguments":{"lead_id":12,"due_ts":"2026-08-28T09:00:00-04:00","note":"Send the requested school information."}}
 ```
 
 The wrapper catches CRM API failures and exits `2` with a JSON error on stderr.
@@ -100,6 +141,7 @@ Never expose a raw stack trace in chat.
 | `merge_leads` | `(primary_id, duplicate_id)` | pending proposal | User confirms two profiles are the same person. Primary's blanks get filled from the duplicate; primary wins conflicts; duplicate is deleted. |
 | `get_lead_context` | `(lead_id)` | lead + `events[]` + `appointments[]` | Before answering "what do we know about X", before drafting a message, before deciding next action. |
 | `list_leads` | `(sort="priority", status=None, neglected=None)` | `[lead]` | "Who should I follow up with", "show me Bellevue buyers" (filter client-side on the returned fields), inbox-style questions. |
+| `list_lead_directory` | `(sort="priority", status=None, neglected=None, offset=0, limit=25)` | `{total, offset, limit, leads[]}` | Ordinary lead lists, exact counts, prioritization, or compact filtering. Prefer this over `list_leads` unless full records are required. |
 | `score_lead` | `(lead_id)` | `{lead_id, score, score_reason}` | After enough new info lands on a lead to re-score it (new note, new field). Deterministic formula server-side; only the reason is written by you upstream (already filled in by the backend's driver). |
 | `draft_followup` | `(lead_id)` | draft message text | User asks you to reach out to someone, or after scoring a hot lead. |
 | `check_availability` | `(date: "YYYY-MM-DD")` | `[{start_ts, end_ts}]` free slots | Before booking anything — always check first. |

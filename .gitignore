@@ -21,6 +21,11 @@ dashboard/dist/
 .DS_Store
 dashboard/tsconfig.tsbuildinfo
 
+# generated local hardware acceptance evidence
+openhouse-setup-evidence.json
+openhouse-setup-run-*.log
+openhouse-acceptance.json
+
 # internal scratch — review transcripts, agent conversations, planning notes;
 # never meant to ship in the public repo
 .superpowers/

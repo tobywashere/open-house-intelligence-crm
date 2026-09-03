@@ -178,18 +178,33 @@ def list_leads(sort: str = "priority", status: str | None = None,
                                               "neglected": neglected})
 
 
+def list_lead_directory(sort: str = "priority", status: str | None = None,
+                        neglected: int | None = None, offset: int = 0,
+                        limit: int = 25) -> dict:
+    """Return one compact, paginated lead directory page for model use."""
+    rows = list_leads(sort=sort, status=status, neglected=neglected)
+    keys = ("id", "name", "status", "score", "area", "timeline", "intent",
+            "is_neglected", "last_activity_at")
+    page = [{key: row[key] for key in keys if key in row}
+            for row in rows[offset:offset + limit]]
+    return {"total": len(rows), "offset": offset, "limit": limit, "leads": page}
+
+
 # --------------------------------------------------------------------------
 # Scoring & follow-up
 # --------------------------------------------------------------------------
 
 def _process_lead(lead_id: int) -> dict:
-    return _request("POST", f"/leads/{lead_id}/process")
+    return _request(
+        "POST",
+        f"/leads/{lead_id}/process",
+        params={"propose_changes": False},
+    )
 
 
 def score_lead(lead_id: int) -> dict:
-    """Run the deterministic scoring formula for a lead and return the proposed
-    score + score_reason. The backend queues those fields for operator approval
-    rather than persisting them immediately. Returns
+    """Run the deterministic scoring formula for a lead and return the
+    narrative score + score_reason without persisting or proposing changes. Returns
     {"lead_id", "score", "score_reason"}.
     Note: this call and draft_followup share one backend round trip
     (POST /leads/{id}/process) — calling either re-runs both.
@@ -203,7 +218,7 @@ def draft_followup(lead_id: int) -> str:
     """Generate a personalized follow-up message for a lead, grounded in their
     stored context (budget, area, timeline, intent, activity). Any score or
     extracted CRM-field candidates produced by the shared processing pass are
-    queued for operator approval, not persisted by this draft request.
+    used only for this narrative response and are neither proposed nor persisted.
     """
     return _process_lead(lead_id)["followup_draft"]
 

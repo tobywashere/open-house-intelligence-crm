@@ -45,7 +45,7 @@ class AgentDriver(ABC):
         self,
         session_id: str,
         probe_nonce: str,
-    ) -> None:
+    ) -> dict:
         raise RuntimeError("CRM capability is unavailable for this driver")
 
 

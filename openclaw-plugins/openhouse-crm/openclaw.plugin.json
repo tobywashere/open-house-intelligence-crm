@@ -1,0 +1,50 @@
+{
+  "id": "openhouse-crm",
+  "name": "Open House CRM",
+  "description": "Adds one audited CRM tool with human-reviewed writes.",
+  "contracts": {
+    "tools": [
+      "openhouse_crm",
+      "openhouse_setup_marker_probe"
+    ]
+  },
+  "toolMetadata": {
+    "openhouse_setup_marker_probe": {
+      "optional": true
+    }
+  },
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": [
+      "hook"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      },
+      "setupProbe": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agentId",
+          "nonce"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "nonce": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          }
+        }
+      }
+    }
+  }
+}

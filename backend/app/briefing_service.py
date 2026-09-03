@@ -7,6 +7,7 @@ schedule or factual lead fields rendered by the dashboard.
 import json
 from datetime import datetime
 
+from .briefing_contract import require_briefing_response
 from .report_models import BriefingPost, MeetingAdvice
 
 
@@ -134,7 +135,7 @@ def build_briefing(conn, date_key: str, advice: BriefingPost | None) -> dict:
         if count == 0
         else f"Good morning — {count} appointment{'s' if count != 1 else ''} scheduled today."
     )
-    return {
+    response = {
         "date": date_key,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source": "crm",
@@ -146,3 +147,4 @@ def build_briefing(conn, date_key: str, advice: BriefingPost | None) -> dict:
         ],
         "suggested_actions": _deterministic_actions(conn, date_key),
     }
+    return require_briefing_response(response, date_key)
