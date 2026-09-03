@@ -202,7 +202,10 @@ and channel policy have already been proven; it is not treated as a safe CRM
 chat result. Do not run write acceptance until the doctor has an audited CRM
 read. The prompt and blocked-tool checks return separate correlated receipts,
 so this proof does not depend on temporary plugin memory surviving across two
-OpenClaw requests.
+OpenClaw requests. OpenClaw omits message-requester identity from direct tool
+invocations, so the temporary sentinel verifies the exact setup agent, session,
+nonce, and channel argument. The separate prompt check proves the actual
+dashboard or analysis channel, and the sentinel is removed after setup.
 
 Do not delete OpenClaw agent folders manually. If diagnostic cleanup fails,
 keep the report and send it to the maintainer. The installer will retry

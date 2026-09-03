@@ -194,7 +194,10 @@ export function createPluginDefinition(executeCrm = runCrmTool) {
               validSetupProbeParams(params, setupProbe.nonce)
               && context?.agentId === setupProbe.agentId
               && context?.sessionKey === params.session_key
-              && context?.requester?.channel === params.channel
+              && (
+                context?.requester === undefined
+                || context.requester?.channel === params.channel
+              )
             );
             return {
               block: true,

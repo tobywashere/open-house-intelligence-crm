@@ -490,7 +490,7 @@ for (const channel of ["openhouse-dashboard", "openhouse-analysis"]) {
 }
 
 
-test("setup channel proof survives separate OpenClaw runtime instances", async () => {
+test("setup channel proof survives separate runtime instances and direct invoke context", async () => {
   const nonce = "0123456789abcdef0123456789abcdef";
   const agentId = "openhouse-setup-probe-a1b2c3d4";
   const channel = "openhouse-dashboard";
@@ -517,15 +517,16 @@ test("setup channel proof survives separate OpenClaw runtime instances", async (
   });
 
   // OpenClaw may serve the direct tool request through another plugin/runtime
-  // instance. Verification must not depend on an in-memory record from the
-  // earlier chat request.
+  // instance, and /tools/invoke intentionally supplies no message requester.
+  // Verification must not depend on an in-memory record from the earlier chat
+  // request.
   const toolRuntime = registerPlugin(undefined, pluginConfig);
   const blocked = toolRuntime.hooks.get("before_tool_call").handler(
     {
       toolName: "openhouse_setup_marker_probe",
       params: { action: "attempt", channel, nonce, session_key: sessionKey },
     },
-    { agentId, sessionKey, requester: { channel } },
+    { agentId, sessionKey },
   );
   assert.deepEqual(blocked, {
     block: true,
@@ -567,9 +568,9 @@ test("setup probe fails closed for uncorrelated native attempts", () => {
       }),
     },
     {
-      name: "missing requester",
+      name: "requester without a proven channel",
       channel: "openhouse-dashboard",
-      context: (sessionKey) => ({ agentId, sessionKey }),
+      context: (sessionKey) => ({ agentId, sessionKey, requester: {} }),
     },
   ];
 

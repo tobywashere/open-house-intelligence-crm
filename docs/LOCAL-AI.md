@@ -281,6 +281,10 @@ channel check is answered by a setup-only plugin hook before the local model is
 called, so a slow or unavailable model cannot make that policy check ambiguous.
 The prompt and blocked-tool checks return their own correlated receipts; setup
 does not depend on temporary plugin memory carrying across separate requests.
+OpenClaw's direct tool endpoint does not attach message-requester identity, so
+the temporary sentinel instead verifies its exact setup agent, session, nonce,
+and channel argument. The separate prompt receipt proves the host-derived
+dashboard or analysis channel. The sentinel is unavailable after setup.
 
 A **Compatibility warning** means setup can continue safely, but dashboard CRM
 use must wait for the doctor and acceptance checks. After OpenClaw accepts the

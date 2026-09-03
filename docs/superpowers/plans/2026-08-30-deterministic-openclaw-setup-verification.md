@@ -10,6 +10,10 @@
 > Chat Completions and `/tools/invoke` can use separate plugin runtime instances.
 > The completed implementation therefore uses independently correlated prompt
 > and block receipts and no longer stores or reads setup status across requests.
+> OpenClaw's direct tool route intentionally omits message-requester identity,
+> so the temporary sentinel correlates its configured agent, session, nonce,
+> and channel argument while the separate prompt receipt proves the
+> host-derived channel.
 > Sections 5.1 and 5.2 of the matching design document are authoritative.
 
 **Tech Stack:** Python 3 standard library, pytest, OpenClaw CLI and loopback Gateway APIs, Node.js ES modules, `node:test`, JSON schema, Markdown.

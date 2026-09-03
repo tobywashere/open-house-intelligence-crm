@@ -99,11 +99,16 @@ native sentinel through OpenClaw's policy-controlled `/tools/invoke` API. The
 invocation carries the same diagnostic agent, session, protected channel, and
 nonce. This is not a model-selected client tool.
 
-The plugin's `before_tool_call` hook verifies the exact agent, session, channel,
-and nonce supplied by that direct invocation, then returns a uniquely correlated
-block receipt. Setup accepts only HTTP 403 plus that exact receipt. If the hook
-does not block, the harmless sentinel handler returns an execution receipt and
-setup rejects the non-403 response.
+OpenClaw's direct tool endpoint supplies the exact agent and session to the
+plugin hook but, by design, does not supply message-requester identity. The
+plugin therefore verifies the exact setup agent and session plus the configured
+nonce and channel argument, then returns a uniquely correlated block receipt.
+The separate prompt receipt proves the host-derived protected channel for the
+same session, nonce, and channel. Message-originated calls remain fail-closed
+unless their host-derived requester channel matches the argument. Setup accepts
+only HTTP 403 plus the exact block receipt. If the hook does not block, the
+harmless sentinel handler returns an execution receipt and setup rejects the
+non-403 response.
 
 Prompt interception and native-tool blocking are therefore independently
 verified from their direct responses. They do not depend on in-memory state
