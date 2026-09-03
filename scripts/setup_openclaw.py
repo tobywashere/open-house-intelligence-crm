@@ -534,7 +534,12 @@ class OpenClawCLI:
             return CommandResult(503, "", str(exc))
         payload = {
             "tool": SETUP_MARKER_TOOL,
-            "args": {"action": "attempt", "channel": channel, "nonce": nonce},
+            "args": {
+                "action": "attempt",
+                "channel": channel,
+                "nonce": nonce,
+                "session_key": session_key,
+            },
             "agentId": agent_id,
             "sessionKey": session_key,
             "idempotencyKey": f"setup-marker-attempt:{nonce}:{channel}",
@@ -585,30 +590,6 @@ class OpenClawCLI:
             payload,
             channel=INTERNAL_ANALYSIS_CHANNEL,
             session_key=session_key,
-        )
-
-    def probe_channel_status(
-        self,
-        *,
-        agent_id: str,
-        nonce: str,
-        channel: str,
-        session_key: str | None = None,
-    ) -> CommandResult:
-        try:
-            _loopback_gateway_base_url()
-        except SetupConflict as exc:
-            return CommandResult(503, "", str(exc))
-        payload = {
-            "tool": SETUP_MARKER_TOOL,
-            "args": {"action": "status", "channel": channel, "nonce": nonce},
-            "agentId": agent_id,
-            "sessionKey": session_key
-            or f"marker-status:setup-capability:{nonce}:{channel}",
-            "idempotencyKey": f"setup-marker-status:{nonce}:{channel}",
-        }
-        return self._post_gateway_json(
-            "/tools/invoke", payload, channel=SETUP_CAPABILITY_CHANNEL
         )
 
     def probe_configured_agent_guard(
@@ -6167,49 +6148,6 @@ def _verify_analysis_completion(result: CommandResult) -> None:
         )
 
 
-def _channel_probe_details(payload: Any) -> dict[str, Any] | None:
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"ok", "result"}
-        or payload.get("ok") is not True
-    ):
-        return None
-    result = payload.get("result")
-    if (
-        not isinstance(result, dict)
-        or set(result) != {"content", "details"}
-        or not isinstance(result.get("details"), dict)
-    ):
-        return None
-    content = result.get("content")
-    if (
-        not isinstance(content, list)
-        or len(content) != 1
-        or not isinstance(content[0], dict)
-        or set(content[0]) != {"type", "text"}
-        or content[0].get("type") != "text"
-        or not isinstance(content[0].get("text"), str)
-    ):
-        return None
-    try:
-        mirrored = _decode_json(
-            content[0]["text"], "mirrored channel marker status"
-        )
-    except SetupConflict:
-        return None
-    details = result["details"]
-    if mirrored != details or set(details) != {
-        "schema_version",
-        "channel",
-        "nonce",
-        "prompt_seen",
-        "tool_blocked",
-        "sentinel_executed",
-    }:
-        return None
-    return details
-
-
 def _safe_gateway_error_evidence(result: CommandResult) -> str:
     evidence = f"HTTP {result.returncode}"
     try:
@@ -6263,6 +6201,12 @@ def _verify_channel_marker(
     session_key: str | None = None,
 ) -> None:
     label = "dashboard" if channel == DASHBOARD_CHANNEL else "internal-analysis"
+    if not isinstance(session_key, str) or not session_key:
+        raise SetupConflict(f"the {label} setup session key was unavailable")
+    expected_prompt_receipt = (
+        f"OpenHouse setup channel {channel} nonce {nonce} "
+        f"session {session_key} verified."
+    )
     prompt = cli.probe_channel_prompt(
         agent_id=agent_id,
         nonce=nonce,
@@ -6289,7 +6233,7 @@ def _verify_channel_marker(
             isinstance(choice, dict)
             and choice.get("finish_reason") == "stop"
             and isinstance(message, dict)
-            and message.get("content") == "Setup channel marker accepted."
+            and message.get("content") == expected_prompt_receipt
             and not message.get("tool_calls")
         )
     except (KeyError, TypeError, SetupConflict):
@@ -6304,49 +6248,16 @@ def _verify_channel_marker(
         channel=channel,
         session_key=session_key,
     )
-    if attempt.returncode != 403:
+    expected_block_receipt = (
+        f"OpenHouse setup sentinel {channel} nonce {nonce} "
+        f"session {session_key} is blocked."
+    )
+    attempt_evidence = f"{attempt.stdout}\n{attempt.stderr}"
+    if attempt.returncode != 403 or expected_block_receipt not in attempt_evidence:
         raise SetupConflict(
             f"the {label} setup sentinel attempt was not blocked "
             f"({_safe_gateway_error_evidence(attempt)})"
         )
-    result = cli.probe_channel_status(
-        agent_id=agent_id,
-        nonce=nonce,
-        channel=channel,
-        session_key=session_key,
-    )
-    if result.returncode != 200:
-        raise SetupConflict(
-            f"the {label} channel marker proof status could not be read "
-            f"({_safe_gateway_error_evidence(result)})"
-        )
-    try:
-        payload = _decode_json(result.stdout, f"{label} channel marker status")
-    except SetupConflict as exc:
-        raise SetupConflict(
-            f"the {label} channel marker proof returned an incompatible status"
-        ) from exc
-    details = _channel_probe_details(payload)
-    if details is None:
-        raise SetupConflict(
-            f"the {label} channel marker proof returned an incompatible status"
-        )
-    if details["schema_version"] != 2:
-        raise SetupConflict(
-            f"the {label} channel marker schema version was incompatible"
-        )
-    if details["channel"] != channel:
-        raise SetupConflict(
-            f"the {label} channel marker channel was not correlated"
-        )
-    if details["nonce"] != nonce:
-        raise SetupConflict(f"the {label} channel marker nonce was not correlated")
-    if details["prompt_seen"] is not True:
-        raise SetupConflict(f"the {label} prompt was not observed")
-    if details["tool_blocked"] is not True:
-        raise SetupConflict(f"the {label} setup sentinel was not blocked")
-    if details["sentinel_executed"] is not False:
-        raise SetupConflict(f"the {label} setup sentinel executed")
 
 
 def _verify_setup_probe_behavior(

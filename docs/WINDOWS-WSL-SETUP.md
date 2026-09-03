@@ -200,7 +200,9 @@ warning** means setup can continue safely, but dashboard CRM use must wait for
 doctor and acceptance. A separate model check may time out after the schemas
 and channel policy have already been proven; it is not treated as a safe CRM
 chat result. Do not run write acceptance until the doctor has an audited CRM
-read.
+read. The prompt and blocked-tool checks return separate correlated receipts,
+so this proof does not depend on temporary plugin memory surviving across two
+OpenClaw requests.
 
 Do not delete OpenClaw agent folders manually. If diagnostic cleanup fails,
 keep the report and send it to the maintainer. The installer will retry

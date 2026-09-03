@@ -250,7 +250,6 @@ class FakeCLI:
         analysis_tool_probe=None,
         channel_prompt=None,
         channel_probe_attempt=None,
-        channel_probe_statuses=None,
         production_channel_guard_probe=None,
         effective_tools=None,
         primary_agent_id="openhouse-crm",
@@ -271,7 +270,6 @@ class FakeCLI:
         self.analysis_tool_probe = analysis_tool_probe
         self.channel_prompt = channel_prompt
         self.channel_probe_attempt = channel_probe_attempt
-        self.channel_probe_statuses = dict(channel_probe_statuses or {})
         self.production_channel_guard_probe = production_channel_guard_probe
         self.primary_agent_id = primary_agent_id
         self.effective_tools = effective_tools
@@ -280,7 +278,6 @@ class FakeCLI:
         self.analysis_tool_probe_calls = []
         self.channel_prompt_calls = []
         self.channel_probe_attempt_calls = []
-        self.channel_probe_status_calls = []
         self.channel_verification_calls = []
         self.production_channel_guard_probe_calls = []
         self.gateway_restart_count = 0
@@ -455,7 +452,14 @@ class FakeCLI:
         )
         if self.channel_probe_attempt is not None:
             return self.channel_probe_attempt
-        return CommandResult(403, "", "Setup sentinel blocked by channel policy")
+        return CommandResult(
+            403,
+            "",
+            (
+                f"OpenHouse setup sentinel {channel} nonce {nonce} "
+                f"session {session_key} is blocked."
+            ),
+        )
 
     def probe_channel_prompt(
         self, *, agent_id, nonce, channel, session_key=None
@@ -480,7 +484,10 @@ class FakeCLI:
                             "finish_reason": "stop",
                             "message": {
                                 "role": "assistant",
-                                "content": "Setup channel marker accepted.",
+                                "content": (
+                                    f"OpenHouse setup channel {channel} nonce {nonce} "
+                                    f"session {session_key} verified."
+                                ),
                             },
                         }
                     ]
@@ -488,29 +495,6 @@ class FakeCLI:
             ),
             "",
         )
-
-    def probe_channel_status(
-        self, *, agent_id, nonce, channel, session_key=None
-    ):
-        self.channel_verification_calls.append(("status", channel))
-        self.channel_probe_status_calls.append(
-            {
-                "agent_id": agent_id,
-                "nonce": nonce,
-                "channel": channel,
-                "session_key": session_key,
-            }
-        )
-        details = {
-            "schema_version": 2,
-            "channel": channel,
-            "nonce": nonce,
-            "prompt_seen": True,
-            "tool_blocked": True,
-            "sentinel_executed": False,
-        }
-        details.update(self.channel_probe_statuses.get(channel, {}))
-        return CommandResult(200, json.dumps(native_tool_envelope(details)), "")
 
     def probe_configured_agent_guard(
         self, *, agent_id, nonce, session_key=None
@@ -2680,7 +2664,7 @@ def test_runtime_without_authoritative_hook_inventory_uses_bounded_chat_path_pro
     assert len(cli.client_tool_probe_calls) == 1
     assert len(cli.analysis_tool_probe_calls) == 1
     assert cli.analysis_tool_probe_calls[-1]["production"] is True
-    assert [call["channel"] for call in cli.channel_probe_status_calls] == [
+    assert [call["channel"] for call in cli.channel_probe_attempt_calls] == [
         "openhouse-dashboard",
         "openhouse-analysis",
     ]
@@ -2778,12 +2762,65 @@ def test_production_probe_prompt_uses_exact_canonical_harmless_read():
 
 def test_setup_channel_marker_accepts_the_canonical_native_tool_envelope():
     cli = FakeCLI()
+    session_key = "agent:openhouse-crm:dashboard:setup"
 
     setup_openclaw._verify_channel_marker(
         cli,
         "openhouse-crm",
         "a" * 32,
         "openhouse-dashboard",
+        session_key=session_key,
+    )
+
+
+def test_setup_channel_marker_does_not_depend_on_cross_request_plugin_state():
+    nonce = "a" * 32
+    agent_id = "openhouse-setup-probe-a1b2c3d4e5f6"
+    channel = "openhouse-dashboard"
+    session_key = f"agent:{agent_id}:dashboard:isolated"
+
+    class SeparateRuntimeCLI(FakeCLI):
+        def probe_channel_status(self, **_kwargs):
+            raise AssertionError("stateless channel proof must not read runtime memory")
+
+        def probe_channel_prompt(self, **_kwargs):
+            return CommandResult(
+                200,
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": (
+                                        f"OpenHouse setup channel {channel} nonce {nonce} "
+                                        f"session {session_key} verified."
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+
+        def probe_channel_marker_attempt(self, **_kwargs):
+            return CommandResult(
+                403,
+                "",
+                (
+                    f"OpenHouse setup sentinel {channel} nonce {nonce} "
+                    f"session {session_key} is blocked."
+                ),
+            )
+
+    setup_openclaw._verify_channel_marker(
+        SeparateRuntimeCLI(),
+        agent_id,
+        nonce,
+        channel,
+        session_key=session_key,
     )
 
 
@@ -2862,6 +2899,7 @@ def test_channel_marker_attempt_uses_native_tool_invoke_payload(monkeypatch):
                 "action": "attempt",
                 "channel": "openhouse-analysis",
                 "nonce": "b" * 32,
+                "session_key": "agent:diagnostic-agent:dashboard:isolated",
             },
             "agentId": "diagnostic-agent",
             "sessionKey": "agent:diagnostic-agent:dashboard:isolated",
@@ -2874,109 +2912,21 @@ def test_channel_marker_attempt_uses_native_tool_invoke_payload(monkeypatch):
     }
 
 
-@pytest.mark.parametrize(
-    "payload_factory",
-    [
-        lambda receipt: {"details": receipt},
-        lambda receipt: {"ok": True, "result": receipt},
-        lambda receipt: {"ok": True, "result": {"details": receipt}},
-        lambda receipt: {
-            "ok": True,
-            "result": {
-                "content": [{"type": "text", "text": "{}"}],
-                "details": receipt,
-            },
-        },
-        lambda receipt: {**native_tool_envelope(receipt), "extra": True},
-    ],
-    ids=(
-        "top-level-details",
-        "bare-result",
-        "missing-content",
-        "non-mirrored-content",
-        "extra-top-level-field",
-    ),
-)
-def test_setup_channel_marker_rejects_noncanonical_native_tool_envelopes(
-    payload_factory,
-):
-    nonce = "b" * 32
-    channel = "openhouse-dashboard"
-    receipt = {
-        "schema_version": 2,
-        "channel": channel,
-        "nonce": nonce,
-        "prompt_seen": True,
-        "tool_blocked": True,
-        "sentinel_executed": False,
-    }
-    cli = FakeCLI()
-    cli.probe_channel_status = lambda **_kwargs: CommandResult(
-        200,
-        json.dumps(payload_factory(receipt)),
-        "",
-    )
-
-    with pytest.raises(SetupConflict, match="incompatible status"):
-        setup_openclaw._verify_channel_marker(
-            cli,
-            "openhouse-crm",
-            nonce,
-            channel,
+def test_setup_channel_marker_rejects_an_uncorrelated_block_receipt_safely():
+    cli = FakeCLI(
+        channel_probe_attempt=CommandResult(
+            403,
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "type": "tool_call_blocked",
+                        "message": "sensitive implementation detail",
+                    },
+                }
+            ),
+            "",
         )
-
-
-def test_setup_channel_marker_rejects_duplicate_keys_in_mirrored_receipt():
-    nonce = "d" * 32
-    channel = "openhouse-dashboard"
-    details = {
-        "schema_version": 2,
-        "channel": channel,
-        "nonce": nonce,
-        "prompt_seen": True,
-        "tool_blocked": True,
-        "sentinel_executed": False,
-    }
-    mirrored = (
-        '{"schema_version":1,"schema_version":2,'
-        f'"channel":"{channel}","nonce":"{nonce}",'
-        '"prompt_seen":true,"tool_blocked":true,"sentinel_executed":false}'
-    )
-    payload = {
-        "ok": True,
-        "result": {
-            "content": [{"type": "text", "text": mirrored}],
-            "details": details,
-        },
-    }
-    cli = FakeCLI()
-    cli.probe_channel_status = lambda **_kwargs: CommandResult(
-        200, json.dumps(payload), ""
-    )
-
-    with pytest.raises(SetupConflict, match="incompatible status"):
-        setup_openclaw._verify_channel_marker(
-            cli,
-            "openhouse-crm",
-            nonce,
-            channel,
-        )
-
-
-def test_setup_channel_marker_reports_safe_gateway_error_evidence():
-    cli = FakeCLI()
-    cli.probe_channel_status = lambda **_kwargs: CommandResult(
-        403,
-        json.dumps(
-            {
-                "ok": False,
-                "error": {
-                    "type": "tool_call_blocked",
-                    "message": "sensitive implementation detail",
-                },
-            }
-        ),
-        "",
     )
 
     with pytest.raises(
@@ -2987,6 +2937,7 @@ def test_setup_channel_marker_reports_safe_gateway_error_evidence():
             "openhouse-crm",
             "c" * 32,
             "openhouse-dashboard",
+            session_key="agent:openhouse-crm:dashboard:setup",
         )
 
     assert "sensitive implementation detail" not in str(caught.value)
@@ -3421,27 +3372,6 @@ def test_setup_fails_when_native_marker_attempt_is_not_blocked(tmp_path):
 
     assert not result.ok
     assert "dashboard setup sentinel attempt was not blocked" in result.render()
-    assert cli.channel_probe_status_calls == []
-
-
-@pytest.mark.parametrize(
-    ("status_override", "message"),
-    [
-        ({"schema_version": 1}, "schema version"),
-        ({"nonce": "wrong-session-correlated-nonce"}, "nonce"),
-    ],
-)
-def test_setup_fails_for_wrong_channel_status_identity(
-    tmp_path, status_override, message
-):
-    cli = FakeCLI(
-        channel_probe_statuses={"openhouse-dashboard": status_override}
-    )
-
-    result = configure_openclaw(make_options(tmp_path), cli=cli)
-
-    assert not result.ok
-    assert f"dashboard channel marker {message}" in result.render()
 
 
 def test_setup_and_dashboard_share_the_exact_full_client_tool_contract():
@@ -3520,27 +3450,11 @@ def test_setup_proves_full_schema_and_both_production_channel_markers(tmp_path):
             "session_key": dashboard_call["session_key"],
         },
     ]
-    assert cli.channel_probe_status_calls == [
-        {
-            "agent_id": dashboard_call["agent_id"],
-            "nonce": dashboard_call["nonce"],
-            "channel": "openhouse-dashboard",
-            "session_key": dashboard_call["session_key"],
-        },
-        {
-            "agent_id": dashboard_call["agent_id"],
-            "nonce": dashboard_call["nonce"],
-            "channel": "openhouse-analysis",
-            "session_key": dashboard_call["session_key"],
-        },
-    ]
     assert cli.channel_verification_calls == [
         ("prompt", "openhouse-dashboard"),
         ("attempt", "openhouse-dashboard"),
-        ("status", "openhouse-dashboard"),
         ("prompt", "openhouse-analysis"),
         ("attempt", "openhouse-analysis"),
-        ("status", "openhouse-analysis"),
     ]
     assert cli.config_values[PLUGIN_CONFIG_PATH] == {"agentId": "openhouse-crm"}
     probe_configs = [
@@ -3559,44 +3473,25 @@ def test_setup_proves_full_schema_and_both_production_channel_markers(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("channel", "status_override", "message"),
+    ("channel", "message"),
     [
-        (
-            "openhouse-dashboard",
-            {"prompt_seen": False},
-            "dashboard prompt was not observed",
-        ),
-        (
-            "openhouse-dashboard",
-            {"tool_blocked": False},
-            "dashboard setup sentinel was not blocked",
-        ),
-        (
-            "openhouse-dashboard",
-            {"sentinel_executed": True},
-            "dashboard setup sentinel executed",
-        ),
+        ("openhouse-dashboard", "dashboard setup sentinel attempt was not blocked"),
         (
             "openhouse-analysis",
-            {"prompt_seen": False},
-            "internal-analysis prompt was not observed",
-        ),
-        (
-            "openhouse-analysis",
-            {"tool_blocked": False},
-            "internal-analysis setup sentinel was not blocked",
-        ),
-        (
-            "openhouse-analysis",
-            {"sentinel_executed": True},
-            "internal-analysis setup sentinel executed",
+            "internal-analysis setup sentinel attempt was not blocked",
         ),
     ],
 )
-def test_setup_fails_closed_for_each_unproven_channel_marker(
-    tmp_path, channel, status_override, message
+def test_setup_fails_closed_for_each_uncorrelated_channel_block_receipt(
+    tmp_path, channel, message
 ):
-    cli = FakeCLI(channel_probe_statuses={channel: status_override})
+    class UncorrelatedReceiptCLI(FakeCLI):
+        def probe_channel_marker_attempt(self, **kwargs):
+            if kwargs["channel"] == channel:
+                return CommandResult(403, "", "unrelated policy rejection")
+            return super().probe_channel_marker_attempt(**kwargs)
+
+    cli = UncorrelatedReceiptCLI()
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
@@ -4277,7 +4172,7 @@ def test_effective_tools_uses_a_persisted_agent_targeted_diagnostic_session(tmp_
         call["session_key"] for call in cli.channel_prompt_calls
     } == {create_params["key"]}
     assert {
-        call["session_key"] for call in cli.channel_probe_status_calls
+        call["session_key"] for call in cli.channel_probe_attempt_calls
     } == {create_params["key"]}
     assert delete_params["key"] == create_params["key"]
     assert delete_params["agentId"] == probe_agent
@@ -4292,7 +4187,7 @@ def test_effective_tools_uses_a_persisted_agent_targeted_diagnostic_session(tmp_
 
 def test_failed_probe_deletes_diagnostic_session_before_agent(tmp_path):
     cli = FakeCLI(
-        channel_probe_statuses={"openhouse-dashboard": {"prompt_seen": False}}
+        channel_probe_attempt=CommandResult(403, "", "uncorrelated rejection")
     )
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
@@ -4451,21 +4346,19 @@ def test_client_tool_probe_rejects_and_cleans_up_bound_diagnostic_agent(tmp_path
 
 def test_names_present_but_wrong_dashboard_block_behavior_is_rejected(tmp_path):
     cli = FakeCLI(
-        channel_probe_statuses={
-            "openhouse-dashboard": {"sentinel_executed": True}
-        }
+        channel_probe_attempt=CommandResult(403, "", "uncorrelated rejection")
     )
 
     result = configure_openclaw(make_options(tmp_path), cli=cli)
 
     assert not result.ok
-    assert "dashboard setup sentinel executed" in result.render()
-    assert len(cli.channel_probe_status_calls) == 1
+    assert "dashboard setup sentinel attempt was not blocked" in result.render()
+    assert len(cli.channel_probe_attempt_calls) == 1
 
 
 @pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
 @pytest.mark.parametrize(
-    "probe", ["client_tools", "channel_prompt", "channel_attempt", "analysis", "status"]
+    "probe", ["client_tools", "channel_prompt", "channel_attempt", "analysis"]
 )
 def test_authenticated_gateway_probes_never_follow_redirects(
     monkeypatch, redirect_status, probe
@@ -4531,13 +4424,6 @@ def test_authenticated_gateway_probes_never_follow_redirects(
                 result = cli.probe_analysis_tool_block(
                     agent_id="openhouse-crm", nonce="abc123"
                 )
-            else:
-                result = cli.probe_channel_status(
-                    agent_id="openhouse-crm",
-                    nonce="abc123",
-                    channel="openhouse-dashboard",
-                )
-
     assert result.returncode == redirect_status
     assert origin_authorization == [f"Bearer {gateway_token}"]
     assert destination_requests == []
@@ -6502,7 +6388,6 @@ def test_dry_run_describes_contract_cleanup_and_capability_checks_without_io(
     assert cli.mutating_calls == []
     assert cli.client_tool_probe_calls == []
     assert cli.analysis_tool_probe_calls == []
-    assert cli.channel_probe_status_calls == []
 
 
 def test_crm_skill_declares_the_api_token_as_its_primary_environment_variable():

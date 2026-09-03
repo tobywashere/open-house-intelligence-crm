@@ -80,18 +80,17 @@ For each protected channel, `openhouse-dashboard` and
 - the temporary diagnostic agent;
 - an isolated session key;
 - the exact protected channel;
-- a cryptographically random run nonce;
-- a short expiration time.
+- a cryptographically random run nonce.
 
 Setup sends one ordinary chat request with no client tools. The plugin's
-`before_agent_reply` hook matches the exact diagnostic body, agent, session,
-channel, user trigger, and nonce, records that the protected conversation path
-was reached, then returns a fixed setup-only reply before the model provider is
-called. The record is bounded by count and time and is not exposed to ordinary
-agents.
+`before_agent_reply` hook matches the distinctive diagnostic marker, exact
+agent, session, channel, user trigger, and nonce. It returns a setup-only receipt
+containing that channel, session, and nonce before the model provider is called.
+Setup accepts only that exact receipt. No prompt observation is stored in plugin
+memory or read back through a later request.
 
 If the prompt hook does not run, receives the wrong channel, cannot correlate
-the diagnostic identity, or produces malformed state, setup fails closed.
+the diagnostic identity, or returns a malformed receipt, setup fails closed.
 
 ### 5.2 Deterministic native-sentinel block proof
 
@@ -100,26 +99,21 @@ native sentinel through OpenClaw's policy-controlled `/tools/invoke` API. The
 invocation carries the same diagnostic agent, session, protected channel, and
 nonce. This is not a model-selected client tool.
 
-The plugin's `before_tool_call` hook must:
+The plugin's `before_tool_call` hook verifies the exact agent, session, channel,
+and nonce supplied by that direct invocation, then returns a uniquely correlated
+block receipt. Setup accepts only HTTP 403 plus that exact receipt. If the hook
+does not block, the harmless sentinel handler returns an execution receipt and
+setup rejects the non-403 response.
 
-1. match the invocation to an unexpired prompt record;
-2. verify the exact agent, session, channel, and nonce;
-3. record `tool_blocked` for that run;
-4. block the sentinel before its handler executes.
-
-The sentinel handler records `sentinel_executed` if execution ever reaches
-it. Setup then reads the run status through the existing setup-only status
-surface. A passing result requires `prompt_seen=true`, `tool_blocked=true`,
-and `sentinel_executed=false` for both protected channels.
-
-Any missing field, unknown status, nonce mismatch, execution of the sentinel,
-or inability to read the status is fatal. Only the exact setup-hook reply plus
-the correlated status record is accepted as evidence; model output is never
-accepted as policy evidence.
+Prompt interception and native-tool blocking are therefore independently
+verified from their direct responses. They do not depend on in-memory state
+surviving across the Chat Completions and `/tools/invoke` runtime instances.
+Missing fields, identity mismatches, an unrelated policy rejection, or sentinel
+execution are fatal. Model output is never accepted as policy evidence.
 
 The setup marker remains unavailable to the production CRM agent. Its input
-schema distinguishes the direct `attempt` action from the read-only `status`
-action, keeping the diagnostic surface small and explicit.
+schema accepts only the direct `attempt` action, keeping the diagnostic surface
+small and explicit.
 
 ### 5.3 Schema acceptance versus model behavior
 
@@ -207,14 +201,14 @@ unbounded provider responses remain excluded from saved evidence.
 
 Regression tests must cover:
 
-- both protected channels recording `prompt_seen` and blocking the direct
-  native sentinel;
+- both protected channels returning correlated prompt receipts and correlated
+  native-sentinel block receipts;
 - no model tool call still producing deterministic policy success plus a
   model-compatibility warning;
-- missing prompt evidence, wrong channel, wrong agent, wrong session, expired
+- missing prompt evidence, wrong channel, wrong agent, wrong session, wrong
   nonce, or malformed hook context failing closed;
 - sentinel handler execution always failing setup;
-- unreadable or contradictory marker status failing setup;
+- unrelated HTTP 403 policy failures not counting as sentinel proof;
 - production schema rejection remaining fatal;
 - accepted schemas with ordinary model text becoming a warning;
 - successful model tool selection becoming a compatibility pass;

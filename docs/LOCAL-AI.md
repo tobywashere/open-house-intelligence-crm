@@ -279,6 +279,8 @@ channel restrictions, the CRM schemas, and supported diagnostic cleanup. It
 does not prove that your model can use the CRM for ordinary requests. The
 channel check is answered by a setup-only plugin hook before the local model is
 called, so a slow or unavailable model cannot make that policy check ambiguous.
+The prompt and blocked-tool checks return their own correlated receipts; setup
+does not depend on temporary plugin memory carrying across separate requests.
 
 A **Compatibility warning** means setup can continue safely, but dashboard CRM
 use must wait for the doctor and acceptance checks. After OpenClaw accepts the

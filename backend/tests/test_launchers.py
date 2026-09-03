@@ -648,11 +648,14 @@ def test_setup_channel_attempt_invokes_native_marker_on_the_trusted_channel(monk
     assert captured["session_key"] is None
     assert captured["payload"] == {
         "tool": "openhouse_setup_marker_probe",
-        "args": {
-            "action": "attempt",
-            "channel": "openhouse-dashboard",
-            "nonce": "0123456789abcdef0123456789abcdef",
-        },
+            "args": {
+                "action": "attempt",
+                "channel": "openhouse-dashboard",
+                "nonce": "0123456789abcdef0123456789abcdef",
+                "session_key": (
+                    "agent:openhouse-setup-probe-safe:dashboard:setup-test"
+                ),
+            },
         "agentId": "openhouse-setup-probe-safe",
         "sessionKey": "agent:openhouse-setup-probe-safe:dashboard:setup-test",
         "idempotencyKey": (
@@ -706,70 +709,6 @@ def test_setup_analysis_probe_matches_the_production_no_tools_path(monkeypatch):
     assert "openhouse_setup_marker_probe" not in captured["payload"]["messages"][0]["content"]
 
 
-def test_setup_channel_status_is_loopback_only_and_uses_no_crm_operation(
-    monkeypatch,
-):
-    setup_path = REPO / "scripts" / "setup_openclaw.py"
-    spec = importlib.util.spec_from_file_location(
-        "setup_openclaw_dashboard_probe_test", setup_path
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    captured = {"calls": 0}
-
-    def fake_post(_self, path, payload, *, channel, session_key=None):
-        captured["calls"] += 1
-        captured.update(
-            path=path,
-            payload=payload,
-            channel=channel,
-            session_key=session_key,
-        )
-        return module.CommandResult(
-            200,
-            json.dumps({"details": {"status": "tool_blocked"}}),
-            "",
-        )
-
-    monkeypatch.setenv("AGENT_GATEWAY_URL", "http://localhost:18789")
-    monkeypatch.setattr(module.OpenClawCLI, "_post_gateway_json", fake_post)
-
-    result = module.OpenClawCLI().probe_channel_status(
-        agent_id="openhouse-setup-probe-safe",
-        nonce="bounded-nonce",
-        channel="openhouse-dashboard",
-        session_key="agent:openhouse-setup-probe-safe:dashboard:setup-test",
-    )
-
-    assert result.returncode == 200
-    assert captured["path"] == "/tools/invoke"
-    assert captured["channel"] == "openhouse-setup-capability"
-    assert captured["payload"]["tool"] == "openhouse_setup_marker_probe"
-    assert captured["payload"]["args"] == {
-        "action": "status",
-        "channel": "openhouse-dashboard",
-        "nonce": "bounded-nonce",
-    }
-    assert captured["payload"]["agentId"] == "openhouse-setup-probe-safe"
-    assert (
-        captured["payload"]["sessionKey"]
-        == "agent:openhouse-setup-probe-safe:dashboard:setup-test"
-    )
-    assert captured["calls"] == 1
-
-    monkeypatch.setenv("AGENT_GATEWAY_URL", "https://gateway.example.test")
-    rejected = module.OpenClawCLI().probe_channel_status(
-        agent_id="openhouse-setup-probe-safe",
-        nonce="bounded-nonce",
-        channel="openhouse-dashboard",
-    )
-    assert rejected.returncode == 503
-    assert "loopback" in rejected.stderr
-    assert captured["calls"] == 1
-
-
 @pytest.mark.parametrize(
     "gateway_url",
     [
@@ -814,17 +753,20 @@ def test_setup_probes_reject_remote_credentialed_or_ambiguous_gateway_urls(
     analysis = module.OpenClawCLI().probe_analysis_tool_block(
         agent_id="openhouse-setup-probe-safe", nonce="bounded-nonce"
     )
-    status = module.OpenClawCLI().probe_channel_status(
+    channel_attempt = module.OpenClawCLI().probe_channel_marker_attempt(
         agent_id="openhouse-setup-probe-safe",
-        nonce="bounded-nonce",
+        nonce="0" * 32,
         channel="openhouse-dashboard",
+        session_key="agent:openhouse-setup-probe-safe:dashboard:setup-test",
     )
 
     assert client.returncode == 503
     assert analysis.returncode == 503
-    assert status.returncode == 503
+    assert channel_attempt.returncode == 503
     assert network_calls == []
-    assert "must-not-be-attached" not in client.stderr + analysis.stderr + status.stderr
+    assert "must-not-be-attached" not in (
+        client.stderr + analysis.stderr + channel_attempt.stderr
+    )
 
 
 @pytest.mark.parametrize(

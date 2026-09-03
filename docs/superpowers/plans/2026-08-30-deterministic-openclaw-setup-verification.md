@@ -4,7 +4,13 @@
 
 **Goal:** Make OpenClaw setup prove dashboard and analysis tool blocking deterministically, report model tool-selection failures as compatibility warnings, and clean up diagnostic agents through OpenClaw's supported retry path.
 
-**Architecture:** The plugin records a prompt-channel observation for an isolated diagnostic session, then blocks a direct native sentinel invocation carrying the same agent, session, channel, and nonce. The installer treats that hook evidence and schema transport as security gates, records model tool behavior separately, and delegates real CRM capability to audit-backed live acceptance. Diagnostic deletion parses OpenClaw's structured result and retries the exact deletion once after a gateway restart when OpenClaw reports incomplete cleanup.
+**Architecture:** The plugin returns a correlated receipt when an isolated diagnostic prompt reaches each protected channel, then returns a second correlated receipt when it blocks a direct native sentinel carrying the same agent, session, channel, and nonce. The installer treats those direct hook responses and schema transport as security gates, records model tool behavior separately, and delegates real CRM capability to audit-backed live acceptance. Diagnostic deletion parses OpenClaw's structured result and retries the exact deletion once after a gateway restart when OpenClaw reports incomplete cleanup.
+
+> Implementation update, September 2, 2026: live beta validation showed that
+> Chat Completions and `/tools/invoke` can use separate plugin runtime instances.
+> The completed implementation therefore uses independently correlated prompt
+> and block receipts and no longer stores or reads setup status across requests.
+> Sections 5.1 and 5.2 of the matching design document are authoritative.
 
 **Tech Stack:** Python 3 standard library, pytest, OpenClaw CLI and loopback Gateway APIs, Node.js ES modules, `node:test`, JSON schema, Markdown.
 
