@@ -3807,6 +3807,57 @@ def test_agent_cleanup_rejects_invalid_deletion_envelope(tmp_path, override):
     assert cli.gateway_restart_count == 0
 
 
+@pytest.mark.parametrize("method", ["trash", "missing"])
+def test_agent_cleanup_accepts_beta3_removed_path_records(tmp_path, method):
+    # Source-derived fixture, not a captured WSL response. Beta.3 declares
+    # removed entries as closed {path, method: "trash" | "missing"} objects:
+    # openclaw/openclaw@5831b807, packages/gateway-protocol/src/schema/
+    # agents-models-skills.ts (AgentsDeleteResultSchema).
+    cli, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda agent_id, workspace: agent_deletion_envelope(
+            agent_id, workspace,
+            removed=[{"path": "/safe/openclaw/agents/probe", "method": method}],
+        ),
+    )
+
+    assert report.complete
+    assert not report.retry_restart_performed
+    assert cli.extra_agents == {}
+
+
+@pytest.mark.parametrize("entry", [
+    {}, {"path": "/safe/probe"}, {"method": "trash"},
+    {"path": None, "method": "trash"},
+    {"path": "", "method": "missing"},
+    {"path": "   ", "method": "trash"},
+    {"path": "/safe/probe", "method": "deleted"},
+    {"path": "/safe/probe", "method": ["trash"]},
+    {"path": "/safe/probe", "method": "trash", "extra": True},
+])
+def test_agent_cleanup_rejects_malformed_removed_path_records(tmp_path, entry):
+    _, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda agent_id, workspace: agent_deletion_envelope(
+            agent_id, workspace, removed=[entry],
+        ),
+    )
+
+    assert not report.complete
+    assert not report.retry_restart_performed
+
+
+def test_agent_cleanup_keeps_legacy_removed_path_strings(tmp_path):
+    _, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda agent_id, workspace: agent_deletion_envelope(
+            agent_id, workspace, removed=["/safe/openclaw/agents/probe"],
+        ),
+    )
+
+    assert report.complete
+
+
 @pytest.mark.parametrize(
     "failed",
     [
@@ -3867,9 +3918,13 @@ def test_diagnostic_agent_cleanup_retries_supported_deletion_journal_once(
             self.delete_attempts += 1
             if self.delete_attempts == 1:
                 return agent_deletion_envelope(
-                    agent_id, workspace, **first_incomplete
+                    agent_id, workspace, **first_incomplete,
+                    removed=[{"path": "/safe/probe/state", "method": "trash"}],
                 )
-            return agent_deletion_envelope(agent_id, workspace)
+            return agent_deletion_envelope(
+                agent_id, workspace,
+                removed=[{"path": "/safe/probe/state", "method": "missing"}],
+            )
 
     cli = RetryDeletionCLI()
     cli.extra_agents[agent_id] = {"id": agent_id, "workspace": str(workspace)}
@@ -3913,7 +3968,11 @@ def test_diagnostic_agent_cleanup_accepts_absence_after_purge_warning_and_retry_
             if self.delete_attempts == 1:
                 super().run(args, mutate=mutate)
                 return agent_deletion_envelope(
-                    agent_id, workspace, purgeFailed=True
+                    agent_id, workspace, purgeFailed=True,
+                    removed=[
+                        {"path": f"/safe/probe/state-{index}", "method": "missing"}
+                        for index in range(7)
+                    ],
                 )
             self.calls.append(args)
             if mutate:
@@ -4064,6 +4123,7 @@ def test_persistent_agent_cleanup_failure_retains_reported_paths(tmp_path):
                 agentDir=str(agent_dir),
                 sessionsDir=str(sessions_dir),
                 failed=[{"path": str(sessions_dir), "reason": "still busy"}],
+                removed=[{"path": "/safe/probe/other-state", "method": "trash"}],
                 purgeFailed=True,
                 transport="gateway",
             )
@@ -4085,7 +4145,7 @@ def test_persistent_agent_cleanup_failure_retains_reported_paths(tmp_path):
         assert event["exit_code"] == 0
         assert event["purge_failed"] is True
         assert event["failed_count"] == 1
-        assert event["removed_count"] == 0
+        assert event["removed_count"] == 1
     assert {"stage": "restart", "exit_code": 0} in report.diagnostics
     assert report.diagnostics[-1]["cli_present"] is False
     assert report.diagnostics[-1]["config_present"] is False

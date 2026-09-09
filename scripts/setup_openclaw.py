@@ -5416,8 +5416,19 @@ def _parse_agent_deletion_result(
         if not isinstance(value, str) or not value.strip():
             raise SetupConflict(f"agent deletion returned an invalid {field}")
     removed = payload.get("removed")
+    # Beta.3's AgentsDeleteResultSchema reports {path, method} records;
+    # retain support for the earlier string-path response shape. This list
+    # never authorizes local deletion or overrides purge/failed-path checks.
     if not isinstance(removed, list) or not all(
-        isinstance(path, str) for path in removed
+        isinstance(entry, str)
+        or (
+            isinstance(entry, dict)
+            and set(entry) == {"path", "method"}
+            and isinstance(entry["path"], str)
+            and bool(entry["path"].strip())
+            and entry["method"] in ("trash", "missing")
+        )
+        for entry in removed
     ):
         raise SetupConflict("agent deletion returned an invalid removed-path list")
     failed = payload.get("failed")
