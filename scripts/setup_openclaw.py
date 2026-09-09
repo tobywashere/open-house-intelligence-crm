@@ -240,6 +240,7 @@ class AgentDeletionReport:
     complete: bool
     retry_restart_performed: bool
     retained_paths: tuple[str, ...]
+    diagnostics: tuple[dict[str, Any], ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -5504,8 +5505,95 @@ def _delete_agent_and_verify(
     expected_workspace: Path,
     diagnostic_ownership: DiagnosticAgentOwnership | None = None,
 ) -> AgentDeletionReport:
+    diagnostics: list[dict[str, Any]] = []
+    report = _delete_agent_and_verify_with_trace(
+        cli,
+        agent_id,
+        expected_workspace=expected_workspace,
+        diagnostic_ownership=diagnostic_ownership,
+        diagnostics=diagnostics,
+    )
+    return AgentDeletionReport(
+        report.complete,
+        report.retry_restart_performed,
+        report.retained_paths,
+        tuple(diagnostics),
+    )
+
+
+def _delete_agent_and_verify_with_trace(
+    cli: OpenClawCLI,
+    agent_id: str,
+    *,
+    expected_workspace: Path,
+    diagnostic_ownership: DiagnosticAgentOwnership | None,
+    diagnostics: list[dict[str, Any]],
+) -> AgentDeletionReport:
     retry_restart_performed = False
     known_retained_paths: tuple[str, ...] = ()
+    active_stage = "agent cleanup"
+
+    def inventory(*, label: str) -> tuple[list[dict[str, Any]], AgentRoster, bool]:
+        nonlocal active_stage
+        active_stage = label
+        listed, roster, absent = _agent_cleanup_inventory(cli, agent_id, label=label)
+        diagnostics.append({
+            "stage": label,
+            "cli_present": any(record["id"] == agent_id for record in listed),
+            "config_present": any(record["id"] == agent_id for record in roster.records),
+        })
+        return listed, roster, absent
+
+    def run_command(argv: list[str], stage: str) -> CommandResult:
+        nonlocal active_stage
+        active_stage = stage
+        result = cli.run(argv, mutate=True)
+        event: dict[str, Any] = {"stage": stage, "exit_code": result.returncode}
+        if stage == "delete":
+            # Allowlisted scalars only. Never copy stdout/stderr, paths, reasons,
+            # agent configurations or exception messages into the trace.
+            try:
+                payload = _json(result, "cleanup diagnostics")
+            except SetupConflict:
+                payload = None
+            event["json_object"] = isinstance(payload, dict)
+            if isinstance(payload, dict):
+                purge = payload.get("purgeFailed", "unset")
+                event["purge_failed"] = (
+                    purge if isinstance(purge, bool) else
+                    "unset" if "purgeFailed" not in payload else "invalid"
+                )
+                for key in ("failed", "removed"):
+                    value = payload.get(key)
+                    event[f"{key}_count"] = len(value) if isinstance(value, list) else None
+        diagnostics.append(event)
+        return result
+
+    def parse_deletion(result: CommandResult) -> AgentDeletionReport:
+        nonlocal active_stage
+        active_stage = "delete_response"
+        try:
+            report = _parse_agent_deletion_result(
+                result, agent_id, expected_workspace=expected_workspace
+            )
+        except SetupConflict as exc:
+            # Only locally generated, fixed validation labels may enter the log.
+            # Other errors can include command output or filesystem details.
+            labels = (
+                "invalid JSON", "an unsupported JSON shape", "the wrong agent ID",
+                "the wrong workspace", "an invalid agentDir", "an invalid sessionsDir",
+                "an invalid removed-path list", "an invalid failed-path list",
+                "an invalid failed-path entry", "an invalid purgeFailed value",
+                "an invalid transport",
+            )
+            reason = next(
+                (label for label in labels if str(exc) == f"agent deletion returned {label}"),
+                "unclassified validation failure",
+            )
+            diagnostics.append({"stage": "delete_response_validation", "reason": reason})
+            raise
+        diagnostics.append({"stage": active_stage, "status": "validated"})
+        return report
 
     def incomplete() -> AgentDeletionReport:
         return AgentDeletionReport(
@@ -5513,8 +5601,8 @@ def _delete_agent_and_verify(
         )
 
     def retry_ownership_is_safe() -> bool:
-        listed_records, roster, _ = _agent_cleanup_inventory(
-            cli, agent_id, label="agent cleanup post-restart ownership check"
+        listed_records, roster, _ = inventory(
+            label="agent cleanup post-restart ownership check"
         )
         return all(
             _same_workspace(
@@ -5534,8 +5622,8 @@ def _delete_agent_and_verify(
         "--json",
     ]
     try:
-        listed_records, roster, initially_absent = _agent_cleanup_inventory(
-            cli, agent_id, label="agent cleanup"
+        listed_records, roster, initially_absent = inventory(
+            label="agent cleanup"
         )
         owned_records = [
             record
@@ -5558,63 +5646,57 @@ def _delete_agent_and_verify(
             ):
                 return incomplete()
 
-        deleted = cli.run(delete_argv, mutate=True)
+        deleted = run_command(delete_argv, "delete")
         if deleted.returncode != 0:
             if not initially_absent:
                 return incomplete()
             # Beta releases can remove the configuration before their deletion
             # journal reports success. Retry only for this run-owned diagnostic ID,
             # then trust the supported inventories rather than touching state folders.
-            restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
+            restart = run_command(["openclaw", "gateway", "restart"], "restart")
             retry_restart_performed = True
             if restart.returncode != 0:
                 return incomplete()
             if not retry_ownership_is_safe():
                 return incomplete()
-            retried_absent_delete = cli.run(delete_argv, mutate=True)
+            retried_absent_delete = run_command(delete_argv, "delete")
             if retried_absent_delete.returncode == 0:
-                retry_report = _parse_agent_deletion_result(
-                    retried_absent_delete,
-                    agent_id,
-                    expected_workspace=expected_workspace,
-                )
+                retry_report = parse_deletion(retried_absent_delete)
                 known_retained_paths = retry_report.retained_paths
-                _, _, finally_absent = _agent_cleanup_inventory(
-                    cli, agent_id, label="agent cleanup retry verification"
+                _, _, finally_absent = inventory(
+                    label="agent cleanup retry verification"
                 )
                 return AgentDeletionReport(
                     complete=retry_report.complete and finally_absent,
                     retry_restart_performed=True,
                     retained_paths=retry_report.retained_paths,
                 )
-            _, _, finally_absent = _agent_cleanup_inventory(
-                cli, agent_id, label="agent cleanup retry verification"
+            _, _, finally_absent = inventory(
+                label="agent cleanup retry verification"
             )
             if finally_absent:
                 return AgentDeletionReport(True, True, ())
             return incomplete()
-        first_report = _parse_agent_deletion_result(
-            deleted, agent_id, expected_workspace=expected_workspace
-        )
+        first_report = parse_deletion(deleted)
         known_retained_paths = first_report.retained_paths
-        _, _, first_absent = _agent_cleanup_inventory(
-            cli, agent_id, label="agent cleanup verification"
+        _, _, first_absent = inventory(
+            label="agent cleanup verification"
         )
         if not first_absent:
             return incomplete()
         if first_report.complete:
             return first_report
 
-        restart = cli.run(["openclaw", "gateway", "restart"], mutate=True)
+        restart = run_command(["openclaw", "gateway", "restart"], "restart")
         retry_restart_performed = True
         if restart.returncode != 0:
             return incomplete()
         if not retry_ownership_is_safe():
             return incomplete()
-        retried = cli.run(delete_argv, mutate=True)
+        retried = run_command(delete_argv, "delete")
         if retried.returncode != 0:
-            _, _, finally_absent = _agent_cleanup_inventory(
-                cli, agent_id, label="agent cleanup retry verification"
+            _, _, finally_absent = inventory(
+                label="agent cleanup retry verification"
             )
             if (
                 finally_absent
@@ -5626,21 +5708,24 @@ def _delete_agent_and_verify(
             ):
                 return AgentDeletionReport(True, True, ())
             return incomplete()
-        retry_report = _parse_agent_deletion_result(
-            retried, agent_id, expected_workspace=expected_workspace
-        )
+        retry_report = parse_deletion(retried)
         known_retained_paths = tuple(
             dict.fromkeys((*known_retained_paths, *retry_report.retained_paths))
         )
-        _, _, finally_absent = _agent_cleanup_inventory(
-            cli, agent_id, label="agent cleanup retry verification"
+        _, _, finally_absent = inventory(
+            label="agent cleanup retry verification"
         )
         return AgentDeletionReport(
             complete=retry_report.complete and finally_absent,
             retry_restart_performed=True,
             retained_paths=retry_report.retained_paths,
         )
-    except (OSError, SetupConflict):
+    except (OSError, SetupConflict) as exc:
+        diagnostics.append({
+            "stage": active_stage,
+            "status": "error",
+            "error_type": "OSError" if isinstance(exc, OSError) else "SetupConflict",
+        })
         return incomplete()
 
 
@@ -7621,6 +7706,10 @@ def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
                 rollback_failed = True
                 messages.append(
                     "Could not delete or verify absence of the setup diagnostic agent."
+                )
+                messages.append(
+                    "Diagnostic agent cleanup trace: "
+                    + json.dumps(diagnostic_cleanup_report.diagnostics, separators=(",", ":"))
                 )
                 if diagnostic_cleanup_report.retained_paths:
                     messages.append(

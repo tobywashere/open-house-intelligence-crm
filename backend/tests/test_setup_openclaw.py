@@ -3590,6 +3590,53 @@ def test_agent_cleanup_rejects_malformed_deletion_json(tmp_path):
     assert cli.gateway_restart_count == 0
 
 
+def test_agent_cleanup_trace_records_invalid_response_without_raw_output(tmp_path):
+    _, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda _id, _workspace: CommandResult(0, "private-response-secret", ""),
+    )
+
+    assert not report.complete
+    assert report.diagnostics[-1] == {
+        "stage": "delete_response", "status": "error", "error_type": "SetupConflict"
+    }
+    assert "private-response-secret" not in json.dumps(report.diagnostics)
+    assert report.diagnostics[-2] == {
+        "stage": "delete_response_validation", "reason": "invalid JSON"
+    }
+
+
+def test_agent_cleanup_trace_records_nonzero_delete_without_raw_errors(tmp_path):
+    _, report, _ = _run_agent_cleanup(
+        tmp_path,
+        lambda _id, _workspace: CommandResult(7, "", "private-command-secret"),
+    )
+
+    assert not report.complete
+    assert report.diagnostics[-1] == {
+        "stage": "delete", "exit_code": 7, "json_object": False
+    }
+    assert "private-command-secret" not in json.dumps(report.diagnostics)
+
+
+def test_agent_cleanup_trace_records_inventory_error_without_exception_text(
+    tmp_path, monkeypatch,
+):
+    def broken_inventory(*args, **kwargs):
+        raise OSError("private-inventory-secret")
+
+    monkeypatch.setattr(setup_openclaw, "_agent_cleanup_inventory", broken_inventory)
+    _, report, _ = _run_agent_cleanup(
+        tmp_path, lambda agent_id, workspace: agent_deletion_envelope(agent_id, workspace)
+    )
+
+    assert not report.complete
+    assert report.diagnostics == ({
+        "stage": "agent cleanup", "status": "error", "error_type": "OSError"
+    },)
+    assert "private-inventory-secret" not in json.dumps(report.diagnostics)
+
+
 def test_attempted_agent_cleanup_completes_journal_when_initially_absent(tmp_path):
     agent_id = "openhouse-setup-probe-a1b2c3d4e5f6"
     workspace = tmp_path / "diagnostic-workspace"
@@ -4032,6 +4079,18 @@ def test_persistent_agent_cleanup_failure_retains_reported_paths(tmp_path):
         False, True, (str(sessions_dir),)
     )
     assert cli.gateway_restart_count == 1
+    deletes = [event for event in report.diagnostics if event["stage"] == "delete"]
+    assert len(deletes) == 2
+    for event in deletes:
+        assert event["exit_code"] == 0
+        assert event["purge_failed"] is True
+        assert event["failed_count"] == 1
+        assert event["removed_count"] == 0
+    assert {"stage": "restart", "exit_code": 0} in report.diagnostics
+    assert report.diagnostics[-1]["cli_present"] is False
+    assert report.diagnostics[-1]["config_present"] is False
+    assert "still busy" not in json.dumps(report.diagnostics)
+    assert str(sessions_dir) not in json.dumps(report.diagnostics)
     assert sessions_dir.is_dir()
     assert agent_dir.is_dir()
     assert workspace.is_dir()
@@ -4075,6 +4134,12 @@ def test_persistent_diagnostic_agent_purge_failure_retains_installer_workspace(
     assert not result.ok
     assert "Could not delete and verify absence" in result.render()
     assert "shared workspace" not in result.render()
+    trace_line = next(
+        line for line in result.render().splitlines()
+        if line.startswith("Diagnostic agent cleanup trace: ")
+    )
+    trace = json.loads(trace_line.split(": ", 1)[1])
+    assert len([event for event in trace if event["stage"] == "delete"]) == 2
     assert cli.diagnostic_workspace is not None
     assert str(cli.diagnostic_workspace) in result.render()
     assert cli.diagnostic_workspace.is_dir()

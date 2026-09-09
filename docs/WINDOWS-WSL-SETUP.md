@@ -212,6 +212,13 @@ keep the report and send it to the maintainer. The installer will retry
 OpenClaw's supported cleanup once and otherwise leave the recoverable state
 untouched.
 
+Send the sanitized run log as well as the evidence JSON. On agent-deletion
+verification failures, the log includes a `Diagnostic agent cleanup trace` with
+deletion and retry exit codes, purge flags, failed-path counts, and whether the
+agent still appeared in either inventory. Raw error text and path contents are
+not included in this trace. These are troubleshooting details, not proof that
+cleanup or setup passed.
+
 ## 7. Start the product
 
 In the same WSL terminal:

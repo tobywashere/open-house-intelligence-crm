@@ -2240,6 +2240,33 @@ def test_setup_evidence_capture_runs_setup_twice_and_writes_only_sanitized_logs(
         assert "127.0.0.1" not in text
 
 
+def test_setup_evidence_keeps_cleanup_trace_in_failed_run_log(tmp_path):
+    capture = importlib.import_module("scripts.capture_setup_evidence")
+    trace = [{"stage": "delete", "exit_code": 0, "purge_failed": True,
+              "failed_count": 0, "removed_count": 0}]
+    line = "Diagnostic agent cleanup trace: " + json.dumps(trace)
+    calls = []
+
+    def runner(sequence):
+        calls.append(sequence)
+        return 1, line, 1, None
+
+    result = capture.capture_setup_evidence(
+        tmp_path / "openhouse-setup-evidence.json",
+        revision="a" * 40,
+        runner=runner,
+        repository_state=lambda: (
+            "a" * 40, True, installed_state()["sources"]["material_tree_sha256"]
+        ),
+    )
+
+    assert calls == [1]
+    assert result["runs"][0]["exit_code"] == 1
+    saved = (tmp_path / "openhouse-setup-run-1.log").read_text()
+    assert json.loads(saved.split(": ", 1)[1]) == trace
+    assert not (tmp_path / "openhouse-setup-run-2.log").exists()
+
+
 def test_setup_evidence_subprocess_explicitly_uses_isolated_source_only_bytecode(
     monkeypatch,
 ):
