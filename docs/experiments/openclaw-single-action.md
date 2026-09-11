@@ -10,6 +10,29 @@ renders the answer in Python. The current dashboard-channel tool protections
 remain intact. This is a smaller change than allowing an OpenClaw agent to own
 the entire conversation loop; that larger architecture is not tested here.
 
+## Transfer the isolated branch without changing PR #7
+
+If you received `openhouse-single-action.bundle`, copy it to
+`/tmp/openhouse-single-action.bundle` inside WSL. The bundle requires the existing
+repository to already contain base commit `f015e4e`. From that existing CRM clone,
+these commands create a separate checkout and reuse its installed dependencies
+and private configuration. Keep the existing services running from their current
+checkout, after satisfying the prerequisites below.
+
+```bash
+crm_checkout="$PWD"
+git fetch /tmp/openhouse-single-action.bundle refs/heads/codex/openclaw-single-action
+git worktree add --detach ../openhouse-single-action FETCH_HEAD
+cd ../openhouse-single-action
+source scripts/load-env.sh
+load_repo_env "$crm_checkout/.env"
+PYTHONDONTWRITEBYTECODE=1 "$crm_checkout/.venv/bin/python" \
+  scripts/compare_crm_chat.py --live-read-only > /tmp/ohi-comparison.json
+```
+
+This does not switch the running checkout's branch, install plugins, rerun setup,
+or change agent policy. Read `/tmp/ohi-comparison.json` after the command finishes.
+
 ## Before running on the WSL test machine
 
 - Use the already configured dedicated CRM agent at the known working OpenClaw
