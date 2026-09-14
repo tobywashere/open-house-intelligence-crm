@@ -1,0 +1,18 @@
+{
+  "backend_suite": {
+    "passed": 616,
+    "duration_seconds": 25.11,
+    "existing_deprecation_warnings": 5,
+    "command": "PYTHONDONTWRITEBYTECODE=1 /home/ankus/GitHub/open-house-intelligence-crm/.venv/bin/python -m pytest backend/tests -q -p no:cacheprovider"
+  },
+  "new_backend_cases": 19,
+  "plugin_tests": 4,
+  "browser_boundary_tests": 6,
+  "browser_mocked_cases": 5,
+  "browser_real_backend_write_rejection_cases": 1,
+  "typescript_vite_build": "passed",
+  "diff_check": "passed",
+  "playwright_version": "1.62.1",
+  "node_version": "24.15.0",
+  "python_version": "3.14.4"
+}

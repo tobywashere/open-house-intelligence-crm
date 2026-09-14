@@ -13,7 +13,10 @@ from .integrations import router as integrations
 from .routers import (calendar, chat, knowledge, leads, misc, pending_changes,
                       reports, scan, settings as settings_router, vertical, voice)
 
+from .routers import native_read
+
 app = FastAPI(title="Open House Intelligence")
+app.include_router(native_read.router, prefix="/api")
 
 
 async def api_token_guard(request: Request, call_next):
