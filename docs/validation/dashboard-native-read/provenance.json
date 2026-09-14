@@ -1,0 +1,20 @@
+{
+  "implementation_commit": "c05403dda040579fcf3044318d9f6835fdcee6b0",
+  "base_commit": "eea8d87ef0c8ce12907590be64d82c5807da248a",
+  "validation_provenance": "Existing acceptance artifacts from the implementation working tree captured in implementation_commit. Documentation packaging does not rerun tests.",
+  "artifacts": {
+    "REPORT.md": "2564f1420eb57cade59e22556a37391ef79c19e6045ba9abc77db830994b2f4c",
+    "runtime.json": "6247eb86f692e6394fc8b1be4a5348df14ae2b136bdc8e5c832fd5295cbbd89c",
+    "dashboard-live.png": "52cf8b985d565df31e8474af0a64e862ba28bcc20973aaea0af9645c3fe9d79d",
+    "backend-tests.txt": "1ae73f2ed30f7fa894d60e6466425b96d13bf8905cebfae38e083c3048df3efe",
+    "README.md": "e900d0c2a85410a9575eab910cf7d15d02bf1ec293cd12486d975e51c5f84e10",
+    "agent-instructions.txt": "eaf230a7159cf20bac3bbdc9926596b023a6bc757cb9f1e097f49405e5ce8fc1",
+    "ohi-dashboard-empty-preserved.json": "b4d1396629036be0b0a5cf830df2ad9e1d45b2154781c8a164da313d46dad1e8",
+    "ohi-dashboard-read-preserved.json": "0aa54f7e3a3d364134195f7f6b43a13637d8a87b36e2b173257b5cd62edb924f",
+    "dashboard-empty.png": "c8ca83981276893117cfe7d9aade1598e3184943ffc12e3e67e8892bc9c2555f",
+    "live-browser.json": "9e1e1a5eb14dbcf968b1ffe77a5723b3a040be0780d76d7922611b7f34b0b3fe",
+    "agent-config.redacted.json": "37bbae1f1dd49c4b71313396cb0116b248a63c98e04193e568738ea5c877586b",
+    "automated-tests.json": "e4ab759e5cc0e6ca56e2ce395b22463b9c29cdf87ac272339e9b74eb0ea4a749",
+    "live-empty.json": "8d4958c4e7d7c274316219fcae15a4709cc45bb8cc19443870743cc3ab9b86bb"
+  }
+}

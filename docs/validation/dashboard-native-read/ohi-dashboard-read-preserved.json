@@ -1,0 +1,23 @@
+{
+  "before": {
+    "counts": {
+      "leads": 37,
+      "events": 0,
+      "pending_changes": 0,
+      "appointments": 0,
+      "reminders": 0
+    },
+    "crm_content_sha256": "8321b8ab9e95e5aa3e2e2999b1f58e53444058420baff0dca4ca94bca84ba435"
+  },
+  "after": {
+    "counts": {
+      "leads": 37,
+      "events": 0,
+      "pending_changes": 0,
+      "appointments": 0,
+      "reminders": 0
+    },
+    "crm_content_sha256": "8321b8ab9e95e5aa3e2e2999b1f58e53444058420baff0dca4ca94bca84ba435"
+  },
+  "unchanged": true
+}
