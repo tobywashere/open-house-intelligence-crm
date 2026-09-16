@@ -12,6 +12,23 @@ It runs in two useful ways:
 - **Real local-AI mode** connects the dashboard to your own OpenClaw agent and
   local CRM tools.
 
+## Project origins and team
+
+The initial prototype was built in one day by a four-person team at the Dell × NVIDIA
+BuilderBase Hackathon in Seattle, where it placed **Top 8**. Development continued after
+the event; the current repository includes reliability, approval, and local-AI work beyond
+the hackathon prototype.
+
+The team combined dashboard, backend/data, and agent integration work. **Johaan Mannanal**
+contributed dashboard development, frontend/API integration, demo preparation, and the
+product pitch. See the [contributor history](https://github.com/tobywashere/open-house-intelligence-crm/graphs/contributors)
+for the wider team's work.
+
+The current agent workflow supports **eight approval-gated CRM actions**: creating and
+updating leads, adding notes, scheduling follow-ups, booking appointments, closing leads,
+merging duplicates, and deleting leads. These agent-created changes wait for human review;
+they are not silently applied. See [the API and tool contract](docs/CONTRACT.md).
+
 ## Try the demo
 
 You need Git, Python 3.11 or newer, and Node.js 20 or newer.
