@@ -1,21 +1,32 @@
 # Run OpenHouse Intelligence with local AI
 
-This guide is for Linux, a Mac mini, or another host running OpenClaw. It
-explains the configuration behind the short setup in the README. Mac mini
-owners can follow [MAC-MINI-SETUP.md](MAC-MINI-SETUP.md) instead.
+This guide is the shared reference for native Linux, a Mac mini, or Windows 11
+running the project inside WSL2. It explains the configuration behind the short
+setup in the README. Mac mini owners can follow
+[MAC-MINI-SETUP.md](MAC-MINI-SETUP.md); Windows owners can follow
+[WINDOWS-WSL-SETUP.md](WINDOWS-WSL-SETUP.md).
 
 ## What is required and what is optional
 
 Required for real local-AI mode:
 
-- Python 3.11+, Node.js 20+, and OpenClaw
+- Python 3.11+, Node.js 22.22.3+ for real local AI, and a current OpenClaw installation
 - A tool-capable model configured in OpenClaw
 - The enabled `/v1/chat/completions` endpoint
-- The dedicated `openhouse-crm` agent and the `crm-db-operations` skill
+- The dedicated agent selected by `AGENT_ID` (default `openhouse-crm`) and the
+  `crm-db-operations` skill
 
-An Apple-silicon Mac mini with **16 GB** is the supported minimum. A modest
-quantized model is appropriate at that size. Linux is supported; a GB10 is an
-optional host, not a dependency.
+An Apple-silicon Mac mini with **16 GB** is the primary supported baseline.
+Linux x86_64 or ARM64 and Windows through WSL2 are supported at the same memory
+baseline. Native PowerShell setup is not supported. A modest quantized model is
+appropriate at 16 GB; larger models can need considerably more memory. A GB10
+is an optional host, not a dependency.
+
+Native Windows is unsupported; use Windows 11 with WSL2.
+
+OpenClaw's own Node.js requirements can change independently of this CRM. Use
+its current [installation guide](https://docs.openclaw.ai/install) rather than
+forcing OpenClaw onto the CRM's minimum Node version.
 
 Optional services that use the internet are Gmail, Google Calendar, the
 fixed-source daily-brief runner, and remote model providers. They stay off
@@ -50,10 +61,27 @@ cp .env.example .env
 Open `.env` and change its safe demo setting from `AGENT_MODE=mock` to
 `AGENT_MODE=openclaw`. Then run:
 
+Keep the `-I` in these commands. It prevents personal Python startup
+customizations from running before the repository safety checks.
+
 ```bash
-python3 scripts/setup_openclaw.py
+python3 -I scripts/setup_openclaw.py
 bash scripts/serve.sh
 ```
+
+Keep the private recovery-backup folder that setup reports until dashboard chat
+passes the live check. Then remove that exact old folder; never share it.
+
+On a new OpenClaw install, it is normal for the config to contain agent
+defaults but no explicit agent roster yet. Setup creates the dedicated CRM
+agent, then safely detects whether that OpenClaw version uses current keyed
+agent entries or the older list format. You do not need to edit either format
+by hand.
+
+Run setup while no other process is writing OpenClaw configuration. Setup
+rechecks legacy list indexes immediately before each agent-specific write and
+readback, but it still expects no concurrent OpenClaw config writer during the
+short setup run.
 
 Keep the server running. In a second Terminal, start in the directory where
 you cloned the project, then run:
@@ -65,11 +93,42 @@ python3 scripts/doctor.py --live-agent --live-crm
 
 The helper is safe to rerun. It creates or validates the agent selected by
 `AGENT_ID` in `.env`, installs the shipped skills in that agent's workspace,
-and validates that `crm-db-operations` is eligible. If you pass `--agent-id`,
+links and enables the bundled `openhouse_crm` plugin, and validates that
+`crm-db-operations` is eligible. The plugin ships as runnable JavaScript, so
+setup does not download a compiler or plugin dependencies. If you pass `--agent-id`,
 set `AGENT_ID` to the same nonblank value in `.env`; setup rejects blank or
 conflicting values so the helper and CRM runtime cannot select different agents.
-It restricts command execution to the shipped CRM wrapper and daily-brief
-runner, rather than allowing a general shell command.
+Setup also writes that selected value into the plugin's validated `agentId`
+configuration and proves the safety hooks protect that exact agent. The default
+remains `openhouse-crm`.
+CRM reads and proposals use the typed `openhouse_crm` tool without a shell.
+Command execution remains available only for the deterministic daily-brief runner.
+OpenClaw may automatically enable lean tool compaction for local Ollama models.
+That compact surface is useful for general agents, but it can hide the two
+caller-supplied functions used by verified CRM chat. Setup disables lean mode
+for the dedicated CRM agent and its temporary probe only. Other agents keep
+their existing behavior.
+Setup gives only the dedicated CRM agent an unrestricted base profile before
+narrowing its final allowlist to those two tools. This prevents a machine-wide
+`coding` profile from hiding the CRM plugin without changing that global profile
+or exposing CRM access to unrelated agents.
+Setup also sets the dedicated CRM agent's thinking default to `off`. OpenClaw's
+recommended local-model configuration uses this mode for smaller Qwen models,
+and it prevents a model from spending its response on reasoning or merely
+claiming that it called a tool. The temporary setup probe uses the same setting.
+This is scoped to the CRM agents; setup does not change the global model,
+provider, thinking default, lean-mode default, or unrelated agents. If you
+explicitly enabled global Tool Search in `tools` or `code` mode, setup stops
+before changing anything because that global setting would still hide the CRM
+functions. Disable it or use `directory` mode, then rerun setup.
+
+If an earlier run stopped halfway through, rerun the same command. Setup repairs
+the CRM agent's skills, thinking default, lean-mode override, sandbox, and
+execution policy before checking the final result. It does not change the
+global `tools.exec` or model settings used by other agents. If a later check
+fails, setup restores the CRM agent fields that existed before that run. It
+will not take over an existing selected CRM agent whose workspace points
+somewhere else.
 
 The helper prints `openclaw --version` in both success and failure diagnostics.
 Compatibility is capability-based because this repository has no evidence for
@@ -77,11 +136,21 @@ a safe numeric version range. Before changing files or configuration, the
 helper requires the documented CLI commands, options, and prerequisite JSON
 and policy-inspection surfaces. After configuration, it reads the dedicated
 agent's authoritative tool policy back and requires the allowed-tool list to be
-exactly `exec`, with general web, browser, and file tools denied. It also
+exactly `openhouse_crm` and `exec`, with general web, browser, and file tools
+denied. The dedicated agent's profile must be `full` before that exact allowlist
+is applied. It also loads the plugin through OpenClaw's runtime inspection and
+requires exactly one registered tool named `openhouse_crm`. It then
 requires OpenClaw's effective execution prompt mode to be exactly `off`; a
 missing, interactive, or contradictory value is not treated as ready. A
 missing or ambiguous surface stops setup instead of guessing or widening
 permissions.
+
+The checks come from separate authoritative surfaces. Plugin runtime inspection
+proves that `openhouse_crm` is registered. Agent configuration proves that exec
+requests the gateway in allowlist mode. Gateway approvals prove the effective
+host, security, prompt behavior, and daily-brief executable pattern.
+`sandbox explain` proves only that this restricted agent is running directly
+with sandbox mode off; it is not expected to repeat exec-host policy.
 
 ## Configuration details
 
@@ -142,18 +211,22 @@ The helper uses the following agent policy on purpose:
 
 - Allowed skills include `crm-db-operations` plus the shipped card and briefing
   skills.
-- `exec` is the only allowed OpenClaw tool. General web fetch/search, browser,
-  and filesystem tools are explicitly denied.
+- `openhouse_crm` is the only CRM tool. It accepts a fixed operation name and
+  argument object, then invokes the audited wrapper without a shell. General
+  web fetch/search, browser, and filesystem tools are explicitly denied.
 - `exec` runs on the gateway in allowlist mode with its OpenClaw prompt set to
-  `off`. The only permitted executable entry points are the CRM wrapper and
-  deterministic daily-brief runner, so unattended dashboard and Discord chat
-  cannot turn into general shell access.
+  `off`. The only permitted executable entry point is the deterministic
+  daily-brief runner, so dashboard and Discord chat cannot turn CRM requests
+  into general shell access.
 - The daily-brief runner performs its own fixed-source retrieval and validation;
   the agent cannot replace it with a general web tool or hand-built payload.
 
 OpenClaw's skill and configuration interfaces change over time. If the helper
 reports an unsupported command or configuration shape, update OpenClaw and
-rerun it rather than manually broadening the agent's permissions.
+rerun it rather than manually changing global `tools.exec` settings or broadening
+the agent's permissions. If setup still fails, share `openclaw --version`, the
+failing command, and its exact redacted output with the project maintainers
+rather than patching the script locally.
 
 ## Live checks and status
 
@@ -162,50 +235,137 @@ While `bash scripts/serve.sh` is running, use:
 ```bash
 python3 scripts/doctor.py
 python3 scripts/doctor.py --live-agent --live-crm
+python3 scripts/doctor.py --live-agent --live-crm --json
 ```
 
 The first command changes nothing. `--live-agent` sends one harmless chat
-completion. `--live-crm` asks the selected agent for one audited, read-only
-`generate_dashboard_insights` capability call. The CRM check is successful
+completion. `--live-crm` directly invokes the selected agent's native CRM tool
+through OpenClaw for one audited, read-only `generate_dashboard_insights` call.
+The CRM check is successful
 only after the backend sees that new agent-tagged audit record. It does not
 trust the model's text alone.
+
+To inspect the installed tool directly, run:
+
+```bash
+openclaw plugins inspect openhouse-crm --runtime --json
+```
+
+Its runtime tools must include `openhouse_crm`. This proves registration,
+while `crm_verified` additionally proves the tool reached the audited CRM API.
 
 Run `bash scripts/serve.sh` first and leave it running. Setup output and unit
 tests are not runtime proof. The required proof is the second command above,
 with both `--live-agent` and `--live-crm`.
+
+The JSON form is the easiest report to send to a maintainer. It includes the
+product revision, platform, architecture, memory, dependency versions, and the
+same application checks. It does not include tokens, environment values, CRM
+records, chat content, model responses, or home-directory paths. Inspect any
+file yourself before sharing it.
+
+For a supported-hardware report, create setup evidence before running the app.
+The helper runs setup twice and records machine-verifiable evidence tied to the
+tested revision, which must remain clean. It also compares canonical structured snapshots of
+the installed skills, plugin, agent policy, bindings, approvals, and gateway
+references after each run. It verifies tracked HEAD files and executable modes;
+modified, missing, or unexpected extra files in material setup sources fail closed.
+Strict generated Python caches are isolated and never copied or loaded.
+Sanitized run logs are manual diagnostics only and do not make this pass. The
+JSON report names the structured prerequisite `Setup twice`.
+
+This setup proves the OpenClaw policy. It proves the bundled plugin, its
+channel restrictions, the CRM schemas, and supported diagnostic cleanup. It
+does not prove that your model can use the CRM for ordinary requests. The
+channel check is answered by a setup-only plugin hook before the local model is
+called, so a slow or unavailable model cannot make that policy check ambiguous.
+The prompt and blocked-tool checks return their own correlated receipts; setup
+does not depend on temporary plugin memory carrying across separate requests.
+OpenClaw's direct tool endpoint does not attach message-requester identity, so
+the temporary sentinel instead verifies its exact setup agent, session, nonce,
+and channel argument. The separate prompt receipt proves the host-derived
+dashboard or analysis channel. The sentinel is unavailable after setup.
+
+A **Compatibility warning** means setup can continue safely, but dashboard CRM
+use must wait for the doctor and acceptance checks. After OpenClaw accepts the
+CRM schemas and the plugin proves the protected channel policy, a separate
+model check can still time out or return plain text. Setup reports that model
+problem as a warning instead of undoing the safe configuration. First run the
+read-only doctor and confirm its audited CRM read passes. Do not run write
+acceptance until that read passes.
+
+```bash
+python3 -I scripts/capture_setup_evidence.py --output openhouse-setup-evidence.json
+```
+
+After the read-only doctor reports `crm_verified`, the automated CRM chat
+acceptance proves an audited CRM read, exact lead count, invalid-write safety,
+truthful briefing, one disposable create-lead proposal, one natural-language
+booking proposal, and session cleanup. Neither proposal is approved. Both are
+denied and cleaned up. It does not automate voice or Discord delivery.
+
+```bash
+python3 -I scripts/acceptance_openclaw.py --json --setup-evidence openhouse-setup-evidence.json
+python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json
+```
+
+The first form remains read-only. The second explicitly authorizes the two
+disposable proposal attempts. Neither command approves a write or edits
+OpenClaw configuration between checks. If there is no suitable existing lead,
+the booking row fails honestly because the write-enabled result cannot prove
+booking.
 
 Status meanings:
 
 | Status | Meaning |
 |---|---|
 | `endpoint_enabled` | The gateway and chat endpoint respond, but no completion is proved yet. |
-| `chat_verified` | A real chat completion succeeded. |
-| `crm_verified` | A real chat completion and new audited CRM capability call succeeded. |
-| `degraded` | A verified setup later failed a chat call or used a labeled fallback. |
-| `unauthorized`, `unreachable`, `endpoint_disabled`, `failed` | Setup needs attention. |
+| `chat_verified` | OpenClaw answered, but CRM access has not been proven. |
+| `crm_verified` | The native CRM tool completed and the backend recorded the matching audit. |
+| `degraded` | CRM was previously verified, but the latest chat completion failed. |
+| `failed` | A required live check did not complete. |
+| `unauthorized`, `unreachable`, `endpoint_disabled` | The connection or endpoint needs attention. |
 
 ## Review before applying changes
 
-Natural-language CRM operations do not apply directly. New leads, updates,
+CRM writes wait for review and do not apply directly. New leads, updates,
 notes, reminders, bookings, closes, merges, and deletes enter **Pending approvals**
 first. The operator can edit, approve, or deny each item. Booking
 availability is checked again when approval happens. New-lead preferences are
 shown as one item per line; editing them changes what is saved, and clearing
 the box saves an empty preference list.
 
-OpenClaw's `ask: off` setting only disables a second command-execution prompt
-inside the restricted agent. It does not bypass this CRM review screen.
+The native CRM tool does not use OpenClaw command execution. The remaining
+daily-brief command allowlist does not bypass this CRM review screen.
 
-This is also true for the optional Discord binding:
+Discord is optional and is tested only after dashboard acceptance. The same
+review rule applies to its writes:
 
 ```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
+python3 -I scripts/setup_openclaw.py --bind-discord ACCOUNT
 ```
 
 Use the `ACCOUNT` identifier OpenClaw documents for your Discord account. The
 dashboard remains the place to review proposed CRM changes.
+One Discord run keeps an ordered, bounded safety summary of its CRM writes.
+The reply lists each retained Pending proposal ID, each verified direct write,
+and any definite or uncertain failure. An uncertain result blocks later writes
+in the same run, while reads remain available, and the reply tells you when
+additional outcomes were omitted by the safety bound.
+
+Discord delivery is a manual hardware test. Binding alone is not a pass. A
+bound tester must confirm it lists the real CRM lead count and that a disposable
+write appears in Pending approvals. Merge waits for this manual evidence when
+Discord is in scope. The automated report records only whether a binding was
+found and never changes that into a delivery PASS.
 
 ## Voice notes
+
+Voice intake has a separate optional prerequisite: an optional transcription
+provider configured in OpenClaw. The CRM does not silently substitute a cloud
+provider. Test the provider itself before relying on voice intake. If no
+transcription provider is configured, record voice as SKIP (not configured);
+voice is optional and is not a release blocker.
 
 The app calls this OpenClaw CLI surface without a shell:
 
@@ -226,7 +386,7 @@ from current CRM rows. An agent may add labeled preparation advice but cannot
 replace those facts. A market summary exists only after a valid, source-backed
 daily payload is stored. Every market item needs a source URL, publication date,
 summary, and geographic area. Missing information stays visibly
-unavailable.
+unavailable. Missing briefing content is never synthesized.
 
 If the AI cannot extract a lead, draft a follow-up, or explain a score, the
 application may use a deterministic fallback. It is visibly labeled and must
@@ -293,47 +453,78 @@ CRM fields can create a new proposal for review.
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart the CRM.
 - **CRM API 401:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in `.env`.
   Include `X-API-Token` in direct API commands, rerun
-  `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
-- **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
-  It checks the agent workspace, eligible skill, allowlist, and restart.
+  `python3 -I scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
+- **Chat verified, CRM check fails:** rerun `python3 -I scripts/setup_openclaw.py`.
+  It repairs partial dedicated-agent setup, relinks the bundled plugin, verifies
+  the `openhouse_crm` runtime tool, and removes the obsolete CRM wrapper
+  approval. Do not change global `tools.exec` settings.
+- **Compatibility warning:** the model did not make a valid structured CRM tool
+  call during setup. The OpenClaw policy is still proved, but the dashboard is
+  not ready for CRM use. Confirm the doctor has an audited CRM read, then run
+  read-only acceptance. Do not run write acceptance until that read passes.
+- **Setup says global Tool Search would hide CRM functions:** this is an explicit
+  machine-wide OpenClaw setting, so setup leaves it alone. Disable Tool Search,
+  or configure `directory` mode if other agents need it, then rerun setup.
 - **The agent lists generic tools only:** it is not using the dedicated agent.
-  Confirm `AGENT_ID=openhouse-crm`, rerun setup, and repeat the live CRM check.
+  Confirm the intended `AGENT_ID` in `.env` (normally `openhouse-crm`), rerun
+  setup, and repeat the live CRM check. Do not configure a different plugin
+  agent by hand; setup keeps the app, plugin hooks, and acceptance check aligned.
 - **OpenClaw unreachable:** start the gateway and verify
   `AGENT_GATEWAY_URL`.
 - **Voice failure:** run the direct transcription command above and verify the
   provider/model selected in OpenClaw.
+- **WSL service does not restart after Windows reboots:** enter the WSL
+  distribution, start OpenClaw and the model runtime, then rerun the doctor.
+  Follow the current OpenClaw and WSL service guidance rather than changing the
+  dedicated CRM agent's policy.
 
 ## Target hardware and live acceptance record
 
 These boxes are intentionally unchecked. Automated tests do not verify a Mac
-mini, model, OpenClaw gateway, provider account, or Discord account. Fill them
-in only after a person records a real run.
+mini, Windows/WSL2 system, model, OpenClaw gateway, provider account, or Discord
+account. Fill them in only after a person records a real run.
 
+- [ ] Product revision from the JSON report:
 - [ ] Operating system and version:
-- [ ] Hardware, including whether this is a Mac mini:
-- [ ] Memory: confirm at least 16 GB on a Mac mini.
+- [ ] Hardware and architecture:
+- [ ] Memory: confirm at least 16 GB for local-AI mode.
 - [ ] OpenClaw version:
 - [ ] Model/provider:
 - [ ] Date and operator:
+- [ ] Sanitized JSON report inspected and attached:
 
-Verify the dashboard first, then Discord and external providers in this order:
+Verify required dashboard behavior and truthful briefing first. Then record
+optional providers in this order. Steps 6 and 8 through 11 are conditional and
+may be recorded as SKIP when those optional providers or accounts are not
+configured:
 
-- [ ] 1. `--live-agent --live-crm` reports `CRM verified`.
-- [ ] 2. Dashboard chat lists real CRM leads.
-- [ ] 3. Dashboard chat proposes a reviewed CRM write that appears in Pending
+- [ ] 1. `Setup twice` is PASS from `openhouse-setup-evidence.json` at this
+  tested revision.
+- [ ] 2. `--live-agent --live-crm` reports `CRM verified`.
+- [ ] 3. Automated CRM chat acceptance with
+  `python3 -I scripts/acceptance_openclaw.py --json --allow-test-write --setup-evidence openhouse-setup-evidence.json` has its
+  report inspected and attached.
+- [ ] 4. Dashboard chat lists real CRM leads.
+- [ ] 5. Dashboard chat proposes a reviewed CRM write that appears in Pending
    approvals.
-- [ ] 4. Optional Discord binding lists the same real CRM leads through the
-   dedicated agent.
-- [ ] 5. Discord proposes a disposable write that appears in the same Pending
-   approvals.
-- [ ] 6. With live integrations enabled, approve one disposable booking and
-   verify one Google Calendar event.
-- [ ] 7. Approve one disposable lead with an email and verify one Calendar call
-   block plus one Gmail draft.
+- [ ] 6. Voice (optional): when a transcription provider is configured, a note
+  reaches the review screen without creating a lead; otherwise record
+  SKIP (not configured).
+- [ ] 7. Daily briefing uses stored CRM facts and leaves missing market
+   information unavailable.
+- [ ] 8. Optional Discord binding: if bound, manually verify it lists the same
+  real CRM leads
+  through the dedicated agent; otherwise record SKIP.
+- [ ] 9. If Discord is bound, manually verify it proposes a disposable write that appears in the
+  same Pending approvals; otherwise record SKIP.
+- [ ] 10. With live integrations enabled, approve one disposable booking and
+  verify one Google Calendar event; otherwise record SKIP.
+- [ ] 11. With live integrations enabled, approve one disposable lead with an
+  email and verify one Calendar call block plus one Gmail draft; otherwise
+  record SKIP.
 
 Optional feature checks after the ordered acceptance run:
 
-- [ ] Voice note reaches the review screen.
 - [ ] Gmail account and result recorded:
 - [ ] Google Calendar account and result recorded:
 - [ ] Discord account and result recorded:

@@ -236,6 +236,57 @@ def test_briefing_rehydrates_facts_from_real_appointment(client):
     assert body["meeting_briefs"][0]["budget"] == 900_000
 
 
+def test_briefing_preserves_a_persisted_whitespace_only_lead_name(client):
+    lead = make_lead(client, name="   ")
+    appointment = client.post(
+        "/api/appointments",
+        json={
+            "lead_id": lead["id"],
+            "start_ts": "2026-07-28T17:00:00",
+            "end_ts": "2026-07-28T17:45:00",
+            "location": "Main Street",
+        },
+    ).json()
+
+    response = client.get("/api/briefing?date=2026-07-28")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedule"][0] == {
+        "appointment_id": appointment["id"],
+        "start": "17:00",
+        "end": "17:45",
+        "kind": "meeting",
+        "title": "Meeting —    ",
+        "lead_id": lead["id"],
+    }
+    assert body["meeting_briefs"][0]["name"] == "   "
+
+
+def test_briefing_preserves_a_persisted_whitespace_only_reminder_note(client):
+    lead = make_lead(client, name="Reminder Lead")
+    reminder = client.post(
+        "/api/reminders",
+        json={
+            "lead_id": lead["id"],
+            "due_ts": "2026-07-28T09:00:00",
+            "note": "   ",
+        },
+    )
+    assert reminder.status_code == 200
+
+    response = client.get("/api/briefing?date=2026-07-28")
+
+    assert response.status_code == 200
+    action = response.json()["suggested_actions"][0]
+    assert action["name"] == "Reminder Lead"
+    assert action["reason"] == "   "
+    assert action["evidence"] == {
+        "kind": "reminder",
+        "id": reminder.json()["id"],
+    }
+
+
 def test_briefing_post_cannot_override_canonical_crm_facts(client):
     lead = make_lead(client, name="Real Name", area="Redmond", budget=750_000)
     appointment = client.post(

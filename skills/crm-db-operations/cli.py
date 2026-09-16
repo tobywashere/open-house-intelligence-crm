@@ -3,38 +3,81 @@
 
 import argparse
 import json
+import re
 import sys
 
+from contract import CONTRACT, operation_names, validate_arguments
 import tools
 
 
-OPERATIONS = {
-    name: getattr(tools, name)
-    for name in (
-        "create_lead",
-        "update_lead",
-        "add_note",
-        "close_lead",
-        "find_duplicate_leads",
-        "merge_leads",
-        "get_lead_context",
-        "list_leads",
-        "score_lead",
-        "draft_followup",
-        "check_availability",
-        "list_appointments",
-        "book_appointment",
-        "schedule_followup",
-        "find_neglected_leads",
-        "generate_dashboard_insights",
-        "post_briefing",
-        "get_research_settings",
-        "get_insights",
-        "get_summary",
-        "delete_lead",
-        "search_knowledge",
-    )
-}
+OPERATIONS = {name: getattr(tools, name) for name in operation_names()}
+
+
+def _bounded_crm_message(code: str, _message: str) -> str:
+    return {
+        "backend_unavailable": "CRM backend is unavailable",
+        "not_found": "CRM record was not found",
+        "schedule_conflict": "Requested schedule conflicts with an existing appointment",
+        "invalid_arguments": "Invalid CRM arguments",
+        "operation_failed": "CRM operation failed",
+        "outcome_unknown": "CRM mutation outcome is unknown",
+    }.get(code, "CRM operation failed")
+
+
+def _bounded_argument_message(exc: Exception) -> str:
+    message = str(exc)
+    if message == "--args must decode to a JSON object":
+        return message
+    if re.fullmatch(r"(?:Unsupported|Missing|Invalid) argument: [a-z][a-z0-9_]*", message):
+        return message
+    if re.fullmatch(r"Invalid CRM arguments: [a-z][a-z0-9_]*", message):
+        return message
+    return "Invalid CRM arguments"
+
+
+def _is_mutating_operation(operation: str | None) -> bool:
+    entry = CONTRACT["operations"].get(operation) if operation else None
+    return bool(entry and entry["effect"] in {"proposal", "validated_write"})
+
+
+def _is_deterministic_http_rejection(status: int) -> bool:
+    return 400 <= status < 500 and status not in {408, 499}
+
+
+def _safe_error(exc: Exception, *, operation: str | None = None) -> dict:
+    mutation = _is_mutating_operation(operation)
+    if isinstance(exc, tools.CRMError):
+        if mutation and not _is_deterministic_http_rejection(exc.status):
+            return {
+                "code": "outcome_unknown",
+                "message": "CRM mutation outcome is unknown",
+                "retryable": False,
+            }
+        code = {
+            0: "backend_unavailable",
+            404: "not_found",
+            409: "schedule_conflict",
+            400: "invalid_arguments",
+            422: "invalid_arguments",
+        }.get(exc.status, "operation_failed")
+        return {
+            "code": code,
+            "message": _bounded_crm_message(code, exc.message),
+            "retryable": code in {"backend_unavailable", "timeout"},
+        }
+    if isinstance(exc, (TypeError, ValueError)):
+        return {
+            "code": "invalid_arguments",
+            "message": _bounded_argument_message(exc),
+            "retryable": False,
+        }
+    if mutation:
+        return {
+            "code": "outcome_unknown",
+            "message": "CRM mutation outcome is unknown",
+            "retryable": False,
+        }
+    return {"code": "operation_failed", "message": "CRM operation failed", "retryable": False}
 
 
 def dispatch(operation: str, arguments: dict):
@@ -43,7 +86,7 @@ def dispatch(operation: str, arguments: dict):
         raise ValueError(f"unknown CRM operation: {operation}")
     if not isinstance(arguments, dict):
         raise ValueError("--args must decode to a JSON object")
-    return function(**arguments)
+    return function(**validate_arguments(operation, arguments))
 
 
 def main() -> int:
@@ -56,7 +99,13 @@ def main() -> int:
     try:
         result = dispatch(args.operation, json.loads(args.args))
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+        print(
+            json.dumps({
+                "ok": False,
+                "error": _safe_error(exc, operation=args.operation),
+            }),
+            file=sys.stderr,
+        )
         return 2
     print(json.dumps({"ok": True, "result": result}, default=str))
     return 0

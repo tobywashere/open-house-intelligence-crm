@@ -1,0 +1,641 @@
+{
+  "version": 1,
+  "operations": {
+    "create_lead": {
+      "description": "Propose a new lead.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "raw_text": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "form",
+              "text",
+              "note",
+              "referral",
+              "email"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "budget": {
+            "type": "integer"
+          },
+          "area": {
+            "type": "string"
+          },
+          "timeline": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "raw_text"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
+        ]
+      }
+    },
+    "update_lead": {
+      "description": "Propose changes to an existing lead.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "contacted",
+              "meeting_booked"
+            ]
+          },
+          "budget": {
+            "type": "integer"
+          },
+          "area": {
+            "type": "string"
+          },
+          "timeline": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "score_reason": {
+            "type": "string"
+          },
+          "is_neglected": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "persona": {
+            "type": "string"
+          },
+          "relationship_summary": {
+            "type": "string"
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "name"
+            ]
+          },
+          {
+            "required": [
+              "phone"
+            ]
+          },
+          {
+            "required": [
+              "email"
+            ]
+          },
+          {
+            "required": [
+              "status"
+            ]
+          },
+          {
+            "required": [
+              "budget"
+            ]
+          },
+          {
+            "required": [
+              "area"
+            ]
+          },
+          {
+            "required": [
+              "timeline"
+            ]
+          },
+          {
+            "required": [
+              "intent"
+            ]
+          },
+          {
+            "required": [
+              "score"
+            ]
+          },
+          {
+            "required": [
+              "score_reason"
+            ]
+          },
+          {
+            "required": [
+              "is_neglected"
+            ]
+          },
+          {
+            "required": [
+              "persona"
+            ]
+          },
+          {
+            "required": [
+              "relationship_summary"
+            ]
+          }
+        ]
+      }
+    },
+    "add_note": {
+      "description": "Propose a note on a lead.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id",
+          "content"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": ".*\\S.*"
+          }
+        }
+      }
+    },
+    "close_lead": {
+      "description": "Propose closing a lead.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id",
+          "outcome"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "won",
+              "lost"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "find_duplicate_leads": {
+      "description": "Find duplicate candidates.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "merge_leads": {
+      "description": "Propose merging duplicate leads.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "primary_id",
+          "duplicate_id"
+        ],
+        "properties": {
+          "primary_id": {
+            "type": "integer"
+          },
+          "duplicate_id": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "get_lead_context": {
+      "description": "Read a lead's complete context.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "list_leads": {
+      "description": "List leads.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sort": {
+            "type": "string",
+            "enum": [
+              "priority",
+              "recent"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "contacted",
+              "meeting_booked",
+              "closed"
+            ]
+          },
+          "neglected": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          }
+        }
+      }
+    },
+    "list_lead_directory": {
+      "description": "List compact lead directory entries.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sort": {
+            "type": "string",
+            "enum": [
+              "priority",
+              "recent"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "contacted",
+              "meeting_booked",
+              "closed"
+            ]
+          },
+          "neglected": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        }
+      }
+    },
+    "score_lead": {
+      "description": "Generate a lead-scoring narrative.",
+      "effect": "narrative",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "draft_followup": {
+      "description": "Draft a lead follow-up.",
+      "effect": "narrative",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "check_availability": {
+      "description": "Read availability for a date.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          }
+        }
+      }
+    },
+    "list_appointments": {
+      "description": "List appointments.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "book_appointment": {
+      "description": "Propose an appointment.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id",
+          "start_ts",
+          "end_ts"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          },
+          "start_ts": {
+            "type": "string"
+          },
+          "end_ts": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "schedule_followup": {
+      "description": "Propose a follow-up reminder.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id",
+          "due_ts"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          },
+          "due_ts": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "find_neglected_leads": {
+      "description": "Refresh neglected lead flags.",
+      "effect": "validated_write",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "generate_dashboard_insights": {
+      "description": "Read deterministic dashboard insights.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "probe_nonce": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "post_briefing": {
+      "description": "Publish validated meeting preparation.",
+      "effect": "validated_write",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "date",
+              "meeting_briefs"
+            ],
+            "properties": {
+              "date": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              },
+              "generated_at": {
+                "type": "string"
+              },
+              "meeting_briefs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "lead_id",
+                    "prepare"
+                  ],
+                  "properties": {
+                    "lead_id": {
+                      "type": "integer"
+                    },
+                    "prepare": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "recommendation": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "get_research_settings": {
+      "description": "Read research settings.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "get_insights": {
+      "description": "Read stored insights for a date.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          }
+        }
+      }
+    },
+    "get_summary": {
+      "description": "Read a stored daily summary.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          }
+        }
+      }
+    },
+    "delete_lead": {
+      "description": "Propose deleting a lead.",
+      "effect": "proposal",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lead_id"
+        ],
+        "properties": {
+          "lead_id": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "search_knowledge": {
+      "description": "Search local market knowledge.",
+      "effect": "read",
+      "arguments": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": ".*\\S.*"
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        }
+      }
+    }
+  }
+}

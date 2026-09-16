@@ -1077,6 +1077,47 @@ def test_process_queues_extracted_fields_and_derived_score_until_approval(client
     assert applied["score_reason"] == response.json()["lead"]["score_reason"]
 
 
+def test_narrative_only_process_returns_analysis_without_pending_proposal(client, monkeypatch):
+    lead = make_lead(
+        client,
+        phone=None,
+        budget=None,
+        area=None,
+        timeline=None,
+        intent="unknown",
+    )
+    client.post(
+        f"/api/leads/{lead['id']}/events",
+        json={"type": "note", "content": "Budget is $925k in Kirkland."},
+    )
+    monkeypatch.setattr(
+        leads_router, "get_driver", lambda: _ReviewableExtractionDriver()
+    )
+
+    response = client.post(
+        f"/api/leads/{lead['id']}/process?propose_changes=false"
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["lead"]["score"] > 0
+    assert payload["lead"]["score_reason"].startswith("Derived score")
+    assert payload["followup_draft"].startswith("Hi Test")
+    assert payload["pending_change"] is None
+    assert client.get("/api/pending-changes").json() == []
+    persisted = client.get(f"/api/leads/{lead['id']}").json()
+    assert persisted["budget"] is None
+    assert persisted["area"] is None
+    assert persisted["score"] is None
+    assert persisted["score_reason"] is None
+    score_audit = next(
+        row
+        for row in client.get("/api/audit?limit=30").json()
+        if row["tool"] == "score_lead"
+    )
+    assert json.loads(score_audit["output"])["pending"] is False
+
+
 def test_process_uses_highest_event_id_when_timestamps_tie(client, monkeypatch):
     lead = make_lead(client, budget=None, area=None, timeline=None)
     older = client.post(

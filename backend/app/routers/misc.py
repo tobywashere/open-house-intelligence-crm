@@ -265,10 +265,12 @@ async def crm_check():
 
     probe_nonce = uuid.uuid4().hex
     try:
-        await driver.request_crm_capability(
+        receipt = await driver.request_crm_capability(
             f"crm-check-{probe_nonce}",
             probe_nonce,
         )
+        if not _is_crm_success_receipt(receipt):
+            raise ValueError("invalid CRM capability receipt")
     except Exception:
         record_crm_capability(False, "capability request failed")
         return asdict(_capability_result(
@@ -313,6 +315,16 @@ def _audit_has_nonce(raw_input: str, probe_nonce: str) -> bool:
     except (TypeError, json.JSONDecodeError):
         return False
     return isinstance(payload, dict) and payload.get("probe_nonce") == probe_nonce
+
+
+def _is_crm_success_receipt(receipt: object) -> bool:
+    return (
+        isinstance(receipt, dict)
+        and receipt.get("ok") is True
+        and receipt.get("operation") == "generate_dashboard_insights"
+        and receipt.get("kind") == "read"
+        and "result" in receipt
+    )
 
 
 def _capability_result(

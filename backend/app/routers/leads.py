@@ -577,7 +577,11 @@ def _apply_merge_leads(body: MergeIn, *, conn=None):
 
 
 @router.post("/{lead_id}/process")
-async def process_lead(lead_id: int, source_event_id: int | None = None):
+async def process_lead(
+    lead_id: int,
+    source_event_id: int | None = None,
+    propose_changes: bool = True,
+):
     """Extract (if raw events exist) → score → draft. The core pipeline.
 
     Never hold a connection across the driver awaits: in openclaw mode each can
@@ -645,12 +649,13 @@ async def process_lead(lead_id: int, source_event_id: int | None = None):
         if source_event:
             score_inputs["source_event_id"] = int(source_event["id"])
         audit(conn, "agent", "score_lead", score_inputs,
-              {"score": score, "reason": reason, "pending": bool(proposed_fields)},
+              {"score": score, "reason": reason,
+               "pending": bool(proposed_fields and propose_changes)},
               lead_id)
         audit(conn, "agent", "draft_followup", {"lead_id": lead_id},
               {"draft": draft}, lead_id)
         proposal = None
-        if proposed_fields:
+        if proposed_fields and propose_changes:
             if source_event:
                 legacy_key = (
                     f"lead-process:{lead_id}:event:{source_event['id']}"
