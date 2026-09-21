@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, fmtDate, fmtMoney, Lead, LeadProfile, PendingChange } from '../api'
 import { toast } from './Toast'
+import { approvalDecided, onApprovalsAvailable } from '../approvalEvents'
 
 // Polls for CRM writes the agent proposed (lead changes, notes, bookings,
 // and reminders) and, while any are pending, blocks the UI behind a modal
@@ -133,7 +134,8 @@ export function PendingApprovals() {
     }
     load()
     const t = setInterval(load, 5000)
-    return () => clearInterval(t)
+    const unsubscribe = onApprovalsAvailable(load)
+    return () => { clearInterval(t); unsubscribe() }
   }, [])
 
   const setField = (id: number, key: string, value: FieldValue) =>
@@ -144,6 +146,7 @@ export function PendingApprovals() {
     try {
       await api.approvePending(item.id, coerceForSubmit(edits[item.id] ?? {}))
       setPending((p) => p.filter((x) => x.id !== item.id))
+      approvalDecided()
       toast('Change approved and applied.')
     } catch {
       toast('Could not approve — try again.')
@@ -157,6 +160,7 @@ export function PendingApprovals() {
     try {
       await api.denyPending(id, denyReason.trim() || undefined)
       setPending((p) => p.filter((x) => x.id !== id))
+      approvalDecided()
       toast('Change denied.')
     } catch {
       toast('Could not deny — try again.')
@@ -169,7 +173,7 @@ export function PendingApprovals() {
   if (!pending.length) return null
 
   return (
-    <div className="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">
+    <div role="dialog" aria-modal="true" aria-label="Pending approvals" className="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">
       <div className="w-full max-w-xl rounded-lg border border-line bg-surface p-5 space-y-4 shadow-2xl">
         <div>
           <div className="text-sm font-semibold">Pending approvals</div>

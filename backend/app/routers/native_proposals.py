@@ -37,3 +37,8 @@ def status(request_id: str):
 @router.post('/agent/lead-proposals', dependencies=[Depends(require_agent)])
 def submit(body: native.ProposalIn):
     return native.submit_proposal(body)
+
+
+@router.post('/chat/lead-proposal/{request_id}/close', dependencies=[Depends(require_human)])
+def close(request_id: str):
+    return native.close_request(request_id)

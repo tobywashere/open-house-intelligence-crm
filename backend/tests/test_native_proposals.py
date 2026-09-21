@@ -314,3 +314,108 @@ def test_approval_failure_rolls_back_lead_and_preserves_proposal(api):
         api[0].post(f"/api/pending-changes/{value['proposal']['id']}/approve")
     assert api[0].get(f'/api/chat/lead-proposal/{RID}').json() == value
     assert api[0].get('/api/leads').json() == []
+
+
+def close(api, rid=RID, headers=None):
+    return api[0].post(f'/api/chat/lead-proposal/{rid}/close', headers=headers)
+
+
+def test_close_before_arrival_tombstones_id_without_dispatch_and_survives_restart(api):
+    calls = seam(api, queue)
+    expected = {'request_id': RID, 'state': 'failed', 'proposal': None}
+    assert close(api).status_code == 200
+    assert close(api).json() == expected
+    assert start(api).json() == expected
+    assert start(api, message='late different text').json() == expected
+    assert submit(api).status_code == 409
+    with TestClient(app):
+        assert api[0].get(f'/api/chat/lead-proposal/{RID}').json() == expected
+        assert close(api).json() == expected
+    with db.get_conn() as conn:
+        assert conn.execute('select message from native_lead_requests where request_id=?', (RID,)).fetchone()[0] == ''
+        assert conn.execute('select count(*) from pending_changes').fetchone()[0] == 0
+    assert calls == []
+    assert api[0].get('/api/leads').json() == []
+
+
+def test_close_unknown_keeps_original_conflicts_and_rejects_late_submission(api):
+    def uncertain(*_): raise TimeoutError()
+    calls = seam(api, uncertain)
+    assert start(api).json()['state'] == 'unknown'
+    assert close(api).json() == {'request_id': RID, 'state': 'failed', 'proposal': None}
+    assert start(api).json()['state'] == 'failed'
+    assert start(api, message='changed').status_code == 409
+    assert submit(api).status_code == 409
+    assert len(calls) == 1
+
+
+def test_close_during_completion_cannot_be_revived_by_late_success_or_error(api):
+    from app import native_proposals as native
+    async def exercise(fail):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def complete(*args):
+            entered.set()
+            await release.wait()
+            if fail: raise TimeoutError()
+        api[2].setattr(native, 'complete_native', complete)
+        rid = ('b' if fail else 'c') * 32
+        task = asyncio.create_task(native.propose_lead(rid, MESSAGE))
+        await entered.wait()
+        assert native.close_request(rid)['state'] == 'failed'
+        with pytest.raises(native.NativeProposalError, match='request_settled'):
+            queue(native, rid)
+        release.set()
+        assert (await task)['state'] == 'failed'
+    asyncio.run(exercise(False))
+    asyncio.run(exercise(True))
+
+
+@pytest.mark.parametrize('decision', [None, 'approve', 'deny'])
+def test_close_preserves_proposal_that_already_won(api, decision):
+    seam(api, queue)
+    before = start(api).json()
+    if decision:
+        assert api[0].post(f'/api/pending-changes/{before["proposal"]["id"]}/{decision}').status_code == 200
+        before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
+    assert close(api).json() == before
+
+
+def test_close_and_agent_submission_are_atomic(api):
+    from app import native_proposals as native
+    from threading import Barrier
+    for index in range(8):
+        rid = f'{index:032x}'
+        native.reserve_request(rid, MESSAGE)
+        with db.get_conn() as conn:
+            pending_before = conn.execute('select count(*) from pending_changes').fetchone()[0]
+        gate = Barrier(2)
+        def closing():
+            gate.wait(timeout=5)
+            return close(api, rid=rid)
+        def proposing():
+            gate.wait(timeout=5)
+            return submit(api, rid=rid)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            closing_result = pool.submit(closing)
+            proposing_result = pool.submit(proposing)
+            closed, proposed = closing_result.result(), proposing_result.result()
+        assert closed.status_code == 200
+        final = native.get_status(rid)
+        if proposed.status_code == 200:
+            assert final['state'] == 'proposed'
+            assert closed.json() == proposed.json() == final
+        else:
+            assert proposed.status_code == 409
+            assert closed.json() == final == {'request_id': rid, 'state': 'failed', 'proposal': None}
+        with db.get_conn() as conn:
+            count = conn.execute('select count(*) from pending_changes').fetchone()[0]
+            assert count == pending_before + (1 if final['proposal'] else 0)
+
+
+def test_close_requires_human_and_valid_id(api):
+    assert close(api, headers={**api[1], 'X-Actor': 'user'}).status_code == 403
+    assert api[0].get(f'/api/chat/lead-proposal/{RID}').status_code == 404
+    for rid in ['A' * 32, 'a' * 31, 'a' * 33]:
+        response = close(api, rid=rid)
+        assert response.status_code == 422
+        assert response.json()['error']['code'] == 'invalid_request'

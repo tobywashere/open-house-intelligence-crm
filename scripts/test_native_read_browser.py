@@ -4,7 +4,9 @@
 Build dashboard/dist and install Playwright Chromium first. This runner needs
 the backend's Python dependencies, but no OpenClaw, Ollama, or credentials.
 """
+import argparse
 import os
+import secrets
 from pathlib import Path
 import socket
 import subprocess
@@ -18,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--screenshots', type=Path, help='Optional output directory for synthetic proposal screenshots')
+    parser.add_argument('--suite', choices=['read', 'auth', 'proposals'], default='read')
+    args = parser.parse_args()
     if os.name != "posix":
         raise SystemExit("Run this isolated browser fixture in WSL on Windows.")
     if not (ROOT / "dashboard/dist/index.html").is_file():
@@ -38,9 +44,20 @@ def main():
             AGENT_MODE="mock", INTEGRATIONS_MODE="off", INTEGRATIONS_POLLER="off",
             PYTHONDONTWRITEBYTECODE="1",
         )
+        app = "app.main:app"
+        human_token = secrets.token_hex(32)
+        if args.suite == 'proposals':
+            app = "native_proposal_browser_fixture:app"
+            server_env.update(
+                PYTHONPATH=os.pathsep.join([str(ROOT / 'scripts'), str(ROOT / 'backend')]),
+                OHI_API_TOKEN=human_token, OHI_AGENT_API_TOKEN=secrets.token_hex(32),
+                NATIVE_PROPOSAL_GATEWAY_URL="http://127.0.0.1:1",
+                NATIVE_PROPOSAL_GATEWAY_TOKEN=secrets.token_hex(32),
+                CRM_FIXTURE_URL=url,
+            )
         with log_path.open("w") as log:
             server = subprocess.Popen([
-                sys.executable, "-m", "uvicorn", "app.main:app", "--app-dir", "backend",
+                sys.executable, "-m", "uvicorn", app, "--app-dir", "backend",
                 "--fd", str(listener.fileno()), "--log-level", "warning",
             ], cwd=ROOT, env=server_env, pass_fds=(listener.fileno(),), stdout=log, stderr=log)
             try:
@@ -68,8 +85,15 @@ def main():
                     "PLAYWRIGHT_MODULE", "PLAYWRIGHT_BROWSERS_PATH", "BROWSER_CHANNEL",
                 ) if key in os.environ}
                 browser_env["CRM_TEST_URL"] = url
+                if args.suite == 'proposals':
+                    browser_env['CRM_TEST_HUMAN_TOKEN'] = human_token
+                    if args.screenshots:
+                        args.screenshots.mkdir(parents=True, exist_ok=True)
+                        browser_env['CRM_TEST_SCREENSHOTS'] = str(args.screenshots.resolve())
+                    print("SIMULATED inference only; real authenticated agent HTTP, durable DB and human approvals", flush=True)
+                suite = {'read': 'native-read', 'auth': 'auth', 'proposals': 'native-proposals'}[args.suite]
                 result = subprocess.run([
-                    "node", "--test", "tests/native-read.browser.cjs",
+                    "node", "--test", f"tests/{suite}.browser.cjs",
                 ], cwd=ROOT / "dashboard", env=browser_env, timeout=180)
                 if result.returncode:
                     print(log_path.read_text(), file=sys.stderr)

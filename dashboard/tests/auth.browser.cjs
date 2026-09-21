@@ -12,7 +12,7 @@ before(async () => {
 })
 after(async () => browser?.close())
 
-async function openAuthPage({ delayOldMetrics = false, rejectOldMetrics = false } = {}) {
+async function openAuthPage({ delayOldMetrics = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   page.setDefaultTimeout(5_000)
   await page.addInitScript(() => {
@@ -47,13 +47,6 @@ async function openAuthPage({ delayOldMetrics = false, rejectOldMetrics = false 
         status: 401,
         contentType: 'application/json',
         body: JSON.stringify({ detail: 'expired old credential' }),
-      })
-    }
-    if (path === '/api/metrics' && rejectOldMetrics && token === HUMAN_OLD) {
-      return route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({ detail: 'invalid credential' }),
       })
     }
     if (path === '/api/metrics') {
@@ -123,8 +116,11 @@ test('a delayed 401 from an old token does not clear a newer unlocked token', as
     await page.getByRole('button', { name: 'Lock', exact: true }).click()
     await unlock(page, HUMAN_NEW)
     await page.getByRole('button', { name: 'Lock', exact: true }).waitFor()
+    const oldResponse = page.waitForResponse(r => r.url().endsWith('/api/metrics') && r.status() === 401)
     releaseOldMetrics()
-    await page.waitForTimeout(100)
+    await (await oldResponse).finished()
+    // A UI request after body settlement gives authenticatedFetch its reaction turn.
+    await page.getByRole('button', { name: 'Lock', exact: true }).waitFor()
     assert.equal(await page.getByRole('button', { name: 'Lock', exact: true }).count(), 1)
     assert.equal(await page.getByLabel('API token', { exact: true }).count(), 0)
   } finally {
@@ -134,10 +130,13 @@ test('a delayed 401 from an old token does not clear a newer unlocked token', as
 })
 
 test('a 401 for the current credential returns the dashboard to unlock', async () => {
-  const { page } = await openAuthPage({ rejectOldMetrics: true })
+  const { page, oldMetricsStarted, releaseOldMetrics } = await openAuthPage({ delayOldMetrics: true })
   try {
     await page.getByLabel('API token', { exact: true }).waitFor()
     await unlock(page, HUMAN_OLD)
+    await oldMetricsStarted
+    await page.getByRole('button', { name: 'Lock', exact: true }).waitFor()
+    releaseOldMetrics()
     await page.getByLabel('API token', { exact: true }).waitFor()
     assert.equal(await page.getByRole('button', { name: 'Lock', exact: true }).count(), 0)
   } finally {

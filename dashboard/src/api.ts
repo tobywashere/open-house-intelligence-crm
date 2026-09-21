@@ -176,6 +176,8 @@ export interface PendingChange {
   payload: Record<string, unknown>
   summary: string
   status: 'pending' | 'approved' | 'denied'
+  result?: Record<string, unknown> | null
+  decided_at?: string | null
   created_at: string
 }
 

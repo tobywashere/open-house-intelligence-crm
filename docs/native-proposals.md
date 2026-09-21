@@ -49,6 +49,17 @@ All IDs are exactly 32 lowercase hexadecimal characters. Headers use
   existing request remains readable/replayable with unavailable configuration.
 - Human: `GET /api/chat/lead-proposal/{request_id}` returns durable status without
   dispatch. Use an explicit status check to recover an uncertain request.
+- Human: `POST /api/chat/lead-proposal/{request_id}/close` atomically retires an
+  unbound request as `failed`, or returns an already bound proposal unchanged.
+  Repeat close is idempotent and needs no gateway configuration. An absent ID is
+  stored as a failed, empty-message tombstone: this internal exception lets a
+  human close a lost/pre-arrival request after an ID-only reload. Replays against
+  that tombstone return failed without accepting new text or dispatching. Received
+  requests retain their original text and exact-text conflict checks. Late agent
+  submissions are rejected; late completion or startup cannot revive a closed ID.
+  Keep the ID after a lost close response and check status. Only a confirmed
+  failed/no-proposal outcome permits a new request; a proposal that won the race
+  remains available in the existing review dialog.
 - Agent: `POST /api/agent/lead-proposals` with `{request_id, name, email?, phone?}`
   queues fields only for an existing running/unknown request. Name is 1–200
   characters and nonempty after trimming; email is at most 320 and phone at most
@@ -74,6 +85,8 @@ or cancellation without a stored proposal leaves `unknown`; late tool submission
 can settle it. Startup changes unbound running rows to unknown. A stored proposal
 always wins over completion failures or generated claims. Keep the request ID
 while checking status; never automatically create a new ID for an uncertain call.
+To deliberately move on, close the unresolved request and wait for confirmed
+retirement; closing never approves or denies an existing proposal.
 Cancellation cleanup persists unknown and re-raises cancellation.
 
 Protocol errors are sanitized `{error: {code, message}}` objects:

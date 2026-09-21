@@ -1,0 +1,310 @@
+TAP version 13
+# Subtest: simple fixed schema and request context supplies identity
+ok 1 - simple fixed schema and request context supplies identity
+  ---
+  duration_ms: 4.0803
+  type: 'test'
+  ...
+# Subtest: duplicate calls submit the same durable ID
+ok 2 - duplicate calls submit the same durable ID
+  ---
+  duration_ms: 0.698192
+  type: 'test'
+  ...
+# Subtest: wrong runtime identity fails: {"agentId":"other","sessionKey":"agent:native-proposals:openai-user:ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ok 3 - wrong runtime identity fails: {"agentId":"other","sessionKey":"agent:native-proposals:openai-user:ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ---
+  duration_ms: 0.955309
+  type: 'test'
+  ...
+# Subtest: wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"agent:native-proposals:openai-user:ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n"}
+ok 4 - wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"agent:native-proposals:openai-user:ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n"}
+  ---
+  duration_ms: 0.299875
+  type: 'test'
+  ...
+# Subtest: wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"agent:native-proposals:openai-user:ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:suffix"}
+ok 5 - wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"agent:native-proposals:openai-user:ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:suffix"}
+  ---
+  duration_ms: 0.316501
+  type: 'test'
+  ...
+# Subtest: wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"agent:native-proposals:openai-user:ohi-propose-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+ok 6 - wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"agent:native-proposals:openai-user:ohi-propose-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+  ---
+  duration_ms: 0.27437
+  type: 'test'
+  ...
+# Subtest: wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ok 7 - wrong runtime identity fails: {"agentId":"native-proposals","sessionKey":"ohi-propose-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ---
+  duration_ms: 0.424229
+  type: 'test'
+  ...
+# Subtest: wrong runtime identity fails: {}
+ok 8 - wrong runtime identity fails: {}
+  ---
+  duration_ms: 0.308661
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: null
+ok 9 - invalid arguments fail: null
+  ---
+  duration_ms: 0.79478
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: []
+ok 10 - invalid arguments fail: []
+  ---
+  duration_ms: 0.689543
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {}
+ok 11 - invalid arguments fail: {}
+  ---
+  duration_ms: 0.438254
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":""}
+ok 12 - invalid arguments fail: {"name":""}
+  ---
+  duration_ms: 0.275018
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":" "}
+ok 13 - invalid arguments fail: {"name":" "}
+  ---
+  duration_ms: 0.234952
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":1}
+ok 14 - invalid arguments fail: {"name":1}
+  ---
+  duration_ms: 0.29258
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ok 15 - invalid arguments fail: {"name":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ---
+  duration_ms: 0.233133
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","email":null}
+ok 16 - invalid arguments fail: {"name":"A","email":null}
+  ---
+  duration_ms: 0.217975
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","phone":1}
+ok 17 - invalid arguments fail: {"name":"A","phone":1}
+  ---
+  duration_ms: 0.248146
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","email":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ok 18 - invalid arguments fail: {"name":"A","email":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ---
+  duration_ms: 0.391883
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","phone":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ok 19 - invalid arguments fail: {"name":"A","phone":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ---
+  duration_ms: 0.242379
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","actor":"human"}
+ok 20 - invalid arguments fail: {"name":"A","actor":"human"}
+  ---
+  duration_ms: 0.200394
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ok 21 - invalid arguments fail: {"name":"A","request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ---
+  duration_ms: 0.225656
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","url":"http://evil"}
+ok 22 - invalid arguments fail: {"name":"A","url":"http://evil"}
+  ---
+  duration_ms: 0.197273
+  type: 'test'
+  ...
+# Subtest: invalid arguments fail: {"name":"A","operation":"delete_lead"}
+ok 23 - invalid arguments fail: {"name":"A","operation":"delete_lead"}
+  ---
+  duration_ms: 0.193404
+  type: 'test'
+  ...
+# Subtest: registration refuses unsafe credentials 
+ok 24 - registration refuses unsafe credentials 
+  ---
+  duration_ms: 0.256744
+  type: 'test'
+  ...
+# Subtest: registration refuses unsafe credentials OHI_AGENT_API_TOKEN
+ok 25 - registration refuses unsafe credentials OHI_AGENT_API_TOKEN
+  ---
+  duration_ms: 0.12731
+  type: 'test'
+  ...
+# Subtest: registration refuses unsafe credentials OHI_AGENT_API_TOKEN,OHI_API_TOKEN
+ok 26 - registration refuses unsafe credentials OHI_AGENT_API_TOKEN,OHI_API_TOKEN
+  ---
+  duration_ms: 0.117527
+  type: 'test'
+  ...
+# Subtest: registration refuses unsafe credentials OHI_AGENT_API_TOKEN,OHI_API_TOKEN
+ok 27 - registration refuses unsafe credentials OHI_AGENT_API_TOKEN,OHI_API_TOKEN
+  ---
+  duration_ms: 0.114052
+  type: 'test'
+  ...
+# Subtest: registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"https://127.0.0.1/api"}
+ok 28 - registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"https://127.0.0.1/api"}
+  ---
+  duration_ms: 0.2504
+  type: 'test'
+  ...
+# Subtest: registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"http://example.com/api"}
+ok 29 - registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"http://example.com/api"}
+  ---
+  duration_ms: 0.174218
+  type: 'test'
+  ...
+# Subtest: registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"http://user:pass@localhost/api"}
+ok 30 - registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"http://user:pass@localhost/api"}
+  ---
+  duration_ms: 0.181283
+  type: 'test'
+  ...
+# Subtest: registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"http://localhost/api?q=x"}
+ok 31 - registration rejects unsafe config {"agentId":"native-proposals","crmApiUrl":"http://localhost/api?q=x"}
+  ---
+  duration_ms: 0.18516
+  type: 'test'
+  ...
+# Subtest: registration rejects unsafe config {"agentId":"native-proposals\\n","crmApiUrl":"http://localhost/api"}
+ok 32 - registration rejects unsafe config {"agentId":"native-proposals\\n","crmApiUrl":"http://localhost/api"}
+  ---
+  duration_ms: 0.1682
+  type: 'test'
+  ...
+# Subtest: invalid verified result fails {}
+ok 33 - invalid verified result fails {}
+  ---
+  duration_ms: 0.498231
+  type: 'test'
+  ...
+# Subtest: invalid verified result fails {"request_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"proposed","proposal":{"id":1,"operation":"create_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+ok 34 - invalid verified result fails {"request_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"proposed","proposal":{"id":1,"operation":"create_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+  ---
+  duration_ms: 0.298302
+  type: 'test'
+  ...
+# Subtest: invalid verified result fails {"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"approved","proposal":{"id":1,"operation":"create_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+ok 35 - invalid verified result fails {"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"approved","proposal":{"id":1,"operation":"create_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+  ---
+  duration_ms: 0.258931
+  type: 'test'
+  ...
+# Subtest: invalid verified result fails {"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"proposed","proposal":{"id":"1","operation":"create_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+ok 36 - invalid verified result fails {"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"proposed","proposal":{"id":"1","operation":"create_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+  ---
+  duration_ms: 0.216345
+  type: 'test'
+  ...
+# Subtest: invalid verified result fails {"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"proposed","proposal":{"id":1,"operation":"delete_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+ok 37 - invalid verified result fails {"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"proposed","proposal":{"id":1,"operation":"delete_lead","status":"pending","payload":{"name":"Synthetic","source":"note","raw_text":"Synthetic request"},"result":null}}
+  ---
+  duration_ms: 0.210278
+  type: 'test'
+  ...
+# Subtest: provider errors are sanitized
+ok 38 - provider errors are sanitized
+  ---
+  duration_ms: 0.364287
+  type: 'test'
+  ...
+# Subtest: real HTTP transport sends fixed POST and ignores ambient proxies
+ok 39 - real HTTP transport sends fixed POST and ignores ambient proxies
+  ---
+  duration_ms: 53.271192
+  type: 'test'
+  ...
+# Subtest: real HTTP transport rejects redirect, oversized body and timeout
+ok 40 - real HTTP transport rejects redirect, oversized body and timeout
+  ---
+  duration_ms: 36.612247
+  type: 'test'
+  ...
+# Subtest: registration rejects exact credential and agent suffix "\\n"
+ok 41 - registration rejects exact credential and agent suffix "\\n"
+  ---
+  duration_ms: 0.440711
+  type: 'test'
+  ...
+# Subtest: registration rejects exact credential and agent suffix "\\r"
+ok 42 - registration rejects exact credential and agent suffix "\\r"
+  ---
+  duration_ms: 0.177774
+  type: 'test'
+  ...
+# Subtest: registration rejects exact credential and agent suffix " "
+ok 43 - registration rejects exact credential and agent suffix " "
+  ---
+  duration_ms: 0.250463
+  type: 'test'
+  ...
+# Subtest: registration rejects exact credential and agent suffix " "
+ok 44 - registration rejects exact credential and agent suffix " "
+  ---
+  duration_ms: 0.171231
+  type: 'test'
+  ...
+# Subtest: response validation accepts backend character limits for Unicode messages
+ok 45 - response validation accepts backend character limits for Unicode messages
+  ---
+  duration_ms: 0.346015
+  type: 'test'
+  ...
+# Subtest: receipt requires real execution, current session, and is single-use
+ok 46 - receipt requires real execution, current session, and is single-use
+  ---
+  duration_ms: 38.75192
+  type: 'test'
+  ...
+# Subtest: empty, failed, expired and cancelled requests stay distinct
+ok 47 - empty, failed, expired and cancelled requests stay distinct
+  ---
+  duration_ms: 1.668473
+  type: 'test'
+  ...
+# Subtest: write or model-controlled URL arguments never reach backend
+ok 48 - write or model-controlled URL arguments never reach backend
+  ---
+  duration_ms: 0.728505
+  type: 'test'
+  ...
+# Subtest: a late tool completion cannot resurrect a cancelled request
+ok 49 - a late tool completion cannot resurrect a cancelled request
+  ---
+  duration_ms: 1.227108
+  type: 'test'
+  ...
+# Subtest: restricted agent credential is preferred with human-token fallback
+ok 50 - restricted agent credential is preferred with human-token fallback
+  ---
+  duration_ms: 1.432537
+  type: 'test'
+  ...
+1..50
+# tests 50
+# suites 0
+# pass 50
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 274.858923

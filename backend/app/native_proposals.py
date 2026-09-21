@@ -96,9 +96,26 @@ def get_status(request_id):
         return _status(conn, _request(conn, request_id))
 
 
+def close_request(request_id):
+    """Retire an unresolved ID atomically; a bound proposal always wins."""
+    validate_request_id(request_id)
+    with get_conn() as conn:
+        row = conn.execute('SELECT * FROM native_lead_requests WHERE request_id=?', (request_id,)).fetchone()
+        if row is None:
+            # Internal tombstone only. RequestIn still rejects empty messages.
+            conn.execute("INSERT INTO native_lead_requests(request_id,message,state) VALUES (?,'','failed')", (request_id,))
+        elif row['pending_id'] is None:
+            conn.execute("UPDATE native_lead_requests SET state='failed' WHERE request_id=? AND pending_id IS NULL", (request_id,))
+        return _status(conn, _request(conn, request_id))
+
+
 def _replay(conn, request_id, message):
     row = conn.execute('SELECT * FROM native_lead_requests WHERE request_id=?', (request_id,)).fetchone()
     if row is not None:
+        # An explicit human close can precede the original HTTP request. This
+        # empty-message tombstone retires the ID without accepting any later text.
+        if row['state'] == 'failed' and row['pending_id'] is None and row['message'] == '':
+            return _status(conn, row)
         if row['message'] != message:
             raise NativeProposalError('request_conflict')
         return _status(conn, row)

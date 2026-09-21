@@ -1,3 +1,4 @@
+import { LeadProposalChat } from './LeadProposalChat'
 import { LeadDirectoryChat } from './LeadDirectoryChat'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
@@ -16,13 +17,14 @@ const SESSION_KEY = 'ohi-chat-session'
 const newSessionId = () => `dash-${Date.now().toString(36)}`
 
 export function ChatPanel() {
-  const [mode, setMode] = useState<'directory' | 'general'>('directory')
+  const [mode, setMode] = useState<'directory' | 'proposal' | 'general'>('directory')
   return <>
     <div className="shrink-0 flex gap-2 p-2 border-b border-tile" aria-label="Chat mode">
       <button onClick={() => setMode('directory')} aria-pressed={mode === 'directory'} className="text-xs px-2 py-1 rounded border border-line">CRM reads</button>
+      <button onClick={() => setMode('proposal')} aria-pressed={mode === 'proposal'} className="text-xs px-2 py-1 rounded border border-line">Propose lead</button>
       <button onClick={() => setMode('general')} aria-pressed={mode === 'general'} className="text-xs px-2 py-1 rounded border border-line">General chat</button>
     </div>
-    {mode === 'directory' ? <LeadDirectoryChat /> : <GeneralChatPanel />}
+    {mode === 'directory' ? <LeadDirectoryChat /> : mode === 'proposal' ? <LeadProposalChat /> : <GeneralChatPanel />}
   </>
 }
 

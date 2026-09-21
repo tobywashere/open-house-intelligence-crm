@@ -23,6 +23,11 @@ unless you configure them.
 
 ## Basic setup
 
+This section configures the legacy general agent with `OHI_AGENT_API_TOKEN`
+unset. For capability mode, use [native setup and recovery](NATIVE-CREATE-LEAD.md).
+The legacy helper refuses a nonempty agent token from the environment or `.env`
+before any OpenClaw command or file change, including a dry run.
+
 First, complete OpenClaw's own model/provider setup. Then enable chat access:
 
 ```bash
@@ -63,7 +68,7 @@ cd open-intelligence-crm
 python3 scripts/doctor.py --live-agent --live-crm
 ```
 
-The helper is safe to rerun. It creates or validates the agent selected by
+In legacy mode the helper is safe to rerun. It creates or validates the agent selected by
 `AGENT_ID` in `.env`, installs the shipped skills in that agent's workspace,
 and validates that `crm-db-operations` is eligible. If you pass `--agent-id`,
 set `AGENT_ID` to the same nonblank value in `.env`; setup rejects blank or
@@ -301,14 +306,18 @@ CRM fields can create a new proposal for review.
 
 ## Recovery
 
+These general-agent recovery commands apply only when `OHI_AGENT_API_TOKEN`
+is unset. For capability mode, follow [native recovery](NATIVE-CREATE-LEAD.md)
+and keep the human key outside the gateway.
+
 - **404 / endpoint disabled:** rerun the endpoint-enable command and restart
   the gateway.
 - **OpenClaw gateway 401 / 403:** set its matching token as
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart the CRM.
 - **CRM API 401:** unlock the dashboard with `OHI_API_TOKEN`. For native reads
   in capability mode, verify the plugin receives `OHI_AGENT_API_TOKEN`.
-  Include the appropriate `X-API-Token` in direct API commands, rerun
-  `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
+  Include the appropriate `X-API-Token` in direct API commands. Only in legacy
+  mode, rerun `python3 scripts/setup_openclaw.py` and restart `bash scripts/serve.sh`.
 - **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
   It checks the agent workspace, eligible skill, allowlist, and restart.
 - **The agent lists generic tools only:** it is not using the dedicated agent.

@@ -1,0 +1,247 @@
+FFFFFFFF                                                                 [100%]
+=================================== FAILURES ===================================
+_ test_close_before_arrival_tombstones_id_without_dispatch_and_survives_restart _
+
+api = (<starlette.testclient.TestClient object at 0x10c1b34d0>, {'X-API-Token': '39c8be1b4ccbaca10a67b4754759635dd21b67697f4b909d2a5a43d2cd48a6d3'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c17f100>)
+
+    def test_close_before_arrival_tombstones_id_without_dispatch_and_survives_restart(api):
+        calls = seam(api, queue)
+        expected = {'request_id': RID, 'state': 'failed', 'proposal': None}
+>       assert close(api).status_code == 200
+E       AssertionError: assert 405 == 200
+E        +  where 405 = <Response [405 Method Not Allowed]>.status_code
+E        +    where <Response [405 Method Not Allowed]> = close((<starlette.testclient.TestClient object at 0x10c1b34d0>, {'X-API-Token': '39c8be1b4ccbaca10a67b4754759635dd21b67697f4b909d2a5a43d2cd48a6d3'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c17f100>))
+
+backend/tests/test_native_proposals.py:326: AssertionError
+___ test_close_unknown_keeps_original_conflicts_and_rejects_late_submission ____
+
+api = (<starlette.testclient.TestClient object at 0x10c608f50>, {'X-API-Token': '7139b938b780221e575d2a21ca82b75298c4cd7314f0b2a2e29425f80b21b489'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c17e3f0>)
+
+    def test_close_unknown_keeps_original_conflicts_and_rejects_late_submission(api):
+        def uncertain(*_): raise TimeoutError()
+        calls = seam(api, uncertain)
+        assert start(api).json()['state'] == 'unknown'
+>       assert close(api).json() == {'request_id': RID, 'state': 'failed', 'proposal': None}
+E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'...oposal': None}
+E         
+E         Left contains 1 more item:
+E         {'detail': 'Method Not Allowed'}
+E         Right contains 3 more items:
+E         {'proposal': None,
+E          'request_id': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+E          'state': 'failed'}
+E         Use -v to get more diff
+
+backend/tests/test_native_proposals.py:345: AssertionError
+___ test_close_during_completion_cannot_be_revived_by_late_success_or_error ____
+
+api = (<starlette.testclient.TestClient object at 0x10c2c2fd0>, {'X-API-Token': '3d900f55ab9bc28a43e684716d458249c4e37b94d1cde31de06f73ba10636924'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c316450>)
+
+    def test_close_during_completion_cannot_be_revived_by_late_success_or_error(api):
+        from app import native_proposals as native
+        async def exercise(fail):
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def complete(*args):
+                entered.set()
+                await release.wait()
+                if fail: raise TimeoutError()
+            api[2].setattr(native, 'complete_native', complete)
+            rid = ('b' if fail else 'c') * 32
+            task = asyncio.create_task(native.propose_lead(rid, MESSAGE))
+            await entered.wait()
+            assert native.close_request(rid)['state'] == 'failed'
+            with pytest.raises(native.NativeProposalError, match='request_settled'):
+                queue(native, rid)
+            release.set()
+            assert (await task)['state'] == 'failed'
+>       asyncio.run(exercise(False))
+
+backend/tests/test_native_proposals.py:369: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py:725: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+fail = False
+
+    async def exercise(fail):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def complete(*args):
+            entered.set()
+            await release.wait()
+            if fail: raise TimeoutError()
+        api[2].setattr(native, 'complete_native', complete)
+        rid = ('b' if fail else 'c') * 32
+        task = asyncio.create_task(native.propose_lead(rid, MESSAGE))
+        await entered.wait()
+>       assert native.close_request(rid)['state'] == 'failed'
+               ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'app.native_proposals' has no attribute 'close_request'
+
+backend/tests/test_native_proposals.py:364: AttributeError
+_____________ test_close_preserves_proposal_that_already_won[None] _____________
+
+api = (<starlette.testclient.TestClient object at 0x10c6850f0>, {'X-API-Token': '68b20ecc87ffd4d054d2e55cd46876dfdc9bc1099cb27a3be97c301e8741de64'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c1fe140>)
+decision = None
+
+    @pytest.mark.parametrize('decision', [None, 'approve', 'deny'])
+    def test_close_preserves_proposal_that_already_won(api, decision):
+        seam(api, queue)
+        before = start(api).json()
+        if decision:
+            assert api[0].post(f'/api/pending-changes/{before["proposal"]["id"]}/{decision}').status_code == 200
+            before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
+>       assert close(api).json() == before
+E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'....test'}, ...}}
+E         
+E         Left contains 1 more item:
+E         {'detail': 'Method Not Allowed'}
+E         Right contains 3 more items:
+E         {'proposal': {'created_at': '2026-09-21T02:57:19',
+E                       'decided_at': None,
+E                       'deny_reason': None,...
+E         
+E         ...Full output truncated (13 lines hidden), use '-vv' to show
+
+backend/tests/test_native_proposals.py:380: AssertionError
+___________ test_close_preserves_proposal_that_already_won[approve] ____________
+
+api = (<starlette.testclient.TestClient object at 0x10c17f820>, {'X-API-Token': '114e86c1ed2a842606ddc18ef87bdb1637c856d45467f69ba358b17a7a4a1d7c'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c2d3130>)
+decision = 'approve'
+
+    @pytest.mark.parametrize('decision', [None, 'approve', 'deny'])
+    def test_close_preserves_proposal_that_already_won(api, decision):
+        seam(api, queue)
+        before = start(api).json()
+        if decision:
+            assert api[0].post(f'/api/pending-changes/{before["proposal"]["id"]}/{decision}').status_code == 200
+            before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
+>       assert close(api).json() == before
+E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'....test'}, ...}}
+E         
+E         Left contains 1 more item:
+E         {'detail': 'Method Not Allowed'}
+E         Right contains 3 more items:
+E         {'proposal': {'created_at': '2026-09-21T02:57:19',
+E                       'decided_at': '2026-09-21T02:57:19',
+E                       'deny_reason': None,...
+E         
+E         ...Full output truncated (33 lines hidden), use '-vv' to show
+
+backend/tests/test_native_proposals.py:380: AssertionError
+_____________ test_close_preserves_proposal_that_already_won[deny] _____________
+
+api = (<starlette.testclient.TestClient object at 0x10c67f0b0>, {'X-API-Token': 'f776b2269d2c064369cf8fcb907365bb697897d0ff44ae144dc50815a3518364'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c325550>)
+decision = 'deny'
+
+    @pytest.mark.parametrize('decision', [None, 'approve', 'deny'])
+    def test_close_preserves_proposal_that_already_won(api, decision):
+        seam(api, queue)
+        before = start(api).json()
+        if decision:
+            assert api[0].post(f'/api/pending-changes/{before["proposal"]["id"]}/{decision}').status_code == 200
+            before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
+>       assert close(api).json() == before
+E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'....test'}, ...}}
+E         
+E         Left contains 1 more item:
+E         {'detail': 'Method Not Allowed'}
+E         Right contains 3 more items:
+E         {'proposal': {'created_at': '2026-09-21T02:57:19',
+E                       'decided_at': '2026-09-21T02:57:19',
+E                       'deny_reason': None,...
+E         
+E         ...Full output truncated (13 lines hidden), use '-vv' to show
+
+backend/tests/test_native_proposals.py:380: AssertionError
+__________________ test_close_and_agent_submission_are_atomic __________________
+
+api = (<starlette.testclient.TestClient object at 0x10c2d3790>, {'X-API-Token': '485be6582c7ad219d8fa461b37e0dbe76a9c6fe8ffc1f5418c28a234a6d937bb'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c324950>)
+
+    def test_close_and_agent_submission_are_atomic(api):
+        from app import native_proposals as native
+        from threading import Barrier
+        for index in range(8):
+            rid = f'{index:032x}'
+            native.reserve_request(rid, MESSAGE)
+            gate = Barrier(2)
+            def closing():
+                gate.wait(timeout=5)
+                return close(api, rid=rid)
+            def proposing():
+                gate.wait(timeout=5)
+                return submit(api, rid=rid)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                closing_result = pool.submit(closing)
+                proposing_result = pool.submit(proposing)
+                closed, proposed = closing_result.result(), proposing_result.result()
+>           assert closed.status_code == 200
+E           assert 405 == 200
+E            +  where 405 = <Response [405 Method Not Allowed]>.status_code
+
+backend/tests/test_native_proposals.py:400: AssertionError
+____________________ test_close_requires_human_and_valid_id ____________________
+
+api = (<starlette.testclient.TestClient object at 0x10c1fe250>, {'X-API-Token': '65463e5c051cd19d806b119ff1b737c2e8c267e1d48997eb87cb64749e592e5c'}, <_pytest.monkeypatch.MonkeyPatch object at 0x10c2dba70>)
+
+    def test_close_requires_human_and_valid_id(api):
+        assert close(api, headers={**api[1], 'X-Actor': 'user'}).status_code == 403
+        assert api[0].get(f'/api/chat/lead-proposal/{RID}').status_code == 404
+        for rid in ['A' * 32, 'a' * 31, 'a' * 33]:
+            response = close(api, rid=rid)
+>           assert response.status_code == 422
+E           assert 405 == 422
+E            +  where 405 = <Response [405 Method Not Allowed]>.status_code
+
+backend/tests/test_native_proposals.py:418: AssertionError
+=============================== warnings summary ===============================
+../../.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+backend/app/main.py:104
+  <worktree>/backend/app/main.py:104: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
+../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
+  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/applications.py:4675: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+backend/app/main.py:142
+  <worktree>/backend/app/main.py:142: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("shutdown")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED backend/tests/test_native_proposals.py::test_close_before_arrival_tombstones_id_without_dispatch_and_survives_restart
+FAILED backend/tests/test_native_proposals.py::test_close_unknown_keeps_original_conflicts_and_rejects_late_submission
+FAILED backend/tests/test_native_proposals.py::test_close_during_completion_cannot_be_revived_by_late_success_or_error
+FAILED backend/tests/test_native_proposals.py::test_close_preserves_proposal_that_already_won[None]
+FAILED backend/tests/test_native_proposals.py::test_close_preserves_proposal_that_already_won[approve]
+FAILED backend/tests/test_native_proposals.py::test_close_preserves_proposal_that_already_won[deny]
+FAILED backend/tests/test_native_proposals.py::test_close_and_agent_submission_are_atomic
+FAILED backend/tests/test_native_proposals.py::test_close_requires_human_and_valid_id
+8 failed, 40 deselected, 5 warnings in 1.15s

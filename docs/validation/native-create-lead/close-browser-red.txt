@@ -1,0 +1,95 @@
+Browser boundary fixture ready (temporary CRM; integrations off)
+SIMULATED inference only; real authenticated agent HTTP, durable DB and human approvals
+TAP version 13
+# Subtest: proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+ok 1 - proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+  ---
+  duration_ms: 1500.1339
+  type: 'test'
+  ...
+# Subtest: reload recovers pending approval and denial creates no lead
+ok 2 - reload recovers pending approval and denial creates no lead
+  ---
+  duration_ms: 1344.00564
+  type: 'test'
+  ...
+# Subtest: unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+ok 3 - unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+  ---
+  duration_ms: 794.922981
+  type: 'test'
+  ...
+# Subtest: lost POST response recovers the real proposal through status without a resend
+ok 4 - lost POST response recovers the real proposal through status without a resend
+  ---
+  duration_ms: 1173.495763
+  type: 'test'
+  ...
+# Subtest: unknown 404 retains recovery ID and cannot start a second request
+ok 5 - unknown 404 retains recovery ID and cannot start a second request
+  ---
+  duration_ms: 610.550529
+  type: 'test'
+  ...
+# Subtest: explicit preflight not-configured failure allows a fresh deliberate request
+ok 6 - explicit preflight not-configured failure allows a fresh deliberate request
+  ---
+  duration_ms: 1114.11959
+  type: 'test'
+  ...
+# Subtest: completion prose without a proposal is failed and permits a deliberate new request
+ok 7 - completion prose without a proposal is failed and permits a deliberate new request
+  ---
+  duration_ms: 595.169461
+  type: 'test'
+  ...
+# Subtest: malformed approved result cannot be presented as a created lead
+ok 8 - malformed approved result cannot be presented as a created lead
+  ---
+  duration_ms: 567.407418
+  type: 'test'
+  ...
+# Subtest: human closes permanent unknown, then deliberately starts one new request
+not ok 9 - human closes permanent unknown, then deliberately starts one new request
+  ---
+  duration_ms: 5541.223746
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:202:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Close request', exact: true })
+    
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:208:76)
+  ...
+# Subtest: lost close response retains ID until a status check confirms retirement
+not ok 10 - lost close response retains ID until a status check confirms retirement
+  ---
+  duration_ms: 5564.82847
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:219:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Close request', exact: true })
+    
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:230:76)
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 8
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 19697.34452
+
