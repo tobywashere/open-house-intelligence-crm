@@ -83,6 +83,71 @@ def test_writes_rejected_before_gateway(monkeypatch,message):
     assert calls == []
 
 
+@pytest.mark.parametrize("message", [
+    "How many closed leads are in the CRM?",
+    "Show only new leads",
+    "Show the directory of contacted leads",
+    "How many leads were added today?",
+    "How many leads from last week?",
+    "Show leads in Seattle",
+    "Show leads with a budget over 750000",
+    "Show the second page of the lead directory",
+    "List the next 25 leads",
+    "Show the directory sorted by name",
+    "How many leads? Only closed ones.",
+    "How many leads are not closed?",
+    "Show lead 12",
+])
+def test_unsupported_scope_rejected_before_gateway(monkeypatch, message):
+    request, calls = run(monkeypatch, message=message)
+    with pytest.raises(NativeReadError) as exc:
+        request()
+    assert exc.value.code == "unsupported_request"
+    assert calls == []
+
+
+@pytest.mark.parametrize("message", [
+    "How many leads are in the CRM?",
+    "Show the lead directory and its total count.",
+    "Tell me the current number of CRM leads.",
+    "List the CRM leads and tell me how many there are.",
+    "What is the total lead count in the CRM right now?",
+    "Read the CRM directory and report its size.",
+    "How many people are listed as CRM leads?",
+    "Show all current CRM leads with the total.",
+    "Check the CRM and give me the number of leads.",
+    "Please retrieve the lead directory and summarize the count.",
+    "How many leads do I have?",
+    "What's our total lead count?",
+    "  PLEASE SHOW MY LEAD DIRECTORY!  ",
+    "Show the directory",
+])
+def test_unfiltered_questions_still_reach_the_gateway(monkeypatch, message):
+    request, calls = run(monkeypatch, message=message)
+    assert request().result.total == 37
+    assert any(call.url.path == "/v1/chat/completions" for call in calls)
+
+
+def test_filtered_question_does_not_return_the_mixed_crm_total(client, monkeypatch):
+    from app import native_read
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        conn.execute("INSERT INTO leads(name,status) VALUES ('Synthetic Open','new')")
+        conn.execute("INSERT INTO leads(name,status) VALUES ('Synthetic Closed','closed')")
+
+    def unexpected_settings():
+        pytest.fail("Unsupported scope must be rejected before configuring a gateway call")
+
+    monkeypatch.setattr(native_read, "settings", unexpected_settings)
+    response = client.post('/api/chat/directory', json={'message': 'How many closed leads?'})
+    assert response.status_code == 400
+    assert response.json()['error']['code'] == 'unsupported_request'
+    assert 'unfiltered' in response.json()['error']['message']
+    assert 'result' not in response.json()
+    assert len(client.get('/api/leads').json()) == 2
+
+
 def test_route_returns_safe_failure(client,monkeypatch):
     from app.routers import native_read
     async def fail(message):raise NativeReadError("gateway_unavailable")

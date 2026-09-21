@@ -19,7 +19,7 @@ The adapter uses the installed SDK's supported `registerHttpRoute({auth: "gatewa
 
 Timeouts: 10 seconds for the tool's CRM HTTP read; 60 seconds for the backend's complete reserve/run/consume operation, plus at most 2 seconds for cleanup; 65 seconds in the browser. There are no application retries. Response size is capped at 2 MB before JSON decoding in the tool. Gateway and CRM URLs must be loopback HTTP URLs. The reader gateway must use token authentication; its token is held only by the backend. The receipt route was verified to return 401 without that token.
 
-The English request recognizer is a convenience, not the security boundary. Write-like requests are rejected early; even adversarial wording can reach only the fixed read tool. Do not give the reader agent exec, filesystem, general CRM, or write tools. Do not install it in place of the normal agent or weaken the existing dashboard guards.
+The English request recognizer accepts a small vocabulary for unfiltered counts and directory reads. Unknown wording, filters (status, date, location, etc.), sorting, and page requests are rejected before contacting the gateway. For example, “How many closed leads?” produces a scope error instead of the all-lead count. Use “How many leads are in the CRM?” or “Show the lead directory.” This scope check is not the security boundary: even adversarial wording can reach only the plugin's fixed read tool. Do not give the reader agent exec, filesystem, general CRM, or write tools. Do not install it in place of the normal agent or weaken the existing dashboard guards.
 
 ## Base and reuse
 
@@ -77,6 +77,17 @@ python3 scripts/native_read_acceptance.py stop --profile ohi-dashboard-empty
 
 ## Focused tests
 
+CI runs the backend suite, the native plugin suite, the dashboard build, and the browser boundary suite. The boundary runner starts its own temporary CRM on a reserved loopback socket, disables integrations, and uses explicit environment allowlists for both the backend and browser-test processes. Gateway, provider, and CI credentials are not forwarded. The runner stops the server and removes its fixture on completion or test failure. It needs no OpenClaw or local model. After building the dashboard, run the same check locally on Linux, macOS, or WSL:
+
+```bash
+cd dashboard
+npx playwright install chromium
+cd ..
+python3 scripts/test_native_read_browser.py
+```
+
+Use the repository virtual-environment Python if needed. `PLAYWRIGHT_MODULE` and `BROWSER_CHANNEL` remain available for an existing Playwright/browser installation. The runner always chooses its own temporary backend; an ambient `CRM_TEST_URL` does not override it.
+
 ```bash
 python3 -m pytest backend/tests -q
 node --test openclaw-plugins/openhouse-read/test.mjs
@@ -87,7 +98,7 @@ LIVE_RESULTS=/tmp/ohi-native-live-new.json CRM_TEST_URL=http://127.0.0.1:18080 n
 EXPECTED_COUNT=0 LIVE_RESULTS=/tmp/ohi-native-empty-new.json CRM_TEST_URL=http://127.0.0.1:18081 npm run test:live-read
 ```
 
-The six browser boundary tests simulate five response/error cases; the write-rejection test uses the actual backend route. The live script has no route mocks, uses ten fixed prompts (one for an empty fixture), records each result, and refuses to overwrite an earlier run. Set `BROWSER_CHANNEL=msedge` to use installed Edge. `PLAYWRIGHT_MODULE` optionally points to an existing Playwright installation; acceptance used bundled **1.62.1**, the same version pinned in the lockfile.
+The seven browser boundary tests simulate five response/error cases; write rejection and unsupported-filter/page rejection use the actual backend route. The live script has no route mocks, uses ten fixed prompts (one for an empty fixture), records each result, and refuses to overwrite an earlier run. Set `BROWSER_CHANNEL=msedge` to use installed Edge. `PLAYWRIGHT_MODULE` optionally points to an existing Playwright installation; acceptance used bundled **1.62.1**, the same version pinned in the lockfile.
 
 Automated test evidence and live browser evidence are separate in `docs/evidence/native-read/`. One preliminary in-app-browser smoke request also succeeded; it is not counted among the fixed ten cases. There were no failed live prompts or retries.
 

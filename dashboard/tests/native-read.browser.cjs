@@ -58,3 +58,15 @@ test('write request is rejected by the real backend route',async()=>{
   assert.equal(await page.getByRole('region',{name:'Verified CRM result'}).count(),0);
  }finally{await page.close()}
 });
+test('unsupported filters and pages show scope errors from the real backend',async()=>{
+ const page=await pageForTest();try{
+  for(const message of ['How many closed leads?', 'How many leads were added today?', 'Show leads in Seattle', 'Show the second page of the lead directory']){
+   const reply=page.waitForResponse(r=>r.url().endsWith('/api/chat/directory'));
+   await submit(page,message);
+   assert.equal((await reply).status(),400);
+   await page.getByRole('alert').waitFor();
+   assert.match(await page.getByRole('alert').innerText(),/unfiltered/);
+   assert.equal(await page.getByRole('region',{name:'Verified CRM result'}).count(),0);
+  }
+ }finally{await page.close()}
+});

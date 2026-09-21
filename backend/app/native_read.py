@@ -50,14 +50,24 @@ class ReadReceipt(BaseModel):
     result: Directory
 
 
+# This narrow English vocabulary describes the whole directory only. Unknown
+# words (including filter values, dates, negation, and page numbers) must not
+# silently become a verified answer to a different question. This is a scope
+# guard, not authorization: the plugin still independently permits only GET.
+_UNFILTERED_WORDS = frozenset("""
+    all and are as check count crm current directory do for get give have how
+    i in is its lead leads list listed many me my now number of our people
+    please read report retrieve right show size summarize tell the there to
+    total we what with
+""".split())
+
+
 def supports_request(message: str) -> bool:
-    # This is UX routing, not authorization. Even adversarial phrasing can only
-    # reach the plugin's fixed GET operation; no model-controlled URL or writes.
-    if re.search(r"\b(add|create|delete|remove|update|edit|merge|book|schedule|send|close|change|write)\b", message, re.I):
-        return False
-    return bool(re.search(r"\b(leads?|directory)\b", message, re.I)) and bool(
-        re.search(r"\b(count|number|many|total|directory|list|show|size)\b", message, re.I)
-    )
+    normalized = message.casefold().replace("what's", "what is").replace("what’s", "what is")
+    words = set(re.sub(r"[,.?!]", " ", normalized).split())
+    return (words <= _UNFILTERED_WORDS
+            and bool(words & {"lead", "leads", "directory"})
+            and bool(words & {"count", "number", "many", "total", "directory", "list", "show", "size"}))
 
 
 def settings():
@@ -125,7 +135,12 @@ async def read_directory(message: str, *, client_factory=httpx.AsyncClient, time
 
 
 ERRORS = {
-    "unsupported_request": "This read-only view supports lead counts and the lead directory. It cannot change CRM records.",
+    "unsupported_request": (
+        "This view supports only unfiltered lead counts and the first directory page. "
+        "Filters, sorting, and later pages are not supported. "
+        "Try 'How many leads are in the CRM?' or 'Show the lead directory.' "
+        "It cannot change CRM records."
+    ),
     "not_configured": "Native CRM reads are not configured on this machine.",
     "receipt_unavailable": "The CRM read service could not start this request. Try again.",
     "gateway_failed": "OpenClaw could not complete this CRM read. Try again.",

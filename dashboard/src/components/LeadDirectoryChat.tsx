@@ -24,7 +24,7 @@ export function LeadDirectoryChat() {
   }
   return <div className="flex flex-col min-h-0 h-full p-4 gap-4 overflow-y-auto">
     <div><h2 className="text-sm font-semibold">Ask about your lead directory</h2>
-      <p className="text-xs text-sub mt-1">Read-only. Ask for the total count or current directory.</p></div>
+      <p className="text-xs text-sub mt-1">Read-only. Unfiltered total and first 25 leads only; no filters, sorting, or later pages.</p></div>
     <form onSubmit={send} className="flex flex-col gap-2">
       <label htmlFor="directory-question" className="text-xs">Your question</label>
       <textarea id="directory-question" value={message} onChange={e => setMessage(e.target.value)}
@@ -37,7 +37,7 @@ export function LeadDirectoryChat() {
     {error && <p role="alert" className="text-sm text-alert">{error}</p>}
     {result && <section aria-label="Verified CRM result" data-request-id={result.request_id} className="text-sm">
       <h3 className="font-semibold">{result.result.total} {result.result.total === 1 ? 'lead' : 'leads'} total</h3>
-      <p className="text-xs text-sub my-2">Verified CRM read for this request</p>
+      <p className="text-xs text-sub my-2">Verified CRM read for this request · All leads, unfiltered</p>
       {result.result.total === 0 ? <p>No leads in the CRM.</p> : <>
         <p className="text-xs text-sub mb-2">Showing {result.result.leads.length} of {result.result.total} leads.</p>
         <ul className="space-y-2">{result.result.leads.map(lead => <li key={lead.id} className="border-b border-tile pb-2">
