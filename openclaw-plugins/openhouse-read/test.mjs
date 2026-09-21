@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import {definition} from './read.js';
 
 function setup({total=37,fail=false}={}) {
-  let route, factory, reads=0, time=1000;
+  let route, factory, reads=0, time=1000, requestHeaders;
   const api={pluginConfig:{agentId:'native-read',crmApiUrl:'http://127.0.0.1:18080/api'},
     registerHttpRoute:r=>route=r, registerTool:f=>factory=f, on:()=>{}};
   definition({now:()=>time,fetchImpl:async(url,options)=>{
     reads++; assert.equal(url,'http://127.0.0.1:18080/api/leads');assert.equal(options.method,'GET');
+    requestHeaders=options.headers;
     if(fail)throw new Error('private backend information');
     return new Response(JSON.stringify(Array.from({length:total},(_,i)=>({id:i+1,name:`Synthetic ${i+1}`,status:'new',email:'not exported'}))));
   }}).register(api);
@@ -17,7 +18,7 @@ function setup({total=37,fail=false}={}) {
     const res={statusCode:0,setHeader(){},end(s){this.body=JSON.parse(s)}};
     await route.handler({method,url:'/openhouse/read-receipts/'+key},res); return res;
   };
-  return {id,tool,http,route,reads:()=>reads,expire:()=>time+=91_000};
+  return {id,tool,http,route,reads:()=>reads,headers:()=>requestHeaders,expire:()=>time+=91_000};
 }
 const args={operation:'list_lead_directory',arguments:{}};
 test('receipt requires real execution, current session, and is single-use',async()=>{
@@ -58,4 +59,18 @@ test('a late tool completion cannot resurrect a cancelled request',async()=>{
  const running=factory({agentId:'native-read',sessionKey:`agent:native-read:openai-user:ohi-read-${id}`}).execute('1',args);
  await http('DELETE');release();await assert.rejects(running,/CRM read failed/);
  assert.equal(await http('GET'),404);
+});
+test('restricted agent credential is preferred with human-token fallback',async()=>{
+ const priorHuman=process.env.OHI_API_TOKEN,priorAgent=process.env.OHI_AGENT_API_TOKEN;
+ try {
+  process.env.OHI_API_TOKEN='human-credential';process.env.OHI_AGENT_API_TOKEN='restricted-agent-credential';
+  const restricted=setup();await restricted.http('POST');await restricted.tool().execute('1',args);
+  assert.equal(restricted.headers()['X-API-Token'],'restricted-agent-credential');
+  delete process.env.OHI_AGENT_API_TOKEN;
+  const legacy=setup();await legacy.http('POST');await legacy.tool().execute('1',args);
+  assert.equal(legacy.headers()['X-API-Token'],'human-credential');
+ } finally {
+  priorHuman===undefined?delete process.env.OHI_API_TOKEN:process.env.OHI_API_TOKEN=priorHuman;
+  priorAgent===undefined?delete process.env.OHI_AGENT_API_TOKEN:process.env.OHI_AGENT_API_TOKEN=priorAgent;
+ }
 });

@@ -104,10 +104,24 @@ the skill configuration.
 
 ### When CRM API authentication is enabled
 
-`OHI_API_TOKEN` protects the CRM API. The backend reads it from the project
-`.env`, and the dashboard uses the matching `VITE_API_TOKEN`. The OpenClaw
-agent needs the same API value, but the setup helper does not place that value
-in an OpenClaw command or configuration field.
+`OHI_API_TOKEN` is the human CRM credential. The dashboard asks for it at
+runtime, keeps it only in memory, and clears it on refresh, Lock, or an
+authenticated request that returns `401`. Never put this credential in a
+`VITE_` variable because Vite embeds those values in public browser assets.
+
+Setting `OHI_AGENT_API_TOKEN` enables capability mode. Both values must then
+be distinct printable ASCII secrets of at least 32 characters. The restricted
+agent key can call only `GET /api/leads` and the native lead-proposal endpoint,
+plus public health/auth status. The existing `openhouse-read` plugin prefers
+this restricted key and falls back to `OHI_API_TOKEN` for legacy single-token
+installs. Without `OHI_AGENT_API_TOKEN`, trusted-local and single-token setups
+retain their legacy `X-Actor` proposal behavior; that header is not an enforced
+identity boundary.
+
+The legacy broad OpenClaw setup below uses the human API value and is only for
+installations where `OHI_AGENT_API_TOKEN` is unset. Do not give a native read
+or proposal profile the human key. The setup helper does not place the legacy
+value in an OpenClaw command or configuration field.
 
 Instead, the helper:
 
@@ -291,8 +305,9 @@ CRM fields can create a new proposal for review.
   the gateway.
 - **OpenClaw gateway 401 / 403:** set its matching token as
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart the CRM.
-- **CRM API 401:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in `.env`.
-  Include `X-API-Token` in direct API commands, rerun
+- **CRM API 401:** unlock the dashboard with `OHI_API_TOKEN`. For native reads
+  in capability mode, verify the plugin receives `OHI_AGENT_API_TOKEN`.
+  Include the appropriate `X-API-Token` in direct API commands, rerun
   `python3 scripts/setup_openclaw.py`, then restart `bash scripts/serve.sh`.
 - **Chat verified, CRM check fails:** rerun `python3 scripts/setup_openclaw.py`.
   It checks the agent workspace, eligible skill, allowlist, and restart.
@@ -338,6 +353,6 @@ Optional feature checks after the ordered acceptance run:
 - [ ] Google Calendar account and result recorded:
 - [ ] Discord account and result recorded:
 
-For non-local access, bind the CRM to an exact private address, set matching
-`OHI_API_TOKEN` and `VITE_API_TOKEN`, and update `CORS_ORIGINS`. Do not expose
-the CRM or gateway directly to the public internet.
+For non-local access, bind the CRM to an exact private address, set a strong
+`OHI_API_TOKEN`, unlock the dashboard at runtime, and update `CORS_ORIGINS`.
+Do not expose the CRM or gateway directly to the public internet.

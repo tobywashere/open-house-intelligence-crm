@@ -161,9 +161,11 @@ agent configuration and the same review-before-apply CRM rules.
   follow OpenClaw's restart instructions.
 - **OpenClaw gateway unauthorized:** put its matching token in
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart `bash scripts/serve.sh`.
-- **CRM API unauthorized:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in
-  `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
-  API commands must also send that value in `X-API-Token`.
+- **CRM API unauthorized:** unlock the dashboard with the human
+  `OHI_API_TOKEN`; the credential stays in browser memory only. In capability
+  mode, give native read/proposal plugins the restricted
+  `OHI_AGENT_API_TOKEN`. Direct API commands must send the matching value in
+  `X-API-Token`.
 - **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
   It checks the dedicated agent, eligible `crm-db-operations` skill, and its
   restricted tool access. See [recovery steps](docs/LOCAL-AI.md#recovery).

@@ -1,17 +1,18 @@
+import { API_BASE as BASE, authenticatedFetch } from './auth'
+
 export interface NativeDirectoryReceipt {
   request_id: string
   operation: 'list_lead_directory'
   result: { total: number; offset: 0; limit: 25; leads: { id: number; name: string; status: string }[] }
 }
 
-const BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000/api' : '/api')
 export async function readCrmDirectory(message: string): Promise<NativeDirectoryReceipt> {
   const controller = new AbortController()
   const deadline = setTimeout(() => controller.abort(), 65_000)
   try {
-    const response = await fetch(`${BASE}/chat/directory`, {
+    const response = await authenticatedFetch(`${BASE}/chat/directory`, {
       method: 'POST', signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...(import.meta.env.VITE_API_TOKEN ? { 'X-API-Token': import.meta.env.VITE_API_TOKEN } : {}) },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
     })
     const data = await response.json()

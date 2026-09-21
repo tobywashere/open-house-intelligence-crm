@@ -55,7 +55,7 @@ python3 scripts/native_read_acceptance.py start
 
 Use the project's virtual-environment Python in place of `python3` if needed. The helper uses the Python executable that invoked it. Keep OpenClaw and its Node runtime on PATH. Wait for `~/.openclaw-ohi-dashboard-read/gateway-stdout.log` to say `ready`, then open **http://localhost:18080** and use **CRM reads**. The default fixture contains **37 leads**, while the display page contains **25**. Ordinary count requests still return 37.
 
-The original OpenClaw profile is not read or edited by this helper. It writes a private gateway token into the separate profile and passes it directly to the backend process environment. For a manually configured local reader, the backend settings are `NATIVE_READ_GATEWAY_URL`, `NATIVE_READ_GATEWAY_TOKEN`, and `NATIVE_READ_AGENT_ID`; use the same isolated allowlist and local-provider-only configuration as the fixture. `OHI_API_TOKEN`, if enabled on the CRM, must also be supplied to the plugin's gateway process for its fixed API read. Never expose the reader gateway token as a `VITE_` setting.
+The original OpenClaw profile is not read or edited by this helper. It writes a private gateway token into the separate profile and passes it directly to the backend process environment. For a manually configured local reader, the backend settings are `NATIVE_READ_GATEWAY_URL`, `NATIVE_READ_GATEWAY_TOKEN`, and `NATIVE_READ_AGENT_ID`; use the same isolated allowlist and local-provider-only configuration as the fixture. In capability mode, supply `OHI_AGENT_API_TOKEN` to the plugin's gateway process for its fixed API read. It prefers that restricted key and retains `OHI_API_TOKEN` as the legacy fallback. Never expose either CRM credential or the reader gateway token as a `VITE_` setting.
 
 To prepare a separate empty fixture:
 
@@ -108,6 +108,6 @@ Automated test evidence and live browser evidence are separate in `docs/evidence
 - Large directories exceeding the bounded API response produce an explicit error. This does not establish scalability.
 - The receipt channel authenticates the trusted local backend/plugin path. It is not a cryptographic attestation against a compromised host or gateway.
 - General chat, writes, existing integrations, fresh-machine installation, other models, and public hosting are not validated by this change. General-agent health is separate from the native reader's request outcome.
-- **Before agent writes:** replace freely supplied `X-Actor` trust with an enforced identity/capability boundary. Then add one proposal-only create-lead operation, with a separately authenticated human approval endpoint and duplicate-execution protection. Test that the agent cannot claim human authority.
+- **Before agent writes:** keep the enforced human/agent capability boundary and add only the proposal-specific create-lead protocol, with duplicate-execution protection and human approval. Do not widen the reader plugin's operation or schema.
 - **Before public alpha:** define and enforce the supported single-user local access model, including token requirements and network binding. Multi-user accounts are not required for this milestone.
 - **Before claiming industry customization:** remove, configure, or explicitly scope buy/sell intent and the $750k scoring threshold. A generalized scoring engine can wait.

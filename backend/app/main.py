@@ -1,5 +1,4 @@
 import os
-import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -7,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import Match
 
+from .auth import CONFIG_ERROR, get_auth_config, identify
 from .db import init_db
 from .integrations import router as integrations
 from .routers import (calendar, chat, knowledge, leads, misc, pending_changes,
@@ -20,13 +21,47 @@ app.include_router(native_read.router, prefix="/api")
 
 
 async def api_token_guard(request: Request, call_next):
-    token = os.environ.get("OHI_API_TOKEN", "")
-    if (token and request.method != "OPTIONS"  # preflight carries no auth by design
-            and request.url.path.startswith("/api")
-            and request.url.path != "/api/health"
-            and not secrets.compare_digest(request.headers.get("X-API-Token", ""), token)):
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"detail": "missing or invalid X-API-Token"}, status_code=401)
+    from fastapi.responses import JSONResponse
+
+    path = request.url.path
+    is_api = path.startswith("/api")
+    is_preflight = request.method == "OPTIONS"
+    is_health = request.method == "GET" and path == "/api/health"
+    if not is_api or is_preflight:
+        return await call_next(request)
+    try:
+        config = get_auth_config()
+    except RuntimeError:
+        if is_health:
+            return await call_next(request)
+        return JSONResponse({"detail": CONFIG_ERROR}, status_code=503)
+
+    role = identify(config, request.headers.get("X-API-Token", ""))
+    request.state.auth_mode = config.mode
+    request.state.auth_role = role
+    is_status = request.method == "GET" and path == "/api/auth/status"
+    if is_health or is_status:
+        return await call_next(request)
+    if role is None:
+        return JSONResponse(
+            {"detail": "missing or invalid X-API-Token"}, status_code=401
+        )
+    if config.mode == "capabilities" and role == "agent":
+        leads_read = request.method == "GET" and path == "/api/leads"
+        proposal_write = (
+            request.method == "POST" and path == "/api/agent/lead-proposals"
+        )
+        allowed = leads_read or proposal_write
+        if not allowed:
+            return JSONResponse(
+                {"detail": "agent capability is not allowed"}, status_code=403
+            )
+        if proposal_write and not any(
+            route.matches(request.scope)[0] == Match.FULL for route in request.app.routes
+        ):
+            # Before the proposal router is installed, keep an allowlisted
+            # future path a real 404 even when the built SPA catch-all exists.
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
     return await call_next(request)
 
 
@@ -67,6 +102,7 @@ app.include_router(voice.router, prefix="/api")
 
 @app.on_event("startup")
 def startup():
+    get_auth_config()
     init_db()
     # Recover committed approval hooks continuously. The worker has one
     # process-local instance and never holds SQLite across provider calls.
@@ -90,6 +126,14 @@ def startup():
         import asyncio
         from .integrations.poller import poll_loop
         app.state.poller_task = asyncio.get_event_loop().create_task(poll_loop())
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    return {
+        "mode": request.state.auth_mode,
+        "role": request.state.auth_role,
+    }
 
 
 @app.on_event("shutdown")

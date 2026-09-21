@@ -78,7 +78,8 @@ export function definition({ fetchImpl = fetch, now = Date.now } = {}) {
           row.state = 'running';
           try {
             const headers = { 'X-Actor':'agent', 'X-OpenHouse-Read-Request':id };
-            if (process.env.OHI_API_TOKEN) headers['X-API-Token'] = process.env.OHI_API_TOKEN;
+            const crmToken = process.env.OHI_AGENT_API_TOKEN || process.env.OHI_API_TOKEN;
+            if (crmToken) headers['X-API-Token'] = crmToken;
             const response = await fetchImpl(crmApiUrl.replace(/\/$/, '')+'/leads', {
               method:'GET', headers, redirect:'error', signal:AbortSignal.timeout(10_000),
             });
