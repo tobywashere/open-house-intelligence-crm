@@ -23,7 +23,7 @@ api = (<starlette.testclient.TestClient object at 0x10c608f50>, {'X-API-Token': 
         assert start(api).json()['state'] == 'unknown'
 >       assert close(api).json() == {'request_id': RID, 'state': 'failed', 'proposal': None}
 E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'...oposal': None}
-E         
+E
 E         Left contains 1 more item:
 E         {'detail': 'Method Not Allowed'}
 E         Right contains 3 more items:
@@ -56,8 +56,8 @@ api = (<starlette.testclient.TestClient object at 0x10c2c2fd0>, {'X-API-Token': 
             assert (await task)['state'] == 'failed'
 >       asyncio.run(exercise(False))
 
-backend/tests/test_native_proposals.py:369: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+backend/tests/test_native_proposals.py:369:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 /usr/local/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py:195: in run
     return runner.run(main)
            ^^^^^^^^^^^^^^^^
@@ -67,7 +67,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 /usr/local/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py:725: in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 fail = False
 
@@ -100,14 +100,14 @@ decision = None
             before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
 >       assert close(api).json() == before
 E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'....test'}, ...}}
-E         
+E
 E         Left contains 1 more item:
 E         {'detail': 'Method Not Allowed'}
 E         Right contains 3 more items:
 E         {'proposal': {'created_at': '2026-09-21T02:57:19',
 E                       'decided_at': None,
 E                       'deny_reason': None,...
-E         
+E
 E         ...Full output truncated (13 lines hidden), use '-vv' to show
 
 backend/tests/test_native_proposals.py:380: AssertionError
@@ -125,14 +125,14 @@ decision = 'approve'
             before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
 >       assert close(api).json() == before
 E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'....test'}, ...}}
-E         
+E
 E         Left contains 1 more item:
 E         {'detail': 'Method Not Allowed'}
 E         Right contains 3 more items:
 E         {'proposal': {'created_at': '2026-09-21T02:57:19',
 E                       'decided_at': '2026-09-21T02:57:19',
 E                       'deny_reason': None,...
-E         
+E
 E         ...Full output truncated (33 lines hidden), use '-vv' to show
 
 backend/tests/test_native_proposals.py:380: AssertionError
@@ -150,14 +150,14 @@ decision = 'deny'
             before = api[0].get(f'/api/chat/lead-proposal/{RID}').json()
 >       assert close(api).json() == before
 E       AssertionError: assert {'detail': 'M... Not Allowed'} == {'request_id'....test'}, ...}}
-E         
+E
 E         Left contains 1 more item:
 E         {'detail': 'Method Not Allowed'}
 E         Right contains 3 more items:
 E         {'proposal': {'created_at': '2026-09-21T02:57:19',
 E                       'decided_at': '2026-09-21T02:57:19',
 E                       'deny_reason': None,...
-E         
+E
 E         ...Full output truncated (13 lines hidden), use '-vv' to show
 
 backend/tests/test_native_proposals.py:380: AssertionError
@@ -207,31 +207,31 @@ backend/tests/test_native_proposals.py:418: AssertionError
     from starlette.testclient import TestClient as TestClient  # noqa
 
 backend/app/main.py:104
-  <worktree>/backend/app/main.py:104: DeprecationWarning: 
+  <worktree>/backend/app/main.py:104: DeprecationWarning:
           on_event is deprecated, use lifespan event handlers instead.
-  
+
           Read more about it in the
           [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
+
     @app.on_event("startup")
 
 ../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
 ../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
-  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/applications.py:4675: DeprecationWarning: 
+  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/applications.py:4675: DeprecationWarning:
           on_event is deprecated, use lifespan event handlers instead.
-  
+
           Read more about it in the
           [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
+
     return self.router.on_event(event_type)  # ty: ignore[deprecated]
 
 backend/app/main.py:142
-  <worktree>/backend/app/main.py:142: DeprecationWarning: 
+  <worktree>/backend/app/main.py:142: DeprecationWarning:
           on_event is deprecated, use lifespan event handlers instead.
-  
+
           Read more about it in the
           [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
+
     @app.on_event("shutdown")
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

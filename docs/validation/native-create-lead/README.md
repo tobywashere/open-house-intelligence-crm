@@ -24,7 +24,15 @@ The earlier full backend run had 722 tests and preceded the helper read-profile
 and CLI tests. The final 724-test run includes them. Only an assertion in the
 close-race test changed afterward; its eight focused close cases were rerun.
 Every listed command was collected through its terminal exit code. The five Python
-warnings are existing FastAPI lifecycle/python-multipart deprecations.
+warnings are existing Starlette/httpx integration and FastAPI lifecycle
+deprecations.
+
+## Transfer and review records
+
+- [Offline handoff](OFFLINE-HANDOFF.md) gives the receiving operator the safe
+  import and pending live-acceptance procedure.
+- [Implementation review decisions](REVIEW-DECISIONS.md) records the eight
+  controller-reviewed decisions, reasons and costs.
 
 ## Commands and environment
 

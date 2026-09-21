@@ -60,7 +60,7 @@ not ok 9 - human closes permanent unknown, then deliberately starts one new requ
     locator.click: Timeout 5000ms exceeded.
     Call log:
       - waiting for getByRole('button', { name: 'Close request', exact: true })
-    
+
   code: 'ERR_TEST_FAILURE'
   name: 'TimeoutError'
   stack: |-
@@ -77,7 +77,7 @@ not ok 10 - lost close response retains ID until a status check confirms retirem
     locator.click: Timeout 5000ms exceeded.
     Call log:
       - waiting for getByRole('button', { name: 'Close request', exact: true })
-    
+
   code: 'ERR_TEST_FAILURE'
   name: 'TimeoutError'
   stack: |-
@@ -92,4 +92,3 @@ not ok 10 - lost close response retains ID until a status check confirms retirem
 # skipped 0
 # todo 0
 # duration_ms 19697.34452
-

@@ -9,8 +9,8 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10d8d63f0>
 >       h = helper()
             ^^^^^^^^
 
-backend/tests/test_native_proposal_acceptance_helper.py:23: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+backend/tests/test_native_proposal_acceptance_helper.py:23:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
     def helper():
 >       assert SPEC.origin and Path(SPEC.origin).exists(), 'native proposal acceptance helper is missing'
@@ -29,8 +29,8 @@ _ test_socket_reservation_refuses_an_occupied_port_without_stopping_its_owner __
 >       h = helper()
             ^^^^^^^^
 
-backend/tests/test_native_proposal_acceptance_helper.py:49: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+backend/tests/test_native_proposal_acceptance_helper.py:49:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
     def helper():
 >       assert SPEC.origin and Path(SPEC.origin).exists(), 'native proposal acceptance helper is missing'
@@ -49,8 +49,8 @@ ____________ test_teardown_stops_only_its_own_child_and_is_bounded _____________
 >       h = helper()
             ^^^^^^^^
 
-backend/tests/test_native_proposal_acceptance_helper.py:58: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+backend/tests/test_native_proposal_acceptance_helper.py:58:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
     def helper():
 >       assert SPEC.origin and Path(SPEC.origin).exists(), 'native proposal acceptance helper is missing'
@@ -69,31 +69,31 @@ backend/tests/test_native_proposal_acceptance_helper.py:16: AssertionError
     from starlette.testclient import TestClient as TestClient  # noqa
 
 backend/app/main.py:104
-  <worktree>/backend/app/main.py:104: DeprecationWarning: 
+  <worktree>/backend/app/main.py:104: DeprecationWarning:
           on_event is deprecated, use lifespan event handlers instead.
-  
+
           Read more about it in the
           [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
+
     @app.on_event("startup")
 
 ../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
 ../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
-  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/applications.py:4675: DeprecationWarning: 
+  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/applications.py:4675: DeprecationWarning:
           on_event is deprecated, use lifespan event handlers instead.
-  
+
           Read more about it in the
           [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
+
     return self.router.on_event(event_type)  # ty: ignore[deprecated]
 
 backend/app/main.py:142
-  <worktree>/backend/app/main.py:142: DeprecationWarning: 
+  <worktree>/backend/app/main.py:142: DeprecationWarning:
           on_event is deprecated, use lifespan event handlers instead.
-  
+
           Read more about it in the
           [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
+
     @app.on_event("shutdown")
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

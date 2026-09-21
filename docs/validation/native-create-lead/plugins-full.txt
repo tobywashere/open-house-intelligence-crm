@@ -137,8 +137,8 @@ ok 23 - invalid arguments fail: {"name":"A","operation":"delete_lead"}
   duration_ms: 0.193404
   type: 'test'
   ...
-# Subtest: registration refuses unsafe credentials 
-ok 24 - registration refuses unsafe credentials 
+# Subtest: registration refuses unsafe credentials
+ok 24 - registration refuses unsafe credentials
   ---
   duration_ms: 0.256744
   type: 'test'
