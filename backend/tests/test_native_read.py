@@ -157,3 +157,13 @@ def test_route_returns_safe_failure(client,monkeypatch):
     assert response.json()['error']['code']=='gateway_unavailable'
     assert 'result' not in response.json()
     assert client.post('/api/chat/directory',json={'message':'How many leads?','operation':'delete'}).status_code==422
+
+
+def test_local_transport_ignores_ambient_proxies(monkeypatch):
+    monkeypatch.setenv('NATIVE_READ_GATEWAY_URL', 'http://127.0.0.1:18879')
+    monkeypatch.setenv('NATIVE_READ_GATEWAY_TOKEN', 'test-only')
+    def factory(**kwargs):
+        assert kwargs.get('trust_env') is False
+        raise RuntimeError('transport checked')
+    with pytest.raises(RuntimeError, match='transport checked'):
+        asyncio.run(read_directory('How many leads?', client_factory=factory))

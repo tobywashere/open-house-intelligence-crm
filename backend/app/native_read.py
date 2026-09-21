@@ -95,7 +95,7 @@ async def read_directory(message: str, *, client_factory=httpx.AsyncClient, time
     receipt_url = f"{url}/openhouse/read-receipts/{request_id}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        async with client_factory(timeout=timeout_seconds, headers=headers, follow_redirects=False) as client:
+        async with client_factory(timeout=timeout_seconds, headers=headers, follow_redirects=False, trust_env=False) as client:
             try:
                 async with asyncio.timeout(timeout_seconds):
                     reserved = await client.post(receipt_url)

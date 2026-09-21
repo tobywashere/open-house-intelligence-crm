@@ -14,10 +14,11 @@ from .integrations import router as integrations
 from .routers import (calendar, chat, knowledge, leads, misc, pending_changes,
                       reports, scan, settings as settings_router, vertical, voice)
 
-from .routers import native_read
+from .routers import native_read, native_proposals
 
 app = FastAPI(title="Open House Intelligence")
 app.include_router(native_read.router, prefix="/api")
+app.include_router(native_proposals.router, prefix="/api")
 
 
 async def api_token_guard(request: Request, call_next):
@@ -104,6 +105,8 @@ app.include_router(voice.router, prefix="/api")
 def startup():
     get_auth_config()
     init_db()
+    from .native_proposals import recover_running_requests
+    recover_running_requests()
     # Recover committed approval hooks continuously. The worker has one
     # process-local instance and never holds SQLite across provider calls.
     from .integrations.hook_outbox import start_worker
