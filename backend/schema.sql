@@ -165,3 +165,12 @@ CREATE TABLE IF NOT EXISTS hook_outbox (
 
 CREATE INDEX IF NOT EXISTS idx_hook_outbox_delivery
   ON hook_outbox (status, claimed_at, id);
+
+-- Durable native requests link to the existing human approval queue.
+CREATE TABLE IF NOT EXISTS native_lead_requests (
+    request_id TEXT PRIMARY KEY,
+    message TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('running','unknown','failed','proposed')),
+    pending_id INTEGER UNIQUE REFERENCES pending_changes(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
+);

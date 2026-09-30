@@ -1,0 +1,162 @@
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+_ test_capability_mode_blocks_legacy_setup_before_any_side_effect[False-False] _
+
+tmp_path = PosixPath('<temporary-path>')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x103825480>
+dry_run = False, from_dotenv = False
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    @pytest.mark.parametrize('from_dotenv', [False, True])
+    def test_capability_mode_blocks_legacy_setup_before_any_side_effect(tmp_path, monkeypatch, dry_run, from_dotenv):
+        agent = 'synthetic-agent-' + 'a' * 40
+        human = 'synthetic-human-' + 'h' * 40
+        monkeypatch.setenv('OPENCLAW_STATE_DIR', str(tmp_path / 'state'))
+        monkeypatch.setenv('OHI_API_TOKEN', human)
+        monkeypatch.delenv('OHI_AGENT_API_TOKEN', raising=False)
+        monkeypatch.delenv('AGENT_ID', raising=False)
+        if from_dotenv:
+            (tmp_path / '.env').write_text('OHI_AGENT_API_TOKEN=' + agent + '\n')
+            options = parse_args(['--workspace', str(tmp_path / 'workspace')] + (['--dry-run'] if dry_run else []), repo=tmp_path)
+        else:
+            monkeypatch.setenv('OHI_AGENT_API_TOKEN', agent)
+            options = make_options(tmp_path, dry_run=dry_run)
+        before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+        cli = FakeCLI(config_path=tmp_path / 'state/openclaw.json')
+        try:
+            result = configure_openclaw(options, cli=cli)
+>           assert not result.ok
+E           AssertionError: assert not True
+E            +  where True = SetupResult(ok=True, messages=['OpenClaw version: OpenClaw 2026.8.1', 'Installed CRM skills in <temporary-path> --live-crm', 'Optional Discord binding: openclaw agents bind --agent openhouse-crm --bind discord:ACCOUNT --json']).ok
+
+backend/tests/test_setup_openclaw.py:1909: AssertionError
+_ test_capability_mode_blocks_legacy_setup_before_any_side_effect[False-True] __
+
+tmp_path = PosixPath('<temporary-path>')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10369a520>
+dry_run = True, from_dotenv = False
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    @pytest.mark.parametrize('from_dotenv', [False, True])
+    def test_capability_mode_blocks_legacy_setup_before_any_side_effect(tmp_path, monkeypatch, dry_run, from_dotenv):
+        agent = 'synthetic-agent-' + 'a' * 40
+        human = 'synthetic-human-' + 'h' * 40
+        monkeypatch.setenv('OPENCLAW_STATE_DIR', str(tmp_path / 'state'))
+        monkeypatch.setenv('OHI_API_TOKEN', human)
+        monkeypatch.delenv('OHI_AGENT_API_TOKEN', raising=False)
+        monkeypatch.delenv('AGENT_ID', raising=False)
+        if from_dotenv:
+            (tmp_path / '.env').write_text('OHI_AGENT_API_TOKEN=' + agent + '\n')
+            options = parse_args(['--workspace', str(tmp_path / 'workspace')] + (['--dry-run'] if dry_run else []), repo=tmp_path)
+        else:
+            monkeypatch.setenv('OHI_AGENT_API_TOKEN', agent)
+            options = make_options(tmp_path, dry_run=dry_run)
+        before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+        cli = FakeCLI(config_path=tmp_path / 'state/openclaw.json')
+        try:
+            result = configure_openclaw(options, cli=cli)
+>           assert not result.ok
+E           AssertionError: assert not True
+E            +  where True = SetupResult(ok=True, messages=['OpenClaw version: OpenClaw 2026.8.1', 'Dry run only. No files or OpenClaw configuratio... OHI_API_TOKEN', 'Optional Discord binding: openclaw agents bind --agent openhouse-crm --bind discord:ACCOUNT --json']).ok
+
+backend/tests/test_setup_openclaw.py:1909: AssertionError
+_ test_capability_mode_blocks_legacy_setup_before_any_side_effect[True-False] __
+
+tmp_path = PosixPath('<temporary-path>')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x103806690>
+dry_run = False, from_dotenv = True
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    @pytest.mark.parametrize('from_dotenv', [False, True])
+    def test_capability_mode_blocks_legacy_setup_before_any_side_effect(tmp_path, monkeypatch, dry_run, from_dotenv):
+        agent = 'synthetic-agent-' + 'a' * 40
+        human = 'synthetic-human-' + 'h' * 40
+        monkeypatch.setenv('OPENCLAW_STATE_DIR', str(tmp_path / 'state'))
+        monkeypatch.setenv('OHI_API_TOKEN', human)
+        monkeypatch.delenv('OHI_AGENT_API_TOKEN', raising=False)
+        monkeypatch.delenv('AGENT_ID', raising=False)
+        if from_dotenv:
+            (tmp_path / '.env').write_text('OHI_AGENT_API_TOKEN=' + agent + '\n')
+            options = parse_args(['--workspace', str(tmp_path / 'workspace')] + (['--dry-run'] if dry_run else []), repo=tmp_path)
+        else:
+            monkeypatch.setenv('OHI_AGENT_API_TOKEN', agent)
+            options = make_options(tmp_path, dry_run=dry_run)
+        before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+        cli = FakeCLI(config_path=tmp_path / 'state/openclaw.json')
+        try:
+            result = configure_openclaw(options, cli=cli)
+>           assert not result.ok
+E           AssertionError: assert not True
+E            +  where True = SetupResult(ok=True, messages=['OpenClaw version: OpenClaw 2026.8.1', 'Installed CRM skills in <temporary-path> --live-crm', 'Optional Discord binding: openclaw agents bind --agent openhouse-crm --bind discord:ACCOUNT --json']).ok
+
+backend/tests/test_setup_openclaw.py:1909: AssertionError
+__ test_capability_mode_blocks_legacy_setup_before_any_side_effect[True-True] __
+
+tmp_path = PosixPath('<temporary-path>')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10371b240>
+dry_run = True, from_dotenv = True
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    @pytest.mark.parametrize('from_dotenv', [False, True])
+    def test_capability_mode_blocks_legacy_setup_before_any_side_effect(tmp_path, monkeypatch, dry_run, from_dotenv):
+        agent = 'synthetic-agent-' + 'a' * 40
+        human = 'synthetic-human-' + 'h' * 40
+        monkeypatch.setenv('OPENCLAW_STATE_DIR', str(tmp_path / 'state'))
+        monkeypatch.setenv('OHI_API_TOKEN', human)
+        monkeypatch.delenv('OHI_AGENT_API_TOKEN', raising=False)
+        monkeypatch.delenv('AGENT_ID', raising=False)
+        if from_dotenv:
+            (tmp_path / '.env').write_text('OHI_AGENT_API_TOKEN=' + agent + '\n')
+            options = parse_args(['--workspace', str(tmp_path / 'workspace')] + (['--dry-run'] if dry_run else []), repo=tmp_path)
+        else:
+            monkeypatch.setenv('OHI_AGENT_API_TOKEN', agent)
+            options = make_options(tmp_path, dry_run=dry_run)
+        before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+        cli = FakeCLI(config_path=tmp_path / 'state/openclaw.json')
+        try:
+            result = configure_openclaw(options, cli=cli)
+>           assert not result.ok
+E           AssertionError: assert not True
+E            +  where True = SetupResult(ok=True, messages=['OpenClaw version: OpenClaw 2026.8.1', 'Dry run only. No files or OpenClaw configuratio... OHI_API_TOKEN', 'Optional Discord binding: openclaw agents bind --agent openhouse-crm --bind discord:ACCOUNT --json']).ok
+
+backend/tests/test_setup_openclaw.py:1909: AssertionError
+=============================== warnings summary ===============================
+../../.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+backend/app/main.py:104
+  <worktree>/backend/app/main.py:104: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
+../../.venv/lib/python3.13/site-packages/fastapi/applications.py:4675
+  <user-home>/Documents/GitHub/open-intelligence-crm/.venv/lib/python3.13/site-packages/fastapi/applications.py:4675: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+backend/app/main.py:142
+  <worktree>/backend/app/main.py:142: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("shutdown")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED backend/tests/test_setup_openclaw.py::test_capability_mode_blocks_legacy_setup_before_any_side_effect[False-False]
+FAILED backend/tests/test_setup_openclaw.py::test_capability_mode_blocks_legacy_setup_before_any_side_effect[False-True]
+FAILED backend/tests/test_setup_openclaw.py::test_capability_mode_blocks_legacy_setup_before_any_side_effect[True-False]
+FAILED backend/tests/test_setup_openclaw.py::test_capability_mode_blocks_legacy_setup_before_any_side_effect[True-True]
+4 failed, 106 deselected, 5 warnings in 0.56s

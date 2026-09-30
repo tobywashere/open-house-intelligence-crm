@@ -1,0 +1,156 @@
+Browser boundary fixture ready (temporary CRM; integrations off)
+SIMULATED inference only; real authenticated agent HTTP, durable DB and human approvals
+TAP version 13
+# Subtest: proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+not ok 1 - proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+  ---
+  duration_ms: 5930.065764
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:47:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:48:16)
+  ...
+# Subtest: reload recovers pending approval and denial creates no lead
+not ok 2 - reload recovers pending approval and denial creates no lead
+  ---
+  duration_ms: 5387.441835
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:83:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:84:16)
+  ...
+# Subtest: unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+not ok 3 - unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+  ---
+  duration_ms: 5403.633446
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:101:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:102:16)
+  ...
+# Subtest: lost POST response recovers the real proposal through status without a resend
+not ok 4 - lost POST response recovers the real proposal through status without a resend
+  ---
+  duration_ms: 5391.588735
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:124:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:125:16)
+  ...
+# Subtest: unknown 404 retains recovery ID and cannot start a second request
+not ok 5 - unknown 404 retains recovery ID and cannot start a second request
+  ---
+  duration_ms: 5399.053445
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:148:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:149:16)
+  ...
+# Subtest: explicit preflight not-configured failure allows a fresh deliberate request
+not ok 6 - explicit preflight not-configured failure allows a fresh deliberate request
+  ---
+  duration_ms: 5392.105022
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:162:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:163:16)
+  ...
+# Subtest: completion prose without a proposal is failed and permits a deliberate new request
+not ok 7 - completion prose without a proposal is failed and permits a deliberate new request
+  ---
+  duration_ms: 5368.009133
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:176:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:177:16)
+  ...
+# Subtest: malformed approved result cannot be presented as a created lead
+not ok 8 - malformed approved result cannot be presented as a created lead
+  ---
+  duration_ms: 5382.646673
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:188:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:189:16)
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 0
+# fail 8
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 44565.19152

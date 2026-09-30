@@ -1,0 +1,78 @@
+{
+  "kind": "live-dashboard-native-read",
+  "retries": 0,
+  "results": [
+    {
+      "case": 1,
+      "prompt": "How many leads are in the CRM?",
+      "status": 200,
+      "latency_ms": 3823,
+      "retries": 0,
+      "expected_count": 0,
+      "receipt": {
+        "request_id": "d1974b7c546eb031ceb6ae119f8fd7ba",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 0,
+          "offset": 0,
+          "limit": 25,
+          "leads": []
+        }
+      },
+      "displayed_text": "0 leads total\n\nVerified CRM read for this request\n\nNo leads in the CRM.",
+      "displayed_request_id": "d1974b7c546eb031ceb6ae119f8fd7ba",
+      "passed": true,
+      "execution_evidence": {
+        "request_id": "d1974b7c546eb031ceb6ae119f8fd7ba",
+        "session_id": "1ee26b2f-5c17-4b72-b9b1-8cb44c0fe6bf",
+        "application_completion_requests": 1,
+        "internal_inference_rounds": 2,
+        "models": [
+          "qwen3.5:9b"
+        ],
+        "providers": [
+          "ollama"
+        ],
+        "native_tool_count": 1,
+        "client_tool_count": 0,
+        "selected_calls": [
+          {
+            "name": "openhouse_crm",
+            "arguments": {
+              "operation": "list_lead_directory",
+              "arguments": {}
+            }
+          }
+        ],
+        "handler_results": [
+          {
+            "total": 0,
+            "offset": 0,
+            "limit": 25,
+            "leads": []
+          }
+        ],
+        "backend_requests": [
+          {
+            "at": 1789360478.798782,
+            "method": "GET",
+            "path": "/api/leads",
+            "status": 200,
+            "request_id": "d1974b7c546eb031ceb6ae119f8fd7ba",
+            "actor": "agent"
+          }
+        ],
+        "exposed_tool_names": [
+          "openhouse_crm"
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "cases": 1,
+    "passed": 1,
+    "retries": 0,
+    "median_latency_ms": 3823,
+    "internal_inference_rounds": 2
+  }
+}

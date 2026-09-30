@@ -1885,3 +1885,33 @@ def test_openclaw_cli_never_invokes_a_shell(monkeypatch):
 
     assert seen["command"] == ["openclaw", "config", "validate", "--json"]
     assert seen["kwargs"]["shell"] is False
+
+
+@pytest.mark.parametrize('dry_run', [False, True])
+@pytest.mark.parametrize('from_dotenv', [False, True])
+def test_capability_mode_blocks_legacy_setup_before_any_side_effect(tmp_path, monkeypatch, dry_run, from_dotenv):
+    agent = 'synthetic-agent-' + 'a' * 40
+    human = 'synthetic-human-' + 'h' * 40
+    monkeypatch.setenv('OPENCLAW_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('OHI_API_TOKEN', human)
+    monkeypatch.delenv('OHI_AGENT_API_TOKEN', raising=False)
+    monkeypatch.delenv('AGENT_ID', raising=False)
+    if from_dotenv:
+        (tmp_path / '.env').write_text('OHI_AGENT_API_TOKEN=' + agent + '\n')
+        options = parse_args(['--workspace', str(tmp_path / 'workspace')] + (['--dry-run'] if dry_run else []), repo=tmp_path)
+    else:
+        monkeypatch.setenv('OHI_AGENT_API_TOKEN', agent)
+        options = make_options(tmp_path, dry_run=dry_run)
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    cli = FakeCLI(config_path=tmp_path / 'state/openclaw.json')
+    try:
+        result = configure_openclaw(options, cli=cli)
+        assert not result.ok
+        assert 'NATIVE-CREATE-LEAD.md' in result.render()
+        assert human not in result.render() and agent not in result.render()
+        assert cli.calls == []
+        assert not options.workspace.exists()
+        assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+    finally:
+        if from_dotenv:
+            os.environ.pop('OHI_AGENT_API_TOKEN', None)

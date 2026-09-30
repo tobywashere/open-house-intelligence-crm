@@ -1,0 +1,1 @@
+{"name":"openhouse-proposals","version":"0.1.0","type":"module","openclaw":{"extensions":["./index.js"]},"scripts":{"test":"node --test test.mjs"}}

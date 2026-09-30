@@ -46,6 +46,12 @@ after they are installed, demo mode works without internet access.
 
 ## Set up real local AI
 
+The commands below configure the legacy general agent and require
+`OHI_AGENT_API_TOKEN` to be unset. For capability mode and native lead proposals,
+use [the native setup and recovery guide](docs/NATIVE-CREATE-LEAD.md).
+`setup_openclaw.py` refuses capability mode, including dry runs, before touching
+OpenClaw or provisioning the human credential.
+
 This is the short, guided setup for a single machine. Before starting, install
 OpenClaw and configure a tool-capable model in it. Enable its Chat Completions
 endpoint once:
@@ -161,6 +167,8 @@ you configure them.
 
 ## Optional Discord
 
+This binding flow applies to the legacy general agent with `OHI_AGENT_API_TOKEN` unset.
+
 The dashboard is the primary chat experience. To use the same dedicated agent
 in Discord, bind an account during setup:
 
@@ -178,11 +186,14 @@ agent configuration and the same review-before-apply CRM rules.
   follow OpenClaw's restart instructions.
 - **OpenClaw gateway unauthorized:** put its matching token in
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart `bash scripts/serve.sh`.
-- **CRM API unauthorized:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in
-  `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
-  API commands must also send that value in `X-API-Token`.
-- **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
-  It checks the dedicated agent, eligible `crm-db-operations` skill, and its
+- **CRM API unauthorized:** unlock the dashboard with the human
+  `OHI_API_TOKEN`; the credential stays in browser memory only. In capability
+  mode, give native read/proposal plugins the restricted
+  `OHI_AGENT_API_TOKEN`. Direct API commands must send the matching value in
+  `X-API-Token`.
+- **Chat verified but CRM not verified (legacy mode only):** rerun `python3 scripts/setup_openclaw.py`.
+  For capability mode, follow [native recovery](docs/NATIVE-CREATE-LEAD.md).
+  The legacy helper checks the dedicated agent, eligible `crm-db-operations` skill, and its
   restricted tool access. See [recovery steps](docs/LOCAL-AI.md#recovery).
 - **OpenClaw unreachable:** check that the gateway is running on port 18789
   and that `AGENT_GATEWAY_URL` in `.env` is correct.

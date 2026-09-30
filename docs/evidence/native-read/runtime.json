@@ -1,0 +1,31 @@
+{
+  "model": {
+    "models": [
+      {
+        "name": "qwen3.5:9b",
+        "model": "qwen3.5:9b",
+        "size": 6554365456,
+        "digest": "6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen35",
+          "families": [
+            "qwen35"
+          ],
+          "parameter_size": "9.7B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-09-14T04:39:39.317816291Z",
+        "size_vram": 5498543798,
+        "context_length": 16384
+      }
+    ]
+  },
+  "version": {
+    "version": "0.32.15"
+  },
+  "unauthenticated_receipt_http_status": 401,
+  "openclaw_version": "2026.8.1-beta.3 (5831b80)",
+  "browser": "Microsoft Edge headless via Playwright 1.62.1; additional in-app browser smoke check"
+}

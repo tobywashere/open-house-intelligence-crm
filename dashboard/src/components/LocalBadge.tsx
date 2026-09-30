@@ -15,7 +15,7 @@ export function LocalBadge({ health }: { health: HealthStatus | null }) {
     status === 'unauthorized' ? 'OpenClaw · unauthorized' :
     status === 'unreachable' ? 'OpenClaw · unreachable' :
     status === 'failed' ? 'OpenClaw · error' :
-    status === 'mock' ? 'Inference · mock mode' :
+    status === 'mock' ? 'General agent · mock mode' :
     'Agent status…'
   return (
     <div className="flex items-center gap-2 text-xs rounded-full border border-line px-3 py-1.5">

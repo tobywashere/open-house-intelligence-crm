@@ -1,0 +1,13 @@
+
+> ohi-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 323 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.41 kB │ gzip:   0.28 kB
+dist/assets/index-GTr54vrh.css   44.49 kB │ gzip:   8.26 kB
+dist/assets/index-CA0CKMcn.js   469.66 kB │ gzip: 144.06 kB
+✓ built in 2.50s

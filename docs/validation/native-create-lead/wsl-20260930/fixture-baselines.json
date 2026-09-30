@@ -1,0 +1,26 @@
+{
+  "source": "Captured helper preparation output",
+  "read": {
+    "counts": {
+      "leads": 37,
+      "events": 0,
+      "pending_changes": 0,
+      "appointments": 0,
+      "reminders": 0,
+      "native_lead_requests": 0
+    },
+    "content_sha256": "eb79615d0537bdf3cfc44493c2c6b5a2a65e92ac23b321a6566e52e8b1a4fe68"
+  },
+  "proposal": {
+    "counts": {
+      "leads": 0,
+      "events": 0,
+      "pending_changes": 0,
+      "appointments": 0,
+      "reminders": 0,
+      "native_lead_requests": 0
+    },
+    "content_sha256": "6a06285311b383aac651a7234977c6ead1e47b9831087f330a813ffec14732c2"
+  },
+  "proposal_pre_and_post_restart_hash": "7a05cc77b882ab683368b0204e7bd32c1678162e01330ddef5c1ef29aa184b0d"
+}

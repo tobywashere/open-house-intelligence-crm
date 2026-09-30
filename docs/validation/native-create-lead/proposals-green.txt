@@ -1,0 +1,213 @@
+Browser boundary fixture ready (temporary CRM; integrations off)
+SIMULATED inference only; real authenticated agent HTTP, durable DB and human approvals
+TAP version 13
+# Subtest: proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+ok 1 - proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+  ---
+  duration_ms: 1552.47768
+  type: 'test'
+  ...
+# Subtest: reload recovers pending approval and denial creates no lead
+ok 2 - reload recovers pending approval and denial creates no lead
+  ---
+  duration_ms: 1389.959314
+  type: 'test'
+  ...
+# Subtest: unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+ok 3 - unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+  ---
+  duration_ms: 777.600867
+  type: 'test'
+  ...
+# Subtest: lost POST response recovers the real proposal through status without a resend
+not ok 4 - lost POST response recovers the real proposal through status without a resend
+  ---
+  duration_ms: 603.120029
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:124:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.waitFor: Error: strict mode violation: getByText(/Outcome is uncertain/) resolved to 2 elements:
+        1) <p role="status">Outcome is uncertain. Check status to recover thi…</p> aka getByText('Outcome is uncertain. Check')
+        2) <p role="alert" class="text-sm text-alert">Outcome is uncertain. Keep this request ID and ch…</p> aka getByText('Outcome is uncertain. Keep')
+
+    Call log:
+      - waiting for getByText(/Outcome is uncertain/) to be visible
+
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:135:50)
+  ...
+# Subtest: unknown 404 retains recovery ID and cannot start a second request
+not ok 5 - unknown 404 retains recovery ID and cannot start a second request
+  ---
+  duration_ms: 5384.539148
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:148:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+        - locator resolved to <button aria-pressed="false" class="text-xs px-2 py-1 rounded border border-line">Propose lead</button>
+      - attempting click action
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+        - waiting 20ms
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 100ms
+        8 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 500ms
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:149:16)
+  ...
+# Subtest: explicit preflight not-configured failure allows a fresh deliberate request
+not ok 6 - explicit preflight not-configured failure allows a fresh deliberate request
+  ---
+  duration_ms: 5429.133095
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:162:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+        - locator resolved to <button aria-pressed="false" class="text-xs px-2 py-1 rounded border border-line">Propose lead</button>
+      - attempting click action
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+        - waiting 20ms
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 100ms
+        8 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 500ms
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:163:16)
+  ...
+# Subtest: completion prose without a proposal is failed and permits a deliberate new request
+not ok 7 - completion prose without a proposal is failed and permits a deliberate new request
+  ---
+  duration_ms: 5389.524917
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:176:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+        - locator resolved to <button aria-pressed="false" class="text-xs px-2 py-1 rounded border border-line">Propose lead</button>
+      - attempting click action
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+        - waiting 20ms
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 100ms
+        8 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 500ms
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:177:16)
+  ...
+# Subtest: malformed approved result cannot be presented as a created lead
+not ok 8 - malformed approved result cannot be presented as a created lead
+  ---
+  duration_ms: 5394.690534
+  type: 'test'
+  location: '<worktree>/dashboard/tests/native-proposals.browser.cjs:188:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    locator.click: Timeout 5000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Propose lead', exact: true })
+        - locator resolved to <button aria-pressed="false" class="text-xs px-2 py-1 rounded border border-line">Propose lead</button>
+      - attempting click action
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+        - waiting 20ms
+        2 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 100ms
+        8 × waiting for element to be visible, enabled and stable
+          - element is visible, enabled and stable
+          - scrolling into view if needed
+          - done scrolling
+          - <div role="dialog" aria-modal="true" aria-label="Pending approvals" class="fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4">…</div> intercepts pointer events
+        - retrying click action
+          - waiting 500ms
+
+  code: 'ERR_TEST_FAILURE'
+  name: 'TimeoutError'
+  stack: |-
+    open (<worktree>/dashboard/tests/native-proposals.browser.cjs:25:73)
+    async TestContext.<anonymous> (<worktree>/dashboard/tests/native-proposals.browser.cjs:189:16)
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 3
+# fail 5
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 26577.54172

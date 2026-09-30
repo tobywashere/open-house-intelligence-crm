@@ -1,0 +1,11 @@
+{
+  "acceptance_processes_stopped": true,
+  "original_gateway_status": "active",
+  "listeners": "State  Recv-Q Send-Q  Local Address:Port  Peer Address:Port\nLISTEN 0      4096    127.0.0.53%lo:53         0.0.0.0:*   \nLISTEN 0      4096       127.0.0.54:53         0.0.0.0:*   \nLISTEN 0      1000   10.255.255.254:53         0.0.0.0:*   \nLISTEN 0      511         127.0.0.1:18789      0.0.0.0:*   \nLISTEN 0      511             [::1]:18789         [::]:*   \n",
+  "original_configuration_modified": false,
+  "profiles_created": [
+    "ohi-dashboard-read",
+    "ohi-dashboard-empty"
+  ],
+  "original_crm_modified": false
+}

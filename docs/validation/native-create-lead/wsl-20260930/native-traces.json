@@ -1,0 +1,1803 @@
+{
+  "read": [
+    {
+      "request_id": "37306983625fc01dc6d21a3729d1e163",
+      "agent": "native-read",
+      "session_id": "bd4bb344-023a-4c84-b47b-8a20210e1e38",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "e29c11510cec12c64835808f02739b98",
+      "agent": "native-read",
+      "session_id": "be6739ae-9fee-465f-9ce2-be3c32b31dbb",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "c0d7919c7b101fdf474042668a7831de",
+      "agent": "native-read",
+      "session_id": "54026879-6517-47a4-923b-4e7ca1b68093",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "8fa8325be37bd405c272ecc6b03bbeff",
+      "agent": "native-read",
+      "session_id": "1da46261-7fc2-4316-ac71-bad6a148e91e",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "91bb606aaf1ca9e9fc2065afa5f1234c",
+      "agent": "native-read",
+      "session_id": "91c86f32-c4fa-45c7-b2c5-eeeca497e87c",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "21fb559ab5a0cf078cf712d039e34b59",
+      "agent": "native-read",
+      "session_id": "337186ee-ec52-4915-8fcc-835c7aae3c5e",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "e5cd0eff434f8380d0f1c8b0690c7d40",
+      "agent": "native-read",
+      "session_id": "59d6bd92-346b-448c-bb79-a7cc075dad2a",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "3673b3ffa13808e9cbc3b8b744ed5e01",
+      "agent": "native-read",
+      "session_id": "9c82fc07-de02-47a1-aa94-7e9ebddc11d5",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "dee9c1f05928845604cef205e08ef5f5",
+      "agent": "native-read",
+      "session_id": "c782df38-3757-4cc0-a35d-95fc6f18b428",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "request_id": "f2834e7971f0ee4079c38162e118caee",
+      "agent": "native-read",
+      "session_id": "eda7f18e-8297-492d-94d5-68b3289f04b7",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_crm"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_crm",
+          "arguments": {
+            "operation": "list_lead_directory",
+            "arguments": {}
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "proposals": [
+    {
+      "request_id": "69bb21fe6aab40e08fd69e84c2718817",
+      "agent": "native-proposals",
+      "session_id": "160edd28-f4a0-4ea9-a56c-cd02f0de9509",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_propose_lead"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_propose_lead",
+          "arguments": {
+            "name": "Synthetic WSL Person",
+            "email": "synthetic@example.invalid",
+            "phone": "555-0100"
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "request_id": "69bb21fe6aab40e08fd69e84c2718817",
+          "state": "proposed",
+          "proposal": {
+            "id": 1,
+            "operation": "create_lead",
+            "lead_id": null,
+            "payload": {
+              "name": "Synthetic WSL Person",
+              "email": "synthetic@example.invalid",
+              "phone": "555-0100",
+              "source": "note",
+              "raw_text": "Propose Synthetic WSL Person, synthetic@example.invalid, 555-0100"
+            },
+            "summary": "Create lead: Synthetic WSL Person",
+            "status": "pending",
+            "result": null,
+            "deny_reason": null,
+            "created_at": "2026-09-30T19:33:46",
+            "decided_at": null
+          }
+        }
+      ]
+    },
+    {
+      "request_id": "49d506d364c449a4aafb3bc57feb50a9",
+      "agent": "native-proposals",
+      "session_id": "7040a6e8-bb01-40ea-ba15-abf4351001d2",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_propose_lead"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_propose_lead",
+          "arguments": {
+            "name": "Synthetic WSL Denied Person"
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "request_id": "49d506d364c449a4aafb3bc57feb50a9",
+          "state": "proposed",
+          "proposal": {
+            "id": 2,
+            "operation": "create_lead",
+            "lead_id": null,
+            "payload": {
+              "name": "Synthetic WSL Denied Person",
+              "source": "note",
+              "raw_text": "Propose Synthetic WSL Denied Person"
+            },
+            "summary": "Create lead: Synthetic WSL Denied Person",
+            "status": "pending",
+            "result": null,
+            "deny_reason": null,
+            "created_at": "2026-09-30T19:33:50",
+            "decided_at": null
+          }
+        }
+      ]
+    },
+    {
+      "request_id": "4771e02421a94cec8e70d93de66589f0",
+      "agent": "native-proposals",
+      "session_id": "f56d4f68-a690-4cdf-8765-784d19fccb0f",
+      "internal_inference_rounds": 2,
+      "providers": [
+        "ollama"
+      ],
+      "models": [
+        "qwen3.5:9b"
+      ],
+      "starts": [
+        {
+          "native_tool_count": 1,
+          "client_tool_count": 0
+        }
+      ],
+      "exposed_tool_names": [
+        "openhouse_propose_lead"
+      ],
+      "calls": [
+        {
+          "name": "openhouse_propose_lead",
+          "arguments": {
+            "name": "Synthetic WSL Restart Person"
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "request_id": "4771e02421a94cec8e70d93de66589f0",
+          "state": "proposed",
+          "proposal": {
+            "id": 3,
+            "operation": "create_lead",
+            "lead_id": null,
+            "payload": {
+              "name": "Synthetic WSL Restart Person",
+              "source": "note",
+              "raw_text": "Propose Synthetic WSL Restart Person"
+            },
+            "summary": "Create lead: Synthetic WSL Restart Person",
+            "status": "pending",
+            "result": null,
+            "deny_reason": null,
+            "created_at": "2026-09-30T19:33:53",
+            "decided_at": null
+          }
+        }
+      ]
+    }
+  ]
+}

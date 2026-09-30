@@ -1,0 +1,1 @@
+{"id":"openhouse-read","name":"OpenHouse read-only directory","contracts":{"tools":["openhouse_crm"]},"configSchema":{"type":"object","additionalProperties":false,"required":["agentId","crmApiUrl"],"properties":{"agentId":{"type":"string","pattern":"^[a-z0-9][a-z0-9_-]{0,63}$"},"crmApiUrl":{"type":"string"}}}}
