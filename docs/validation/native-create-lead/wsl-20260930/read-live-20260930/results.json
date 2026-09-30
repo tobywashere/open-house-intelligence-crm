@@ -1,0 +1,1536 @@
+{
+  "commit": "f04a67e559474401a4d2475630d43503b9c0255c",
+  "kind": "live-visible-browser-protected-read",
+  "started": "2026-09-30T19:30:10.951Z",
+  "retries": 0,
+  "cases": [
+    {
+      "case": 1,
+      "prompt": "How many leads are in the CRM?",
+      "status": 200,
+      "latency_ms": 14208,
+      "response": {
+        "request_id": "37306983625fc01dc6d21a3729d1e163",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "37306983625fc01dc6d21a3729d1e163",
+      "passed": true
+    },
+    {
+      "case": 2,
+      "prompt": "Show the lead directory and its total count.",
+      "status": 200,
+      "latency_ms": 5006,
+      "response": {
+        "request_id": "e29c11510cec12c64835808f02739b98",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "e29c11510cec12c64835808f02739b98",
+      "passed": true
+    },
+    {
+      "case": 3,
+      "prompt": "Tell me the current number of CRM leads.",
+      "status": 200,
+      "latency_ms": 4010,
+      "response": {
+        "request_id": "c0d7919c7b101fdf474042668a7831de",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "c0d7919c7b101fdf474042668a7831de",
+      "passed": true
+    },
+    {
+      "case": 4,
+      "prompt": "List the CRM leads and tell me how many there are.",
+      "status": 200,
+      "latency_ms": 4475,
+      "response": {
+        "request_id": "8fa8325be37bd405c272ecc6b03bbeff",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "8fa8325be37bd405c272ecc6b03bbeff",
+      "passed": true
+    },
+    {
+      "case": 5,
+      "prompt": "What is the total lead count in the CRM right now?",
+      "status": 200,
+      "latency_ms": 3325,
+      "response": {
+        "request_id": "91bb606aaf1ca9e9fc2065afa5f1234c",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "91bb606aaf1ca9e9fc2065afa5f1234c",
+      "passed": true
+    },
+    {
+      "case": 6,
+      "prompt": "Read the CRM directory and report its size.",
+      "status": 200,
+      "latency_ms": 4477,
+      "response": {
+        "request_id": "21fb559ab5a0cf078cf712d039e34b59",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "21fb559ab5a0cf078cf712d039e34b59",
+      "passed": true
+    },
+    {
+      "case": 7,
+      "prompt": "How many people are listed as CRM leads?",
+      "status": 200,
+      "latency_ms": 4551,
+      "response": {
+        "request_id": "e5cd0eff434f8380d0f1c8b0690c7d40",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "e5cd0eff434f8380d0f1c8b0690c7d40",
+      "passed": true
+    },
+    {
+      "case": 8,
+      "prompt": "Show all current CRM leads with the total.",
+      "status": 200,
+      "latency_ms": 4897,
+      "response": {
+        "request_id": "3673b3ffa13808e9cbc3b8b744ed5e01",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "3673b3ffa13808e9cbc3b8b744ed5e01",
+      "passed": true
+    },
+    {
+      "case": 9,
+      "prompt": "Check the CRM and give me the number of leads.",
+      "status": 200,
+      "latency_ms": 4892,
+      "response": {
+        "request_id": "dee9c1f05928845604cef205e08ef5f5",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "dee9c1f05928845604cef205e08ef5f5",
+      "passed": true
+    },
+    {
+      "case": 10,
+      "prompt": "Please retrieve the lead directory and summarize the count.",
+      "status": 200,
+      "latency_ms": 4673,
+      "response": {
+        "request_id": "f2834e7971f0ee4079c38162e118caee",
+        "operation": "list_lead_directory",
+        "result": {
+          "total": 37,
+          "offset": 0,
+          "limit": 25,
+          "leads": [
+            {
+              "id": 1,
+              "name": "Synthetic Lead 01",
+              "status": "new"
+            },
+            {
+              "id": 2,
+              "name": "Synthetic Lead 02",
+              "status": "new"
+            },
+            {
+              "id": 3,
+              "name": "Synthetic Lead 03",
+              "status": "new"
+            },
+            {
+              "id": 4,
+              "name": "Synthetic Lead 04",
+              "status": "new"
+            },
+            {
+              "id": 5,
+              "name": "Synthetic Lead 05",
+              "status": "new"
+            },
+            {
+              "id": 6,
+              "name": "Synthetic Lead 06",
+              "status": "new"
+            },
+            {
+              "id": 7,
+              "name": "Synthetic Lead 07",
+              "status": "new"
+            },
+            {
+              "id": 8,
+              "name": "Synthetic Lead 08",
+              "status": "new"
+            },
+            {
+              "id": 9,
+              "name": "Synthetic Lead 09",
+              "status": "new"
+            },
+            {
+              "id": 10,
+              "name": "Synthetic Lead 10",
+              "status": "new"
+            },
+            {
+              "id": 11,
+              "name": "Synthetic Lead 11",
+              "status": "new"
+            },
+            {
+              "id": 12,
+              "name": "Synthetic Lead 12",
+              "status": "new"
+            },
+            {
+              "id": 13,
+              "name": "Synthetic Lead 13",
+              "status": "new"
+            },
+            {
+              "id": 14,
+              "name": "Synthetic Lead 14",
+              "status": "new"
+            },
+            {
+              "id": 15,
+              "name": "Synthetic Lead 15",
+              "status": "new"
+            },
+            {
+              "id": 16,
+              "name": "Synthetic Lead 16",
+              "status": "new"
+            },
+            {
+              "id": 17,
+              "name": "Synthetic Lead 17",
+              "status": "new"
+            },
+            {
+              "id": 18,
+              "name": "Synthetic Lead 18",
+              "status": "new"
+            },
+            {
+              "id": 19,
+              "name": "Synthetic Lead 19",
+              "status": "new"
+            },
+            {
+              "id": 20,
+              "name": "Synthetic Lead 20",
+              "status": "new"
+            },
+            {
+              "id": 21,
+              "name": "Synthetic Lead 21",
+              "status": "new"
+            },
+            {
+              "id": 22,
+              "name": "Synthetic Lead 22",
+              "status": "new"
+            },
+            {
+              "id": 23,
+              "name": "Synthetic Lead 23",
+              "status": "new"
+            },
+            {
+              "id": 24,
+              "name": "Synthetic Lead 24",
+              "status": "new"
+            },
+            {
+              "id": 25,
+              "name": "Synthetic Lead 25",
+              "status": "new"
+            }
+          ]
+        }
+      },
+      "displayed_text": "37 leads total\n\nVerified CRM read for this request \u00b7 All leads, unfiltered\n\nShowing 25 of 37 leads.\n\nSynthetic Lead 01\nID 1 \u00b7 new\nSynthetic Lead 02\nID 2 \u00b7 new\nSynthetic Lead 03\nID 3 \u00b7 new\nSynthetic Lead 04\nID 4 \u00b7 new\nSynthetic Lead 05\nID 5 \u00b7 new\nSynthetic Lead 06\nID 6 \u00b7 new\nSynthetic Lead 07\nID 7 \u00b7 new\nSynthetic Lead 08\nID 8 \u00b7 new\nSynthetic Lead 09\nID 9 \u00b7 new\nSynthetic Lead 10\nID 10 \u00b7 new\nSynthetic Lead 11\nID 11 \u00b7 new\nSynthetic Lead 12\nID 12 \u00b7 new\nSynthetic Lead 13\nID 13 \u00b7 new\nSynthetic Lead 14\nID 14 \u00b7 new\nSynthetic Lead 15\nID 15 \u00b7 new\nSynthetic Lead 16\nID 16 \u00b7 new\nSynthetic Lead 17\nID 17 \u00b7 new\nSynthetic Lead 18\nID 18 \u00b7 new\nSynthetic Lead 19\nID 19 \u00b7 new\nSynthetic Lead 20\nID 20 \u00b7 new\nSynthetic Lead 21\nID 21 \u00b7 new\nSynthetic Lead 22\nID 22 \u00b7 new\nSynthetic Lead 23\nID 23 \u00b7 new\nSynthetic Lead 24\nID 24 \u00b7 new\nSynthetic Lead 25\nID 25 \u00b7 new",
+      "displayed_request_id": "f2834e7971f0ee4079c38162e118caee",
+      "passed": true
+    },
+    {
+      "case": 11,
+      "prompt": "How many closed leads?",
+      "status": 400,
+      "latency_ms": 55,
+      "response": {
+        "error": {
+          "code": "unsupported_request",
+          "message": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records."
+        }
+      },
+      "displayed_error": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records.",
+      "no_verified_result": true,
+      "passed": true
+    },
+    {
+      "case": 12,
+      "prompt": "How many leads were added today?",
+      "status": 400,
+      "latency_ms": 45,
+      "response": {
+        "error": {
+          "code": "unsupported_request",
+          "message": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records."
+        }
+      },
+      "displayed_error": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records.",
+      "no_verified_result": true,
+      "passed": true
+    },
+    {
+      "case": 13,
+      "prompt": "Show leads in Seattle",
+      "status": 400,
+      "latency_ms": 44,
+      "response": {
+        "error": {
+          "code": "unsupported_request",
+          "message": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records."
+        }
+      },
+      "displayed_error": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records.",
+      "no_verified_result": true,
+      "passed": true
+    },
+    {
+      "case": 14,
+      "prompt": "Show the second page of the lead directory",
+      "status": 400,
+      "latency_ms": 44,
+      "response": {
+        "error": {
+          "code": "unsupported_request",
+          "message": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records."
+        }
+      },
+      "displayed_error": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records.",
+      "no_verified_result": true,
+      "passed": true
+    },
+    {
+      "case": 15,
+      "prompt": "Delete all leads",
+      "status": 400,
+      "latency_ms": 46,
+      "response": {
+        "error": {
+          "code": "unsupported_request",
+          "message": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records."
+        }
+      },
+      "displayed_error": "This view supports only unfiltered lead counts and the first directory page. Filters, sorting, and later pages are not supported. Try 'How many leads are in the CRM?' or 'Show the lead directory.' It cannot change CRM records.",
+      "no_verified_result": true,
+      "passed": true
+    }
+  ],
+  "browser_version": "154.0.4258.37",
+  "passed": true,
+  "finished": "2026-09-30T19:31:07.848Z"
+}

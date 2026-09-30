@@ -1,5 +1,32 @@
 # Native create-lead validation
 
+## WSL live acceptance — 2026-09-30
+
+The [reviewed WSL report](wsl-20260930/REPORT.md) records live acceptance at
+`f04a67e559474401a4d2475630d43503b9c0255c`: ten successful native reads, five
+correctly rejected requests, and native proposal/edit/approve/deny/replay/restart
+checks. Final state was one lead, one approved proposal, two denied, zero pending.
+The three proposal sessions each used the single permitted native tool. Replay
+checks retained the same inference transcript hash.
+
+This directory contains the received evidence unchanged, including its
+[40-artifact checksum manifest](wsl-20260930/artifact-sha256.json). The received
+archive SHA-256 was
+`ae4b940196ad0c2b7a78140891d06757ebefe0728b07e6b8cd8eef7c762d8b6b`.
+Archive and artifact hashes, trace/response consistency, and representative
+screenshots were reviewed on the Mac; the live runs were not repeated here.
+
+Keep the limits with the results: explicit close and uncertain/late-result races
+were not exercised live. One browser-driver navigation timeout was retained and
+resolved without another inference request. Original-file preservation is
+documented by 24 before hashes and matching comparison booleans, not a second
+set of independently rehashed original files on this Mac. Fresh dashboard install
+and build are reported in WSL; the Python environment was reused. The included
+reproduction scripts are machine-specific acceptance helpers. Import/preservation
+scripts outside the archive were not reviewed or added.
+
+## Earlier Mac automated validation
+
 These are sanitized local Mac transcripts for Task 3 on top of
 `75371fa49ddfe211335be1d579f4b3f11051d3bc`. The source revision is the commit
 containing these artifacts. [provenance.json](provenance.json) records exit codes,
@@ -30,7 +57,7 @@ deprecations.
 ## Transfer and review records
 
 - [Offline handoff](OFFLINE-HANDOFF.md) gives the receiving operator the safe
-  import and pending live-acceptance procedure.
+  import and live-acceptance procedure used for the subsequent WSL run.
 - [Implementation review decisions](REVIEW-DECISIONS.md) records the eight
   controller-reviewed decisions, reasons and costs.
 
@@ -87,7 +114,7 @@ For focused RED commands use the same commands above with `-k close`,
 `-k capability_mode_blocks` (setup test file), or `-k read_acceptance` (helper test
 file); browser RED used the same `--suite proposals` runner before implementation.
 
-## Boundary and pending live work
+## Boundary of the earlier Mac checks
 
 **Proposal inference was simulated.** The fixture overrides only the async
 completion seam. It posts fixed synthetic fields to the real agent HTTP endpoint
@@ -97,9 +124,10 @@ close are real application code. No direct pending/lead DB insertion is used by
 that browser fixture. Error-response substitutions for browser recovery are named
 in the tests. Auth tests substitute endpoint responses to control 401 ordering.
 
-This is not live native inference evidence. Historical c05403d read results are
-unchanged. **720cf52 read/scope-fix WSL acceptance and new native proposal WSL
-acceptance remain pending.** Follow [the isolated WSL handoff](../../NATIVE-CREATE-LEAD.md)
-with the pinned already installed runtime, first the read checks, then proposals.
+These Mac transcripts are not live native inference evidence. Historical c05403d
+read results are unchanged. The later [WSL evidence](wsl-20260930/REPORT.md)
+covers the read/scope fixes and native proposal workflow on the pinned runtime.
+Follow [the isolated WSL guide](../../NATIVE-CREATE-LEAD.md) for a separate
+reproduction; retain the untested live close/race boundary described above.
 No original profiles, data, machine services, credentials, runtime logs or DB files
 are included here. No push, merge or bundle creation was performed by Task 3.

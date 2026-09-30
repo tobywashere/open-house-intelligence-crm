@@ -61,7 +61,15 @@ responses to exercise precise 401 ordering. Read browser tests include simulated
 results and real write/scope rejection. These checks do not certify OpenClaw,
 Ollama or model inference. There is no production mock-provider setting.
 
-## WSL live acceptance — pending
+## WSL live acceptance
+
+The [2026-09-30 WSL report](validation/native-create-lead/wsl-20260930/REPORT.md)
+records successful read/scope and native proposal/edit/approve/deny/replay/restart
+checks at `f04a67e559474401a4d2475630d43503b9c0255c`. Explicit close and
+uncertain/late-result races remain untested live. One browser-driver navigation
+timeout was retained and resolved without repeating inference. These results
+cover the pinned configuration and synthetic cases; the steps below remain the
+procedure for an independent run.
 
 Run the following in the existing WSL checkout with the already installed runtime.
 The pinned environment is OpenClaw **2026.8.1-beta.3 (`5831b80`)**, Ollama **0.32.15**,
@@ -73,9 +81,9 @@ Do not install/upgrade tools or touch the original gateway, config, profile or D
 Ollama must already serve that model at `127.0.0.1:11434`; this helper does not start
 or stop Ollama.
 
-Historical c05403d read captures remain historical. New **720cf52 read/scope-fix**
-acceptance and **native proposal** acceptance are both pending. Never overwrite or
-relabel those old captures as evidence for this branch.
+Historical c05403d read captures remain historical. The later WSL run covers the
+**720cf52 read/scope fixes** and **native proposals** together at the tested
+revision above. Never overwrite or relabel old captures as evidence for a new run.
 
 ### 1. Verify reads and unsupported scope first
 

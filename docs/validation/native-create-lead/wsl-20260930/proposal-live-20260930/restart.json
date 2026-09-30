@@ -1,0 +1,10 @@
+{
+  "commit": "f04a67e559474401a4d2475630d43503b9c0255c",
+  "kind": "live-visible-browser-native-proposals",
+  "phase": "restart",
+  "started": "2026-09-30T19:35:33.140Z",
+  "cases": [],
+  "retries": 0,
+  "passed": false,
+  "failure": "locator.click: Timeout 15000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'Propose lead', exact: true })\n    - locator resolved to <button aria-pressed=\"false\" class=\"text-xs px-2 py-1 rounded border border-line\">Propose lead</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" aria-modal=\"true\" aria-label=\"Pending approvals\" class=\"fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4\">\u2026</div> intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" aria-modal=\"true\" aria-label=\"Pending approvals\" class=\"fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4\">\u2026</div> intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    28 \u00d7 waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div role=\"dialog\" aria-modal=\"true\" aria-label=\"Pending approvals\" class=\"fixed inset-0 z-40 bg-bg/80 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10 px-4\">\u2026</div> intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n"
+}
