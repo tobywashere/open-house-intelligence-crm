@@ -1,6 +1,5 @@
-"""Task 6: Composio slug allowlist, robust CLI parsing, recipient allowlist,
-poller opt-in default. See docs/superpowers/sdd/2026-07-27-offline-first-oss/
-task-6-brief.md."""
+"""Composio slug allowlist, robust CLI parsing, recipient allowlist, and
+poller opt-in default. See docs/CONTRACT.md for integration boundaries."""
 import importlib.util
 import sys
 from pathlib import Path

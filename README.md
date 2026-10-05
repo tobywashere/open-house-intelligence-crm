@@ -12,6 +12,23 @@ It runs in two useful ways:
 - **Real local-AI mode** connects the dashboard to your own OpenClaw agent and
   local CRM tools.
 
+## Project origins and team
+
+The initial prototype was built in one day by a four-person team at the Dell × NVIDIA
+BuilderBase Hackathon in Seattle, where it placed **Top 8**. Development continued after
+the event; the current repository includes reliability, approval, and local-AI work beyond
+the hackathon prototype.
+
+The team combined dashboard, backend/data, and agent integration work. **Johaan Mannanal**
+contributed dashboard development, frontend/API integration, demo preparation, and the
+product pitch. See the [contributor history](https://github.com/tobywashere/open-house-intelligence-crm/graphs/contributors)
+for the wider team's work.
+
+The current agent workflow supports **eight approval-gated CRM actions**: creating and
+updating leads, adding notes, scheduling follow-ups, booking appointments, closing leads,
+merging duplicates, and deleting leads. These agent-created changes wait for human review;
+they are not silently applied. See [the API and tool contract](docs/CONTRACT.md).
+
 ## Try the demo
 
 You need Git, Python 3.11 or newer, and Node.js 20 or newer.
@@ -27,180 +44,39 @@ clearly labeled sample data only in a new local database. It does not need a
 model, GPU, or account. The first launch may download Python and Node packages;
 after they are installed, demo mode works without internet access.
 
-## Set up real local AI
+## Local-first, with explicit approval
 
-The commands below configure the legacy general agent and require
-`OHI_AGENT_API_TOKEN` to be unset. For capability mode and native lead proposals,
-use [the native setup and recovery guide](docs/NATIVE-CREATE-LEAD.md).
-`setup_openclaw.py` refuses capability mode, including dry runs, before touching
-OpenClaw or provisioning the human credential.
+The default local-AI setup keeps CRM records in SQLite and runs inference and
+transcription on the host. The agent proposes changes; you can edit, approve, or
+deny them before they are applied. Booking availability is checked again at approval.
 
-This is the short, guided setup for a single machine. Before starting, install
-OpenClaw and configure a tool-capable model in it. Enable its Chat Completions
-endpoint once:
+Optional remote model providers, Gmail/Calendar integrations, Discord, and market
+information workflows can send data off the host when configured. Local storage
+alone is not a claim that every optional integration is offline. Do not commit
+client records, recordings, API tokens, or the local database.
 
-```bash
-openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
-openclaw config validate
-```
+## Real local AI and operations
 
-Then run the project commands in order:
+For verified local CRM reads and human-approved lead creation, start with the
+[native OpenClaw guide](docs/NATIVE-CREATE-LEAD.md). It uses separate human and
+agent credentials; unlock the dashboard at runtime with the human key.
 
-```bash
-git clone https://github.com/tobywashere/open-house-intelligence-crm.git open-intelligence-crm
-cd open-intelligence-crm
-cp .env.example .env
-```
+[Setup and operations](docs/SETUP.md) covers the legacy general-agent setup,
+mode-specific recovery, approval workflow, optional integrations, and backups.
+The legacy setup helper requires `OHI_AGENT_API_TOKEN` to be unset.
 
-Open `.env` in a text editor and change `AGENT_MODE=mock` to
-`AGENT_MODE=openclaw`. Then continue:
+A reachable endpoint is not enough: the live check must verify both a chat
+completion and an audited, read-only CRM tool call. The application labels
+fallbacks and unavailable information rather than fabricating CRM facts.
 
-```bash
-python3 scripts/setup_openclaw.py
-bash scripts/serve.sh
-```
+## Documentation
 
-Keep that Terminal open. In a second Terminal, start in the directory where
-you cloned the project, then run:
+- [Native OpenClaw workflows](docs/NATIVE-CREATE-LEAD.md): verified reads, approved lead creation, and recovery.
+- [Setup and operations](docs/SETUP.md): install, verify, operate, and troubleshoot.
+- [API and tool contract](docs/CONTRACT.md): the eight approval-gated actions.
+- [Local-AI reference](docs/LOCAL-AI.md): configuration and supported hosts.
+- [Mac mini guide](docs/MAC-MINI-SETUP.md): Apple-silicon deployment.
+- [Contributing](CONTRIBUTING.md): development and verification.
 
-```bash
-cd open-intelligence-crm
-python3 scripts/doctor.py --live-agent --live-crm
-```
-
-Open [http://localhost:8080](http://localhost:8080). The last command is the
-important proof: it checks that chat works **and** that the agent actually made
-one safe, read-only CRM tool call.
-
-The setup helper reads `AGENT_ID` from `.env`, creates that dedicated agent,
-installs the `crm-db-operations` skill into its workspace, and limits its
-command access to the CRM wrapper and daily-brief runner. `exec` is the agent's
-only allowed tool; general web, browser, and file tools are denied. The default
-is `AGENT_ID=openhouse-crm`. If you use `--agent-id`, set `AGENT_ID` to the same
-value in `.env`; setup rejects a conflict so the CRM runtime cannot silently
-target a different agent.
-
-The helper prints the installed OpenClaw version for troubleshooting. Support
-is capability-based, not tied to a guessed version number: setup checks the
-documented commands and prerequisite policy surfaces before it changes
-anything. After configuration, it reads the dedicated agent's tool policy back
-from OpenClaw and reports success only when `exec` is the sole allowed tool and
-its effective execution prompt is off. This lets dashboard and Discord requests
-run unattended, but only through the two allowlisted CRM entry points. If a
-required surface is missing, setup stops and explains what capability needs
-updating.
-
-For a Mac mini, start with [the Mac mini guide](docs/MAC-MINI-SETUP.md). An
-Apple-silicon Mac mini with **16 GB** unified memory is the minimum supported
-host. It is enough for the CRM and a modest quantized model. A larger model
-needs more memory and changes speed and quality. Linux hosts are supported too;
-the [general OpenClaw guide](docs/LOCAL-AI.md) explains the choices. The
-[GB10 guide](docs/GB10-SETUP.md) is an optional hardware-specific variant,
-not a requirement.
-
-## What the status means
-
-- **Endpoint enabled** means the CRM can reach OpenClaw's chat endpoint.
-- **Chat verified** means OpenClaw returned a real chat completion.
-- **CRM verified** means the selected agent also made an audited, read-only
-  CRM call. This is the status to look for before relying on dashboard chat.
-- **Degraded** means a previously verified setup later had a chat failure or
-  used a labeled deterministic fallback.
-
-Use `python3 scripts/doctor.py` for a read-only local check. Use
-`python3 scripts/doctor.py --live-agent --live-crm` while the product is
-running to repeat both live checks.
-
-## What happens when you ask for a change
-
-Ask naturally, for example:
-
-- “Add Taylor Brooks, looking in Bellevue around $900k.”
-- “Add a note that Taylor wants a yard.”
-- “Remind me Monday at 9 to call Taylor.”
-- “Book Taylor for the 10:00 slot.”
-
-The agent proposes the lead, note, reminder, booking, update, merge, close,
-or deletion. It does not apply that proposal until you approve it. You can
-edit a proposal before approval or deny it. For a new lead, this includes the
-person's preferences; leave that box blank if you want to clear them. If a
-booking slot is no longer free at approval time, it is not booked.
-
-Voice notes follow the same rule: record or upload audio, review the
-transcript and extracted details, then choose whether to add or update a lead.
-Temporary audio is deleted after transcription. Card scans are also review
-first.
-
-When the AI is unavailable for extraction, follow-up drafting, or score
-explanations, the interface marks its deterministic fallback. Treat it as a
-draft and review it. Chat errors never silently become fabricated CRM facts.
-
-## Daily briefing and market information
-
-Your schedule, lead facts, and follow-ups come from the local CRM database.
-The app does not fill missing appointments, client details, market news, or
-recommendations with plausible samples.
-
-Market summaries are optional. A real summary only appears after a workflow
-stores source-backed items with a publication date, a short summary, and a
-geographic area. If that information is missing, the dashboard says it is
-unavailable. Gmail, Google Calendar, the fixed-source daily-brief runner, and
-remote model providers are optional internet services and remain off unless
-you configure them.
-
-## Optional Discord
-
-This binding flow applies to the legacy general agent with `OHI_AGENT_API_TOKEN` unset.
-
-The dashboard is the primary chat experience. To use the same dedicated agent
-in Discord, bind an account during setup:
-
-```bash
-python3 scripts/setup_openclaw.py --bind-discord ACCOUNT
-```
-
-Replace `ACCOUNT` with the account identifier OpenClaw expects. If setup was
-already completed, use the binding command it prints. Discord uses the same
-agent configuration and the same review-before-apply CRM rules.
-
-## If something goes wrong
-
-- **Endpoint disabled or 404:** rerun the endpoint-enable command above and
-  follow OpenClaw's restart instructions.
-- **OpenClaw gateway unauthorized:** put its matching token in
-  `AGENT_GATEWAY_TOKEN` in `.env`, then restart `bash scripts/serve.sh`.
-- **CRM API unauthorized:** unlock the dashboard with the human
-  `OHI_API_TOKEN`; the credential stays in browser memory only. In capability
-  mode, give native read/proposal plugins the restricted
-  `OHI_AGENT_API_TOKEN`. Direct API commands must send the matching value in
-  `X-API-Token`.
-- **Chat verified but CRM not verified (legacy mode only):** rerun `python3 scripts/setup_openclaw.py`.
-  For capability mode, follow [native recovery](docs/NATIVE-CREATE-LEAD.md).
-  The legacy helper checks the dedicated agent, eligible `crm-db-operations` skill, and its
-  restricted tool access. See [recovery steps](docs/LOCAL-AI.md#recovery).
-- **OpenClaw unreachable:** check that the gateway is running on port 18789
-  and that `AGENT_GATEWAY_URL` in `.env` is correct.
-- **Voice transcription failed:** run the exact command in
-  [the local-AI guide](docs/LOCAL-AI.md#voice-notes).
-- **Gmail or Calendar stopped retrying:** failed jobs try five times, then stop
-  for review. Use the two beginner recovery commands in
-  [the local-AI guide](docs/LOCAL-AI.md#if-gmail-or-calendar-stops-retrying).
-- **No daily market summary:** this is an honest empty state, not an error the
-  CRM should hide with made-up content.
-
-## Privacy, backup, and developer references
-
-SQLite data, local-model inference, local transcription, and the bundled
-knowledge index stay on the host. Data may leave it only when you configure a
-remote model provider, Composio Gmail/Calendar, or the fixed-source daily-brief
-runner. Keep OpenClaw and the CRM on a private interface. Never commit `.env`,
-gateway tokens, client data, recordings, or `backend/data/crm.db`.
-
-To back up, stop the app and copy the database:
-
-```bash
-cp backend/data/crm.db ~/Desktop/openhouse-crm-backup.db
-```
-
-More detail is available in [docs/LOCAL-AI.md](docs/LOCAL-AI.md),
-[docs/CONTRACT.md](docs/CONTRACT.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
+For a quick first look, start with the credential-free demo above. The current
+repository includes work completed after the one-day hackathon prototype.
