@@ -136,3 +136,18 @@ def test_existing_install_rejects_equals_port_override(tmp_path):
     (state/'manifest.json').chmod(0o600)
     r=subprocess.run([sys.executable,str(ROOT/'scripts/native_local.py'),'setup','--state',str(state),'--port=18081'],capture_output=True,text=True)
     assert 'immutable_options' in r.stderr
+
+
+def test_preparation_timeout_reaps_descendants(tmp_path):
+    m=setup_module_code();pidfile=tmp_path/'descendant'
+    script='import subprocess,sys,time; p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(20)"]);open(sys.argv[1],"w").write(str(p.pid));time.sleep(20)'
+    try:
+        with pytest.raises(m.InstallError):
+            m.checked([sys.executable,'-c',script,pidfile],cwd=tmp_path,env={'PATH':'/usr/bin:/bin'},log=tmp_path/'log',timeout=.5)
+        status=subprocess.run(['ps','-o','stat=','-p',pidfile.read_text()],capture_output=True,text=True).stdout.strip()
+        assert not status or status.startswith('Z')
+    finally:
+        if pidfile.exists():
+            import signal
+            try:os.kill(int(pidfile.read_text()),signal.SIGKILL)
+            except ProcessLookupError:pass

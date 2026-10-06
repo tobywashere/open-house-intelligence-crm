@@ -1,5 +1,6 @@
 """Prepare an empty persistent CRM without inheriting developer configuration."""
 from dataclasses import replace
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -16,13 +17,18 @@ from .state import (atomic_json, exclusive_lock, make_manifest, private_dir, rea
 
 
 def checked(command, *, cwd, env, log, timeout):
+    from .processes import stop_children
+    child=None
     try:
         with log.open('ab') as output:
             log.chmod(0o600)
-            subprocess.run([str(x) for x in command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                           stdout=output, stderr=output, timeout=timeout, check=True, umask=0o077)
+            child=subprocess.Popen([str(x) for x in command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                           stdout=output, stderr=output, start_new_session=True, umask=0o077)
+            if child.wait(timeout=timeout)!=0:raise subprocess.SubprocessError()
     except (OSError, subprocess.SubprocessError):
         raise InstallError('preparation_failed', 'Preparation command failed; inspect the private setup log. Existing data has not been reset.') from None
+    finally:
+        if child is not None:stop_children([child],grace=.2)
 
 
 def copy_dashboard(root, target):
@@ -108,6 +114,12 @@ def setup_install(options):
             return {'state':str(options.state),'source_revision':manifest['source']['revision'],'created':False,
                     'next_command':f'python3 scripts/native_local.py start --state {str(options.state)!r}'}
         runtimes=preflight(options)
+        from .processes import reserve_listener
+        try:
+            with ExitStack() as ports:
+                for port in options.ports:ports.enter_context(reserve_listener(port))
+        except OSError:
+            raise InstallError('port_in_use','Choose three unused loopback ports before setup.') from None
         # Preflight has no state mutation; lock and incomplete preparation stay private.
         stage=Path(tempfile.mkdtemp(prefix='.'+options.state.name+'.incomplete-',dir=options.state.parent))
         log=stage/'setup.log'
