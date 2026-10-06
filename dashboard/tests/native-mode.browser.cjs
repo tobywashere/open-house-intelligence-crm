@@ -48,3 +48,17 @@ test('invalid workflow mode fails auth bootstrap',async()=>{
   assert.equal(await page.getByRole('button',{name:'CRM reads',exact:true}).count(),0)
  }finally{await page.close()}
 })
+
+test('native Inbox cannot invoke mock note intake or processing',async()=>{
+ const page=await browser.newPage({viewport:{width:1440,height:1000}})
+ page.setDefaultTimeout(5000)
+ const legacyPosts=[]
+ page.on('request',r=>{if(r.method()==='POST' && (/\/api\/leads$/.test(r.url()) || /\/process$/.test(r.url()))) legacyPosts.push(r.url())})
+ try{
+  await page.goto(process.env.CRM_TEST_URL+'/leads');await unlock(page)
+  const button=page.getByRole('button',{name:'Add lead',exact:true})
+  assert.ok(await button.count()===0 || await button.isDisabled(),'Mock note intake must be unavailable')
+  await page.getByText('Note intake is not configured in native setup. Use Propose lead.',{exact:true}).waitFor()
+  assert.deepEqual(legacyPosts,[])
+ }finally{await page.close()}
+})

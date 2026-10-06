@@ -74,6 +74,8 @@ def installation(tmp_path):
     from ohi_native.runtime import InstallOptions
     import sqlite3
     root=tmp_path/'repo';root.mkdir()
+    import venv
+    venv.EnvBuilder(with_pip=False).create(root/'.venv-native')
     (root/'backend').mkdir();(root/'backend/requirements-native.lock').write_text('locked')
     (root/'dashboard/dist/assets').mkdir(parents=True)
     (root/'dashboard/package-lock.json').write_text('{}')
@@ -113,4 +115,21 @@ def test_validation_refuses_drift_without_repair(tmp_path,change):
         from dataclasses import replace
         o=replace(o,root=tmp_path/'elsewhere')
     if change=='secret_duplicate':(o.state/'agent.key').write_text((o.state/'human.key').read_text())
+    with pytest.raises(s.InstallError):s.validate_install(o)
+
+
+@pytest.mark.parametrize('damage',['missing','configuration','interpreter','packages'])
+def test_environment_damage_invalidates_prepared_install(tmp_path,damage):
+    s,o=installation(tmp_path)
+    env=o.root/'.venv-native'
+    if damage=='missing':
+        import shutil
+        shutil.rmtree(env)
+    elif damage=='configuration':
+        (env/'pyvenv.cfg').write_text((env/'pyvenv.cfg').read_text()+'\nchanged = true\n')
+    elif damage=='interpreter':
+        (env/'bin/python').unlink();(env/'bin/python').write_text('broken')
+    else:
+        metadata=next((env/'lib').glob('python*/site-packages'))/'unexpected-1.0.dist-info'
+        metadata.mkdir();(metadata/'METADATA').write_text('Name: unexpected\nVersion: 1.0\n')
     with pytest.raises(s.InstallError):s.validate_install(o)

@@ -27,6 +27,8 @@ jobs:
         with: {python-version: '3.12'}
       - run: pip install --require-hashes -r backend/requirements-native.lock
       - run: cd dashboard && npm ci && npx tsc -b && npm run build
+      - name: Actual Vite build ignores ambient and repository API overrides
+        run: python scripts/test_native_build_isolation.py
       - run: cd dashboard && npx playwright install --with-deps chromium
       - name: Read browser boundary (no model)
         run: python scripts/test_native_read_browser.py --suite read

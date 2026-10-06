@@ -147,7 +147,7 @@ lock, runs `npm ci` and a production build from clean tracked dashboard inputs,
 and creates a private empty SQLite database. Ambient dotenv/Vite values do not
 enter that build. State directories are 0700 and keys/config/DB are 0600. Existing
 state is verified, never reset. The final manifest binds source, config, build,
-ports, locks and runtime. Do not edit/move the prepared checkout afterward.
+ports, locks, runtime and the dedicated Python interpreter/configuration/dependency inventory. Do not edit/move the prepared checkout afterward.
 
 Setup prints a human-key **file path**, not its contents. Open that file locally
 in a private editor and paste the key only into the dashboard unlock form. Never

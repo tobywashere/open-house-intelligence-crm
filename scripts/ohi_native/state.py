@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 
@@ -143,11 +144,34 @@ def read_secrets(state):
     return keys
 
 
+def environment_identity(options):
+    """Inspect only interpreter/installed metadata; never import the CRM or pip."""
+    from .runtime import base_environment
+    from .processes import command_json
+    environment=options.root/'.venv-native'
+    validate_path(environment)
+    python=environment/'bin/python'
+    probe = ("import importlib.metadata as m,json,sys; "
+             "print(json.dumps({'prefix':sys.prefix,'version':list(sys.version_info[:3]),"
+             "'packages':sorted((d.metadata['Name'].lower(),d.version) for d in m.distributions())}))")
+    try:
+        if not python.is_file() or not (environment/'pyvenv.cfg').is_file():raise ValueError()
+        with tempfile.TemporaryDirectory(prefix='ohi-environment-check-') as home:
+            identity=command_json([python,'-I','-B','-c',probe],cwd=home,
+                                  env=base_environment(options,home),timeout=5)
+        if identity.get('prefix')!=str(environment) or identity.get('version',[])[:2]!=list(sys.version_info[:2]):raise ValueError()
+        identity['configuration_digest']=digest(environment/'pyvenv.cfg')
+        identity['interpreter_digest']=digest(python.resolve(strict=True))
+        return identity
+    except (OSError,ValueError,TypeError,InstallError):
+        raise InstallError('environment_invalid','Prepared .venv-native is missing, incomplete or incompatible; restore the matching environment or use a fresh checkout and state.') from None
+
+
 def make_manifest(options,runtimes):
     return {'schema_version':1,'complete':True,'source':source_identity(options.root),
             'state':str(options.state),'ports':list(options.ports),'openclaw':str(options.openclaw),'node':str(options.node),
             'runtime':runtimes,'prepared_at':datetime.now(timezone.utc).isoformat(),
-            'build_digest':build_digest(options.root),
+            'build_digest':build_digest(options.root),'environment':environment_identity(options),
             'files':{name:digest(options.state/name) for name in config_files()},
             'locks':{name:digest(options.root/name) for name in ('backend/requirements-native.lock','dashboard/package-lock.json')}}
 
@@ -164,7 +188,7 @@ def validate_install(options):
         db=options.state/'crm.db';validate_path(db);info=db.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:raise ValueError()
         expected=make_manifest(options,data['runtime'])
-        for field in ('source','state','ports','openclaw','node','build_digest','files','locks'):
+        for field in ('source','state','ports','openclaw','node','build_digest','files','locks','environment'):
             if data.get(field) != expected[field]:raise ValueError()
         return data
     except (OSError,KeyError,ValueError,TypeError):

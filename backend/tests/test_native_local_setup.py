@@ -21,6 +21,8 @@ def setup_module_code():
 
 def fixture_options(tmp_path,monkeypatch):
     m=setup_module_code()
+    from ohi_native import state
+    monkeypatch.setattr(state,'environment_identity',lambda options:{'fixture':'simulated dependency installation'})
     from ohi_native.runtime import InstallOptions
     root=tmp_path/'repo';(root/'backend').mkdir(parents=True)
     shutil.copytree(ROOT/'backend/app',root/'backend/app',ignore=shutil.ignore_patterns('__pycache__'))
