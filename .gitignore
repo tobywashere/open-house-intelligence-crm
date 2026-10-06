@@ -32,3 +32,6 @@ dashboard/tsconfig.tsbuildinfo
 .ohi-native-build-locks/
 .ohi-build-*/
 dashboard/dist.before-native-*/
+
+# Retained lock from early native setup development; never remove held locks.
+..ohi-native-build-locks/

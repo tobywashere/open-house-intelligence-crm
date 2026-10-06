@@ -1,0 +1,194 @@
+{
+  "status": "not_run",
+  "source": {
+    "commit": null,
+    "clean": null
+  },
+  "started_at": null,
+  "finished_at": null,
+  "hardware": {
+    "os": null,
+    "kernel": null,
+    "cpu": null,
+    "ram_bytes": null,
+    "gpu": null,
+    "driver": null,
+    "shared_host_driver": null
+  },
+  "runtime": {
+    "python": null,
+    "node": null,
+    "openclaw": null,
+    "ollama": null,
+    "model": null,
+    "model_digest": null
+  },
+  "fresh_install": {
+    "new_distro": null,
+    "new_home": null,
+    "new_venv": null,
+    "new_npm": null,
+    "new_openclaw": null,
+    "new_model_store": null,
+    "commands": [],
+    "artifact_hashes": []
+  },
+  "cases": [
+    {
+      "id": "empty-read",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "edited-approval",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "shared-read",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "scope-rejections",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "deny-duplicate",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "restart-repeat-setup",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "held-late-call",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "runtime-port-child-failures",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    },
+    {
+      "id": "offline",
+      "status": "not_run",
+      "timestamp": null,
+      "expected": null,
+      "observed": null,
+      "model_sessions": null,
+      "tool_attempts": null,
+      "successful_tools": null,
+      "seconds": null,
+      "db_before": null,
+      "db_after": null,
+      "failure": null
+    }
+  ],
+  "interruption": {
+    "method": null,
+    "request_id": null,
+    "capture_time": null,
+    "plugin_timeout": null,
+    "recovered_state": null,
+    "close_state": null,
+    "forwarded_status": null,
+    "profile_restored": null
+  },
+  "network_isolation": {
+    "namespace": null,
+    "interfaces": null,
+    "routes": null,
+    "external_failure": null,
+    "local_model_verified": null
+  },
+  "preservation": {
+    "original_hashes_before": null,
+    "original_hashes_after": null,
+    "original_gateway_unchanged": null
+  },
+  "cleanup": {
+    "owned_app_stopped": null,
+    "owned_ollama_stopped": null,
+    "relay_stopped": null,
+    "final_counts": null
+  },
+  "limitations": [],
+  "artifacts": []
+}

@@ -1,5 +1,8 @@
 # Contributing to OpenHouse Intelligence
 
+> New Ubuntu 24.04 / WSL2 installation candidate: [native first-run guide](docs/NATIVE-FIRST-RUN.md). Uses one persistent empty CRM and two private OpenClaw profiles. Independent clean-install and live fault acceptance are pending; previous fixture results do not certify this setup.
+
+
 ## Dev setup
 
 ```bash
