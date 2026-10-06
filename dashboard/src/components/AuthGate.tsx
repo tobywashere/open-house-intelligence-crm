@@ -6,9 +6,12 @@ import {
   onAuthenticationLocked,
 } from '../auth'
 
+import { RuntimeMode, RuntimeModeContext } from '../runtimeMode'
+
 type Phase = 'checking' | 'locked' | 'unlocked'
 
 export function AuthGate({ children }: { children: ReactNode }) {
+  const [mode, setMode] = useState<RuntimeMode>('standard')
   const [phase, setPhase] = useState<Phase>('checking')
   const [candidate, setCandidate] = useState('')
   const [error, setError] = useState('')
@@ -25,7 +28,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     authStatus('')
       .then((status) => {
         if (!active) return
-        if (status.role === 'human' && commitAuthToken('', startedAt)) setPhase('unlocked')
+        if (status.role === 'human' && commitAuthToken('', startedAt)) { setMode(status.workflow_mode ?? 'standard'); setPhase('unlocked') }
         else setPhase('locked')
       })
       .catch(() => {
@@ -54,14 +57,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
         setPhase('locked')
         return
       }
-      if (commitAuthToken(candidate, startedAt)) setPhase('unlocked')
+      if (commitAuthToken(candidate, startedAt)) { setMode(status.workflow_mode ?? 'standard'); setPhase('unlocked') }
     } catch {
       setError('The CRM authentication service is unavailable.')
       setPhase('locked')
     }
   }
 
-  if (phase === 'unlocked') return <>{children}</>
+  if (phase === 'unlocked') return <RuntimeModeContext.Provider value={mode}>{children}</RuntimeModeContext.Provider>
 
   return (
     <main className="min-h-screen bg-bg text-ink flex items-center justify-center p-6">

@@ -1,6 +1,8 @@
 import logging
 
 from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
+from ..runtime_mode import native_only
 from pydantic import BaseModel
 
 from ..agent import get_driver
@@ -45,6 +47,8 @@ def _augment_with_knowledge(message: str) -> str:
 
 @router.post("")
 async def chat(body: ChatIn):
+    if native_only():
+        return JSONResponse({'error': {'code': 'native_only', 'message': 'Use CRM reads or Propose lead in this native installation.'}}, status_code=409)
     driver = get_driver()
     with get_conn() as conn:
         conn.execute(

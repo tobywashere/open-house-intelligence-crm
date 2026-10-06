@@ -1,12 +1,15 @@
+import { useRuntimeMode } from '../runtimeMode'
 import { HealthStatus } from '../api'
 
 // Readiness is not inferred from AGENT_MODE: the gateway may be running while
 // its Chat Completions endpoint is disabled or unauthorized.
 export function LocalBadge({ health }: { health: HealthStatus | null }) {
+  const native = useRuntimeMode() === 'native'
   const status = health?.agent_status.status
-  const verified = status === 'crm_verified'
-  const failed = status && !['mock', 'endpoint_enabled', 'chat_verified', 'crm_verified'].includes(status)
+  const verified = !native && status === 'crm_verified'
+  const failed = !native && status && !['mock', 'endpoint_enabled', 'chat_verified', 'crm_verified'].includes(status)
   const label =
+    native ? 'Native setup · verify each request' :
     status === 'crm_verified' ? 'CRM agent · verified' :
     status === 'chat_verified' ? 'Chat works · CRM not verified' :
     status === 'degraded' ? 'CRM agent · degraded' :

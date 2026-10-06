@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--screenshots', type=Path, help='Optional output directory for synthetic proposal screenshots')
-    parser.add_argument('--suite', choices=['read', 'auth', 'proposals'], default='read')
+    parser.add_argument('--suite', choices=['read', 'auth', 'proposals', 'native-mode'], default='read')
     args = parser.parse_args()
     if os.name != "posix":
         raise SystemExit("Run this isolated browser fixture in WSL on Windows.")
@@ -46,7 +46,7 @@ def main():
         )
         app = "app.main:app"
         human_token = secrets.token_hex(32)
-        if args.suite == 'proposals':
+        if args.suite in ('proposals','native-mode'):
             app = "native_proposal_browser_fixture:app"
             server_env.update(
                 PYTHONPATH=os.pathsep.join([str(ROOT / 'scripts'), str(ROOT / 'backend')]),
@@ -55,6 +55,7 @@ def main():
                 NATIVE_PROPOSAL_GATEWAY_TOKEN=secrets.token_hex(32),
                 CRM_FIXTURE_URL=url,
             )
+        if args.suite == 'native-mode':server_env['OHI_NATIVE_ONLY']='1'
         with log_path.open("w") as log:
             server = subprocess.Popen([
                 sys.executable, "-m", "uvicorn", app, "--app-dir", "backend",
@@ -85,13 +86,13 @@ def main():
                     "PLAYWRIGHT_MODULE", "PLAYWRIGHT_BROWSERS_PATH", "BROWSER_CHANNEL",
                 ) if key in os.environ}
                 browser_env["CRM_TEST_URL"] = url
-                if args.suite == 'proposals':
+                if args.suite in ('proposals','native-mode'):
                     browser_env['CRM_TEST_HUMAN_TOKEN'] = human_token
                     if args.screenshots:
                         args.screenshots.mkdir(parents=True, exist_ok=True)
                         browser_env['CRM_TEST_SCREENSHOTS'] = str(args.screenshots.resolve())
                     print("SIMULATED inference only; real authenticated agent HTTP, durable DB and human approvals", flush=True)
-                suite = {'read': 'native-read', 'auth': 'auth', 'proposals': 'native-proposals'}[args.suite]
+                suite = {'read': 'native-read', 'auth': 'auth', 'proposals': 'native-proposals', 'native-mode':'native-mode'}[args.suite]
                 result = subprocess.run([
                     "node", "--test", f"tests/{suite}.browser.cjs",
                 ], cwd=ROOT / "dashboard", env=browser_env, timeout=180)

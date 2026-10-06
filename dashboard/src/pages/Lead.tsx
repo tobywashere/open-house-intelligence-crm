@@ -1,3 +1,4 @@
+import { useRuntimeMode } from '../runtimeMode'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, downloadIcs, fmtDate, fmtMoney, fmtSlotDay, fmtSlotTime, Lead, LeadProfile, toNaiveLocal } from '../api'
@@ -14,6 +15,7 @@ import { clientSafeMarkdown, downloadMarkdown } from '../export'
 import { ScoreBadge } from './Inbox'
 
 export function LeadPage() {
+  const native = useRuntimeMode() === 'native'
   const { id } = useParams()
   const navigate = useNavigate()
   const leadId = Number(id)
@@ -190,8 +192,8 @@ export function LeadPage() {
             </button>
           )}
           <button
-            onClick={process}
-            disabled={busy}
+            onClick={process} title={native ? "Lead processing is not configured in native setup" : undefined}
+            disabled={busy || native}
             className="rounded-lg bg-accent text-[#0b0f19] hover:brightness-110 disabled:opacity-50 px-3 py-1.5 text-sm"
           >
             {busy ? 'Agent thinking…' : 'Analyze & draft'}

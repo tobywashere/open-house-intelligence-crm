@@ -1,3 +1,4 @@
+import { useRuntimeMode } from './runtimeMode'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import { api, HealthStatus, IntegrationsStatus, localDateKey, Metrics } from './api'
@@ -23,6 +24,8 @@ const clampChatW = (w: number) =>
   Math.min(Math.max(w, 320), Math.min(860, Math.round(window.innerWidth * 0.7)))
 
 export default function App() {
+  const native = useRuntimeMode() === 'native'
+  const unavailable = <p role="status">This feature is not configured in native setup. Use CRM reads or Propose lead.</p>
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [health, setHealth] = useState<HealthStatus | null>(null)
   // fetched once at startup; pack-dependent UI (Tasks 3/4/6/7) reads this via
@@ -182,8 +185,8 @@ export default function App() {
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/leads" element={<Inbox />} />
-            <Route path="/scan" element={<ScanCardPage />} />
-            <Route path="/voice-note" element={<VoiceNotePage />} />
+            <Route path="/scan" element={native ? unavailable : <ScanCardPage />} />
+            <Route path="/voice-note" element={native ? unavailable : <VoiceNotePage />} />
             <Route path="/lead/:id" element={<LeadPage />} />
             <Route path="/knowledge" element={<Knowledge />} />
             <Route path="/activity" element={<AuditLog full />} />

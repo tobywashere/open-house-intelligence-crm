@@ -4,6 +4,7 @@ export type AuthRole = 'human' | 'agent' | null
 export interface AuthStatus {
   mode: AuthMode
   role: AuthRole
+  workflow_mode?: 'native' | 'standard'
 }
 
 export const API_BASE =
@@ -50,6 +51,7 @@ export async function authStatus(candidate = token): Promise<AuthStatus> {
     !status
     || !['local', 'token', 'capabilities'].includes(status.mode)
     || ![null, 'human', 'agent'].includes(status.role)
+    || ('workflow_mode' in status && !['native', 'standard'].includes(status.workflow_mode))
   ) throw new Error('Authentication status is invalid.')
   return status as AuthStatus
 }

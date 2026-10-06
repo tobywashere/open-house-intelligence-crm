@@ -103,7 +103,8 @@ app.include_router(voice.router, prefix="/api")
 
 @app.on_event("startup")
 def startup():
-    get_auth_config()
+    from .runtime_mode import validate_runtime_mode
+    validate_runtime_mode(get_auth_config())
     init_db()
     from .native_proposals import recover_running_requests
     recover_running_requests()
@@ -133,7 +134,9 @@ def startup():
 
 @app.get("/api/auth/status")
 def auth_status(request: Request):
+    from .runtime_mode import native_only
     return {
+        "workflow_mode": "native" if native_only() else "standard",
         "mode": request.state.auth_mode,
         "role": request.state.auth_role,
     }
