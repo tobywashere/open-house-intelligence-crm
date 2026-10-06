@@ -1,0 +1,22 @@
+{
+  "phase": "after-restart",
+  "passed": true,
+  "request_id": "69bb21fe6aab40e08fd69e84c2718817",
+  "replay_status": 200,
+  "replay_identical": true,
+  "duplicate_approval_status": 400,
+  "denied_state": "denied",
+  "lead_count": 1,
+  "approved_lead_id": 1,
+  "inference_before": {
+    "assistant_messages": 6,
+    "native_tool_calls": 3,
+    "transcript_sha256": "daeba161dda3a9842eaa2042a4cd77b87bf31c0792bf65bd08039f30e1b4cacd"
+  },
+  "inference_after": {
+    "assistant_messages": 6,
+    "native_tool_calls": 3,
+    "transcript_sha256": "daeba161dda3a9842eaa2042a4cd77b87bf31c0792bf65bd08039f30e1b4cacd"
+  },
+  "no_additional_inference": true
+}

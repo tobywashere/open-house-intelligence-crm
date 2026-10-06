@@ -8,6 +8,7 @@ import { LocalBadge } from './components/LocalBadge'
 import { PendingApprovals } from './components/PendingApprovals'
 import { ReminderBanner } from './components/ReminderBanner'
 import { Toasts } from './components/Toast'
+import { lockAuthentication } from './auth'
 import { fetchFunnel, Kpi } from './funnel'
 import { loadVertical, pack, Pack } from './vertical'
 import { DashboardPage } from './pages/Dashboard'
@@ -139,6 +140,13 @@ export default function App() {
           </button>
           <IntegrationsChip />
           <LocalBadge health={health} />
+          <button
+            onClick={lockAuthentication}
+            className="rounded-full border border-line hover:border-accent/60 px-3 py-1.5
+                       text-xs text-body hover:text-accent transition-colors"
+          >
+            Lock
+          </button>
           {/* dev-only: raw agent/tool audit stream, deliberately not a nav item */}
           <NavLink
             to="/activity"

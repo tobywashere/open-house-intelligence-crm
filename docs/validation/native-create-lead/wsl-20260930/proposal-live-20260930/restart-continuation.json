@@ -1,0 +1,162 @@
+{
+  "commit": "f04a67e559474401a4d2475630d43503b9c0255c",
+  "kind": "live-visible-browser-native-proposals",
+  "phase": "restart-continuation",
+  "started": "2026-09-30T19:36:11.693Z",
+  "cases": [
+    {
+      "name": "restart-pending-recovery",
+      "request_id": "4771e02421a94cec8e70d93de66589f0",
+      "response": {
+        "request_id": "4771e02421a94cec8e70d93de66589f0",
+        "state": "proposed",
+        "proposal": {
+          "id": 3,
+          "operation": "create_lead",
+          "lead_id": null,
+          "payload": {
+            "name": "Synthetic WSL Restart Person",
+            "source": "note",
+            "raw_text": "Propose Synthetic WSL Restart Person"
+          },
+          "summary": "Create lead: Synthetic WSL Restart Person",
+          "status": "pending",
+          "result": null,
+          "deny_reason": null,
+          "created_at": "2026-09-30T19:33:53",
+          "decided_at": null
+        }
+      },
+      "lead_count": 1,
+      "passed": true
+    },
+    {
+      "name": "restart-pending-denial",
+      "request_id": "4771e02421a94cec8e70d93de66589f0",
+      "response": {
+        "request_id": "4771e02421a94cec8e70d93de66589f0",
+        "state": "denied",
+        "proposal": {
+          "id": 3,
+          "operation": "create_lead",
+          "lead_id": null,
+          "payload": {
+            "name": "Synthetic WSL Restart Person",
+            "source": "note",
+            "raw_text": "Propose Synthetic WSL Restart Person"
+          },
+          "summary": "Create lead: Synthetic WSL Restart Person",
+          "status": "denied",
+          "result": null,
+          "deny_reason": null,
+          "created_at": "2026-09-30T19:33:53",
+          "decided_at": "2026-09-30T19:36:12"
+        }
+      },
+      "lead_count": 1,
+      "passed": true
+    },
+    {
+      "name": "restart-approved-status",
+      "request_id": "69bb21fe6aab40e08fd69e84c2718817",
+      "response": {
+        "request_id": "69bb21fe6aab40e08fd69e84c2718817",
+        "state": "approved",
+        "proposal": {
+          "id": 1,
+          "operation": "create_lead",
+          "lead_id": null,
+          "payload": {
+            "name": "Synthetic WSL Person",
+            "email": "synthetic@example.invalid",
+            "phone": "555-0100",
+            "source": "note",
+            "raw_text": "Propose Synthetic WSL Person, synthetic@example.invalid, 555-0100"
+          },
+          "summary": "Create lead: Synthetic WSL Person",
+          "status": "approved",
+          "result": {
+            "id": 1,
+            "name": "Human Edited WSL Person",
+            "phone": "555-0100",
+            "email": "edited@example.invalid",
+            "source": "note",
+            "status": "new",
+            "outcome": null,
+            "close_reason": null,
+            "score": null,
+            "score_reason": null,
+            "budget": null,
+            "area": "",
+            "timeline": "",
+            "preferences": [],
+            "intent": "",
+            "missing_fields": [],
+            "is_neglected": 0,
+            "persona": null,
+            "relationship_summary": null,
+            "created_at": "2026-09-30T19:33:48",
+            "last_activity_at": "2026-09-30T19:33:48"
+          },
+          "deny_reason": null,
+          "created_at": "2026-09-30T19:33:46",
+          "decided_at": "2026-09-30T19:33:48"
+        }
+      },
+      "passed": true
+    },
+    {
+      "name": "restart-denied-status",
+      "request_id": "49d506d364c449a4aafb3bc57feb50a9",
+      "response": {
+        "request_id": "49d506d364c449a4aafb3bc57feb50a9",
+        "state": "denied",
+        "proposal": {
+          "id": 2,
+          "operation": "create_lead",
+          "lead_id": null,
+          "payload": {
+            "name": "Synthetic WSL Denied Person",
+            "source": "note",
+            "raw_text": "Propose Synthetic WSL Denied Person"
+          },
+          "summary": "Create lead: Synthetic WSL Denied Person",
+          "status": "denied",
+          "result": null,
+          "deny_reason": null,
+          "created_at": "2026-09-30T19:33:50",
+          "decided_at": "2026-09-30T19:33:51"
+        }
+      },
+      "passed": true
+    },
+    {
+      "name": "restart-pending-status",
+      "request_id": "4771e02421a94cec8e70d93de66589f0",
+      "response": {
+        "request_id": "4771e02421a94cec8e70d93de66589f0",
+        "state": "denied",
+        "proposal": {
+          "id": 3,
+          "operation": "create_lead",
+          "lead_id": null,
+          "payload": {
+            "name": "Synthetic WSL Restart Person",
+            "source": "note",
+            "raw_text": "Propose Synthetic WSL Restart Person"
+          },
+          "summary": "Create lead: Synthetic WSL Restart Person",
+          "status": "denied",
+          "result": null,
+          "deny_reason": null,
+          "created_at": "2026-09-30T19:33:53",
+          "decided_at": "2026-09-30T19:36:12"
+        }
+      },
+      "passed": true
+    }
+  ],
+  "retries": 0,
+  "passed": true,
+  "finished": "2026-09-30T19:36:13.001Z"
+}

@@ -1,0 +1,8 @@
+{
+  "fresh_locked_dashboard_install": "passed; 185 packages",
+  "typescript_vite_build": "passed; Vite 5.4.21; 323 modules",
+  "backend_plugin_simulated_browser_suites": "not rerun; sender evidence remains distinct",
+  "fixture_profile_validation": "both passed via bounded runner",
+  "tested_head": "f04a67e559474401a4d2475630d43503b9c0255c",
+  "implementation_files_changed": false
+}

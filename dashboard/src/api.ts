@@ -1,8 +1,7 @@
 // Typed client for the backend contract (docs/CONTRACT.md).
 // Dev: Vite on :5173 talks to the backend on :8000. In a single-port local
 // deployment, the backend serves the built dashboard and the API is at /api.
-const BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000/api' : '/api')
+import { API_BASE as BASE, authenticatedFetch } from './auth'
 
 export interface Lead {
   id: number
@@ -177,6 +176,8 @@ export interface PendingChange {
   payload: Record<string, unknown>
   summary: string
   status: 'pending' | 'approved' | 'denied'
+  result?: Record<string, unknown> | null
+  decided_at?: string | null
   created_at: string
 }
 
@@ -223,10 +224,9 @@ export class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await authenticatedFetch(`${BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
-      ...(import.meta.env.VITE_API_TOKEN ? { 'X-API-Token': import.meta.env.VITE_API_TOKEN } : {}),
     },
     ...init,
   })
@@ -346,11 +346,7 @@ export const api = {
 // Calendar download must go through an authenticated fetch — a plain <a href>
 // navigation cannot attach X-API-Token, so it would 401 once a token is set.
 export const downloadIcs = async (appointmentId: number): Promise<void> => {
-  const res = await fetch(`${BASE}/appointments/${appointmentId}/ics`, {
-    headers: {
-      ...(import.meta.env.VITE_API_TOKEN ? { 'X-API-Token': import.meta.env.VITE_API_TOKEN } : {}),
-    },
-  })
+  const res = await authenticatedFetch(`${BASE}/appointments/${appointmentId}/ics`)
   if (!res.ok) throw new ApiError(res.status, await res.text())
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)

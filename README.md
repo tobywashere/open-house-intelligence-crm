@@ -57,9 +57,13 @@ client records, recordings, API tokens, or the local database.
 
 ## Real local AI and operations
 
-For real AI, use a tool-capable model with OpenClaw and the dedicated CRM agent.
-[Setup and operations](docs/SETUP.md) covers the exact commands, live verification,
-approval workflow, voice notes, optional integrations, backups, and recovery.
+For verified local CRM reads and human-approved lead creation, start with the
+[native OpenClaw guide](docs/NATIVE-CREATE-LEAD.md). It uses separate human and
+agent credentials; unlock the dashboard at runtime with the human key.
+
+[Setup and operations](docs/SETUP.md) covers the legacy general-agent setup,
+mode-specific recovery, approval workflow, optional integrations, and backups.
+The legacy setup helper requires `OHI_AGENT_API_TOKEN` to be unset.
 
 A reachable endpoint is not enough: the live check must verify both a chat
 completion and an audited, read-only CRM tool call. The application labels
@@ -67,6 +71,7 @@ fallbacks and unavailable information rather than fabricating CRM facts.
 
 ## Documentation
 
+- [Native OpenClaw workflows](docs/NATIVE-CREATE-LEAD.md): verified reads, approved lead creation, and recovery.
 - [Setup and operations](docs/SETUP.md): install, verify, operate, and troubleshoot.
 - [API and tool contract](docs/CONTRACT.md): the eight approval-gated actions.
 - [Local-AI reference](docs/LOCAL-AI.md): configuration and supported hosts.

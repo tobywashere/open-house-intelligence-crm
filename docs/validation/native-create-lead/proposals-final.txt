@@ -1,0 +1,72 @@
+Browser boundary fixture ready (temporary CRM; integrations off)
+SIMULATED inference only; real authenticated agent HTTP, durable DB and human approvals
+TAP version 13
+# Subtest: proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+ok 1 - proposal queues without a lead; human edits apply and repeated approval cannot duplicate
+  ---
+  duration_ms: 2361.07134
+  type: 'test'
+  ...
+# Subtest: reload recovers pending approval and denial creates no lead
+ok 2 - reload recovers pending approval and denial creates no lead
+  ---
+  duration_ms: 1386.177581
+  type: 'test'
+  ...
+# Subtest: unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+ok 3 - unknown keeps ID across checks and reload; never retries inference or saves prompt/token
+  ---
+  duration_ms: 846.163256
+  type: 'test'
+  ...
+# Subtest: lost POST response and close preserve a real proposal that already won
+ok 4 - lost POST response and close preserve a real proposal that already won
+  ---
+  duration_ms: 1125.259311
+  type: 'test'
+  ...
+# Subtest: unknown 404 retains recovery ID and cannot start a second request
+ok 5 - unknown 404 retains recovery ID and cannot start a second request
+  ---
+  duration_ms: 662.320433
+  type: 'test'
+  ...
+# Subtest: explicit preflight not-configured failure allows a fresh deliberate request
+ok 6 - explicit preflight not-configured failure allows a fresh deliberate request
+  ---
+  duration_ms: 1179.334106
+  type: 'test'
+  ...
+# Subtest: completion prose without a proposal is failed and permits a deliberate new request
+ok 7 - completion prose without a proposal is failed and permits a deliberate new request
+  ---
+  duration_ms: 632.760137
+  type: 'test'
+  ...
+# Subtest: malformed approved result cannot be presented as a created lead
+ok 8 - malformed approved result cannot be presented as a created lead
+  ---
+  duration_ms: 612.53176
+  type: 'test'
+  ...
+# Subtest: human closes permanent unknown, then deliberately starts one new request
+ok 9 - human closes permanent unknown, then deliberately starts one new request
+  ---
+  duration_ms: 1278.019279
+  type: 'test'
+  ...
+# Subtest: lost close response retains ID until a status check confirms retirement
+ok 10 - lost close response retains ID until a status check confirms retirement
+  ---
+  duration_ms: 709.812965
+  type: 'test'
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 11403.608794

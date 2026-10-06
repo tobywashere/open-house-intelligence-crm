@@ -1,0 +1,129 @@
+{
+  "boundary": "SIMULATED completion for browser proposal tests; actual protected agent HTTP, SQLite, human approvals and close. No WSL/OpenClaw/Ollama acceptance.",
+  "source_base": "75371fa49ddfe211335be1d579f4b3f11051d3bc",
+  "source_revision": "Task3 implementation in the commit containing this file. Controller-approved spec/plan amendments included.",
+  "redaction": "Worktree/user-home/OS temporary paths replaced and trailing whitespace normalized; no test outcomes or transcript lines changed. All data and credentials used by tests were synthetic.",
+  "logs": {
+    "proposals-red": {
+      "exit_code": 1,
+      "summary": "8 failed: missing Propose lead mode",
+      "sha256": "2b733fef9658b7cba262e1d0a5c8a7d19c6ec6abdf151cec30d5d2dacda9b23a"
+    },
+    "proposals-green": {
+      "exit_code": 1,
+      "summary": "3 initial passing cases, then ambiguous uncertainty test selector and leftover pending fixture",
+      "sha256": "6b489210d1bc892d31445ac32767d47bdbbb81c70f8098a77cf7b71ca26f51f4"
+    },
+    "proposals-green-2": {
+      "exit_code": 0,
+      "summary": "8 passed",
+      "sha256": "06bca43a0e7d767cf49c8166ce13621552c1d84d8d12b0e755b3a8064fdac084"
+    },
+    "helper-red": {
+      "exit_code": 1,
+      "summary": "3 failed: helper missing",
+      "sha256": "03739c8d00009d134d64fb4a019a06b1ace59fb65991b20f575401fbabac2174"
+    },
+    "helper-green": {
+      "exit_code": 0,
+      "summary": "3 passed",
+      "sha256": "8b814c2dd57b8931d64df6688f0947a1a8a3bb9eac409fc517da9e08766e4d44"
+    },
+    "read-helper-red": {
+      "exit_code": 1,
+      "summary": "1 failed: read selector missing",
+      "sha256": "f5648c69f3661bdecd3b52a4d158c59fb8397b40ae9d8562465b1fa351f5cb4f"
+    },
+    "helper-final": {
+      "exit_code": 0,
+      "summary": "5 passed",
+      "sha256": "cc3934ac6270c1e4d5152d2a730feee73142a3194108cf09b8dcad3b584d07be"
+    },
+    "close-red": {
+      "exit_code": 1,
+      "summary": "8 failed: close endpoint/function absent",
+      "sha256": "0a83762485eab3069c0cffde963b57907a7491d9b60fd5e3365e902fd83bbdc5"
+    },
+    "close-green": {
+      "exit_code": 0,
+      "summary": "8 passed",
+      "sha256": "17ab5ffac1762cd22f4f503536d0931b6f5fc0db0516996449118d26646818f1"
+    },
+    "close-final": {
+      "exit_code": 0,
+      "summary": "8 passed after orphan-row assertion strengthened",
+      "sha256": "f6c245c60c76339f75874067eb6baf943a2fb4cc0ff5d4c7468adcfc4b810c72"
+    },
+    "close-browser-red": {
+      "exit_code": 1,
+      "summary": "8 passed, 2 failed: Close request control absent",
+      "sha256": "4e652a52306149e1e9ddea03ffb80a2381286e945d4775f7867b436d3256196f"
+    },
+    "close-browser-green": {
+      "exit_code": 0,
+      "summary": "10 passed",
+      "sha256": "c7c7c338b17605b8cf3bb7cb0d769383506fe45320f78b539c11f0ca8c09602c"
+    },
+    "setup-guard-red": {
+      "exit_code": 1,
+      "summary": "4 failed: legacy setup accepted capability credentials",
+      "sha256": "5ccf63e52508d2f272c8622d4255c9c84bb72f7963e4aea79d947a33c96cfd55"
+    },
+    "setup-guard-green": {
+      "exit_code": 0,
+      "summary": "110 passed",
+      "sha256": "1ff60a5878cc2f5b2117a102de7aa9079c0f2e268dac8c4ebf2cd170041b3881"
+    },
+    "backend-full": {
+      "exit_code": 0,
+      "summary": "722 passed before final read-helper/CLI additions",
+      "sha256": "4aa4765de7b073ab473f6e45476797fb7ceb4d35d075c46ee6276772fb7ebe5c"
+    },
+    "backend-final": {
+      "exit_code": 0,
+      "summary": "724 passed; final production code, before only race-test assertion strengthening",
+      "sha256": "0ce06f472de38a074593776d55885bd4747d9c04db53f8ae2a37b0a4e117e978"
+    },
+    "plugins-full": {
+      "exit_code": 0,
+      "summary": "50 passed",
+      "sha256": "892b2d6a5ba0a1b0fc44d9fe66e38c73564effed5a749564703d7fe19ec21057"
+    },
+    "auth-browser": {
+      "exit_code": 0,
+      "summary": "3 passed",
+      "sha256": "6066f0ff5ae9c42ffbbfbabebdf28204a1927e67b0e7b70d7ef8d0453100fd6b"
+    },
+    "read-browser": {
+      "exit_code": 0,
+      "summary": "7 passed",
+      "sha256": "470cbfebba9aa3b56078cf5413db0584b782cb8f832c5a4345e0b82a14f187da"
+    },
+    "close-build": {
+      "exit_code": 0,
+      "summary": "tsc and Vite build passed",
+      "sha256": "0a224342de6fb9678a28464e11c9b39bf285deec5de20cc36be9e34977b2d1f1"
+    },
+    "proposals-final": {
+      "exit_code": 0,
+      "summary": "10 passed; final synthetic screenshots",
+      "sha256": "cd71483e3f16fc7467aec9b84d36c952d2587f713188793c010d0c403e84dd01"
+    }
+  },
+  "source_sha256": {
+    "backend/app/native_proposals.py": "aac6b0f6007fff428ba9dfc03d5f869da8025d9bf8ee6433d42b3454e15f1280",
+    "backend/app/routers/native_proposals.py": "94d2ef13554f928c059a5ed8a996ae701b6e068b7a9bfc6b9de4069a5f3473a3",
+    "dashboard/src/nativeProposals.ts": "feccaaa46592c393153467db75eccf78afa78c0e7d01cf342cc8f911f2d5c7ea",
+    "dashboard/src/components/LeadProposalChat.tsx": "42fffcbd5e472bb793ca9e4707dd52bdbd8d92105677259c624c80463b219b8a",
+    "dashboard/src/approvalEvents.ts": "458452e294235d90c409c9913649dc82cebebc2b70db652af86bddc29f7bcc82",
+    "dashboard/src/components/PendingApprovals.tsx": "ad77a1dab6e909844f8d1647f77c07d12d07f0b89ff3b15873ad271ec2a5144e",
+    "scripts/native_proposal_acceptance.py": "25c206979baf2237eb799fe60da6236e3742b38a4b90529c608e255d9e473d1a",
+    "scripts/native_proposal_browser_fixture.py": "4bfb2c3172a8b6dfa8d0b692941b50ed2e0865298979be6acf8db59fd3991ae3",
+    "scripts/test_native_read_browser.py": "7dbf84658e5ddacf591e67226a7fb6093bde139dc36ab75e2dbfaaaa6f8c55ce",
+    "scripts/setup_openclaw.py": "4fa899e8c08fc63fdb1cd74a0ccee0999adf49cd0b60abb5db54aceb9e7451e2",
+    "dashboard/tests/auth.browser.cjs": "709a673b1839a11982c2f5f55c21a71f80bd8ba56c0cc1d17ca168449552d989",
+    "backend/tests/test_native_proposal_acceptance_helper.py": "1c2fc85a342913505cdf91daa66b1fed669de2a6a9df505ade3302d292341be9",
+    "dashboard/tests/native-proposals.browser.cjs": "a6f142faca16b8110e88d3860d20726f1d5a8754090bb597b2f8c92226cb7774",
+    "backend/tests/test_native_proposals.py": "8e6abe1f391c8c4f05c785be6c61a755c51155278ede3debcd5a3e21214de2dd"
+  }
+}

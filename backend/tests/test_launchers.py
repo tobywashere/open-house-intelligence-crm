@@ -10,9 +10,9 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 GUIDE_SETUP_REGIONS = {
-    REPO / "README.md": (
-        "## Set up real local AI",
-        "## What the status means",
+    REPO / "docs/SETUP.md": (
+        "## Set up the legacy general agent",
+        "## What the legacy integration status means",
         "cd open-intelligence-crm",
         "start in the directory where you cloned the project",
     ),
@@ -93,8 +93,11 @@ def test_each_guide_independently_explains_the_agent_and_trust_boundaries():
         assert "--bind-discord ACCOUNT" in text, path
 
 
-def test_readme_uses_setup_helper_and_real_capability_check():
-    text = (REPO / "README.md").read_text()
+def test_readme_links_to_setup_helper_and_real_capability_check():
+    overview = (REPO / "README.md").read_text()
+    assert "](docs/SETUP.md)" in overview
+    assert "](docs/NATIVE-CREATE-LEAD.md)" in overview
+    text = (REPO / "docs/SETUP.md").read_text()
 
     assert "python3 scripts/setup_openclaw.py" in text
     assert "python3 scripts/doctor.py --live-agent --live-crm" in text

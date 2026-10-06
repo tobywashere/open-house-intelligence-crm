@@ -16,7 +16,11 @@ from .db import get_conn
 def is_agent_write(request: Request | None) -> bool:
     # In-process automation has no Request from which to derive an actor and
     # must opt into queue_pending_change explicitly, as the mailbox poller does.
-    return request is not None and request.headers.get("X-Actor") == "agent"
+    if request is None:
+        return False
+    if getattr(request.state, "auth_mode", None) == "capabilities":
+        return getattr(request.state, "auth_role", None) == "agent"
+    return request.headers.get("X-Actor") == "agent"
 
 
 def insert_pending_change(

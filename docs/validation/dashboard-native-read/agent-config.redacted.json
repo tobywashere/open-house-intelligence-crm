@@ -1,0 +1,112 @@
+{
+  "models": {
+    "mode": "replace",
+    "providers": {
+      "ollama": {
+        "api": "ollama",
+        "apiKey": "<REDACTED>",
+        "baseUrl": "http://127.0.0.1:11434",
+        "models": [
+          {
+            "id": "qwen3.5:9b",
+            "name": "qwen3.5:9b",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "contextWindow": 16384,
+            "maxTokens": 2048,
+            "params": {
+              "num_ctx": 16384
+            },
+            "compat": {
+              "supportsTools": true,
+              "supportsUsageInStreaming": true,
+              "supportsJsonSchemaResponseFormat": true
+            }
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "${PROFILE}/workspace",
+      "skipBootstrap": true,
+      "model": {
+        "primary": "ollama/qwen3.5:9b",
+        "fallbacks": []
+      }
+    },
+    "entries": {
+      "native-read": {
+        "workspace": "${PROFILE}/workspace",
+        "agentDir": "${PROFILE}/agents/native-read/agent",
+        "skills": [],
+        "thinkingDefault": "off",
+        "experimental": {
+          "localModelLean": false
+        },
+        "tools": {
+          "profile": "full",
+          "allow": [
+            "openhouse_crm"
+          ]
+        }
+      }
+    }
+  },
+  "tools": {
+    "profile": "full",
+    "allow": [
+      "openhouse_crm"
+    ]
+  },
+  "plugins": {
+    "allow": [
+      "ollama",
+      "openhouse-read"
+    ],
+    "load": {
+      "paths": [
+        "${REPO}/openclaw-plugins/openhouse-read"
+      ]
+    },
+    "entries": {
+      "ollama": {
+        "enabled": true
+      },
+      "openhouse-read": {
+        "enabled": true,
+        "config": {
+          "agentId": "native-read",
+          "crmApiUrl": "http://127.0.0.1:18080/api"
+        }
+      }
+    },
+    "slots": {
+      "memory": "none"
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "port": 18879,
+    "auth": {
+      "mode": "token",
+      "token": "<REDACTED>"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "logging": {
+    "level": "debug",
+    "file": "${PROFILE}/gateway.log"
+  }
+}

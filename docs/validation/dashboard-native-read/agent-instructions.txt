@@ -1,0 +1,1 @@
+Use the CRM tool for lead counts and directory reads. Report only tool facts. This agent cannot change records.

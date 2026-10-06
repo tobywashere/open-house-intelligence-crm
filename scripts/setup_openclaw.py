@@ -1066,6 +1066,12 @@ def _run_action(cli: OpenClawCLI, action: Action) -> CommandResult:
 def configure_openclaw(options: SetupOptions, cli: OpenClawCLI) -> SetupResult:
     messages: list[str] = []
     try:
+        if os.environ.get("OHI_AGENT_API_TOKEN", ""):
+            raise SetupConflict(
+                "Legacy setup cannot run with OHI_AGENT_API_TOKEN enabled. "
+                "Use docs/NATIVE-CREATE-LEAD.md for separate capability profiles; "
+                "the human credential must never be provisioned to a gateway."
+            )
         token = os.environ.get("OHI_API_TOKEN", "")
         gateway_env_path: Path | None = None
         if token:

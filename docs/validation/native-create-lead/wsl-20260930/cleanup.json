@@ -1,0 +1,13 @@
+{
+  "listening_ports": {
+    "11434": false,
+    "18082": false,
+    "18083": false,
+    "18882": false,
+    "18883": false,
+    "18789": true
+  },
+  "fixture_children_stopped": true,
+  "task_started_ollama_stopped": true,
+  "original_gateway_preserved": true
+}

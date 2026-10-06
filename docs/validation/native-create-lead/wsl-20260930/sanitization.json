@@ -1,0 +1,7 @@
+{
+  "known_credential_values_scanned": 7,
+  "original_crm_fields_scanned": 40,
+  "credential_or_private_field_matches": 0,
+  "raw_runtime_databases_and_logs_included": false,
+  "screenshots": "Only synthetic dashboard views after unlock; no credential input screenshots."
+}

@@ -1,0 +1,53 @@
+Browser boundary fixture ready (temporary CRM; integrations off)
+TAP version 13
+# Subtest: non-empty result renders total separately from its 25-row page
+ok 1 - non-empty result renders total separately from its 25-row page
+  ---
+  duration_ms: 760.301509
+  type: 'test'
+  ...
+# Subtest: empty CRM is a successful zero result
+ok 2 - empty CRM is a successful zero result
+  ---
+  duration_ms: 519.513761
+  type: 'test'
+  ...
+# Subtest: unavailable gateway displays explicit error with no result
+ok 3 - unavailable gateway displays explicit error with no result
+  ---
+  duration_ms: 497.421456
+  type: 'test'
+  ...
+# Subtest: malformed successful HTTP response is rejected
+ok 4 - malformed successful HTTP response is rejected
+  ---
+  duration_ms: 496.217252
+  type: 'test'
+  ...
+# Subtest: new pending/failed request removes previous verified result
+ok 5 - new pending/failed request removes previous verified result
+  ---
+  duration_ms: 597.288059
+  type: 'test'
+  ...
+# Subtest: write request is rejected by the real backend route
+ok 6 - write request is rejected by the real backend route
+  ---
+  duration_ms: 489.345266
+  type: 'test'
+  ...
+# Subtest: unsupported filters and pages show scope errors from the real backend
+ok 7 - unsupported filters and pages show scope errors from the real backend
+  ---
+  duration_ms: 648.418602
+  type: 'test'
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4614.702029

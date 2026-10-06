@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "created_utc": "2026-09-21T07:31:18.186728+00:00",
+  "branch": "codex/native-create-lead",
+  "final_head": "f04a67e559474401a4d2475630d43503b9c0255c",
+  "implementation_head": "947bb7010c4d23c8ca01180423a747dc7d088fb8",
+  "required_base": "186335fba6db921398cb63ce8259fd4fbcf74614",
+  "bundle": {
+    "filename": "openhouse-native-create-lead.bundle",
+    "sha256": "467cba5ff5812cfc717da4c6c93bc2bc9d147c53266ac69747a2ec09d2cc92cf",
+    "size_bytes": 615222
+  },
+  "verification": {
+    "bundle_verify": "passed",
+    "fresh_receiving_repository_import": "passed",
+    "imported_head": "f04a67e559474401a4d2475630d43503b9c0255c",
+    "git_connectivity": "passed",
+    "whole_branch_review": "no critical or important findings",
+    "scoped_evidence_fix_review": "all findings addressed, no new breakage",
+    "backend_tests": 724,
+    "plugin_tests": 50,
+    "browser_tests": {
+      "proposals": 10,
+      "auth": 3,
+      "reads": 7
+    },
+    "dashboard_build": "passed",
+    "existing_python_warnings": 5,
+    "extra_covering_close_tests": 8,
+    "log_hashes_verified": 21,
+    "source_hashes_verified": 14
+  },
+  "limits": [
+    "Local browser proposal inference was simulated; HTTP authentication, SQLite and human approvals were real.",
+    "OpenClaw/Ollama live acceptance of the read fixes and native proposal workflow remains pending on WSL.",
+    "Matching existing dependencies were reused; fresh dependency installation was not validated.",
+    "Final code is unchanged from the tested implementation commit; the final commit corrects and publishes evidence/docs.",
+    "No tests were rerun merely to package this transfer."
+  ],
+  "preservation": {
+    "main_checkout": "clean at e2183af98ace28109998b53c2be902441d75190f",
+    "pushed": false,
+    "merged": false,
+    "deployed": false,
+    "worktree_retained": true
+  }
+}

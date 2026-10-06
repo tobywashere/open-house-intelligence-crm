@@ -1,0 +1,1 @@
+{"id":"openhouse-proposals","name":"OpenHouse lead proposals","contracts":{"tools":["openhouse_propose_lead"]},"configSchema":{"type":"object","additionalProperties":false,"required":["agentId","crmApiUrl"],"properties":{"agentId":{"type":"string","pattern":"^[a-z0-9][a-z0-9_-]{0,63}$"},"crmApiUrl":{"type":"string"}}}}

@@ -1,0 +1,29 @@
+{
+  "all_preserved": true,
+  "files": {
+    "/home/ankus/.openclaw/openclaw.json.clobbered.2026-08-25T18-18-24-780Z": true,
+    "/home/ankus/.openclaw/openclaw.json.bak.3": true,
+    "/home/ankus/.openclaw/openclaw.json.bak.2": true,
+    "/home/ankus/.openclaw/openclaw.json.doctor-fix-20260825": true,
+    "/home/ankus/.openclaw/openclaw.json.bak": true,
+    "/home/ankus/.openclaw/openclaw.json.last-good": true,
+    "/home/ankus/.openclaw/openclaw.json.bak.1": true,
+    "/home/ankus/.openclaw/openclaw.json": true,
+    "/home/ankus/.openclaw/openclaw.json.bak.4": true,
+    "/home/ankus/GitHub/open-house-intelligence-crm/backend/data/crm.db": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/daily-command-center/SKILL.md": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/daily-command-center/sample-crm.json": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/business-card-scanner/SKILL.md": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/contract.json": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/contract.py": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/tools.py": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/SKILL.md": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/cli.py": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/client_tools.py": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/daily-brief/SKILL.md": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/daily-brief/agents/openai.yaml": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/daily-brief/scripts/run_daily_brief.py": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/__pycache__/contract.cpython-314.pyc": true,
+    "/home/ankus/.openclaw/workspace-openhouse-crm/skills/crm-db-operations/__pycache__/tools.cpython-314.pyc": true
+  }
+}

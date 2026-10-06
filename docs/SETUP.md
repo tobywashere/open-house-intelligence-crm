@@ -2,7 +2,21 @@
 
 [Back to the project overview](../README.md)
 
-## Set up real local AI
+## Choose a local-AI setup
+
+For verified reads and human-approved lead creation, use the
+[native OpenClaw guide](NATIVE-CREATE-LEAD.md). Capability mode separates the human
+`OHI_API_TOKEN` from the restricted `OHI_AGENT_API_TOKEN`. Unlock the dashboard
+with the human key at runtime; it stays in browser memory and clears on refresh.
+Give only the agent key to native plugins. The guide records the tested local
+runtime and the limits of its acceptance evidence.
+
+The general-agent commands below are the legacy setup and require
+`OHI_AGENT_API_TOKEN` to be unset. `setup_openclaw.py` refuses capability mode,
+including dry runs, before touching OpenClaw or provisioning a credential.
+Use the native guide for capability-mode setup and recovery.
+
+## Set up the legacy general agent
 
 This is the short, guided setup for a single machine. Before starting, install
 OpenClaw and configure a tool-capable model in it. Enable its Chat Completions
@@ -67,7 +81,7 @@ the [general OpenClaw guide](LOCAL-AI.md) explains the choices. The
 [GB10 guide](GB10-SETUP.md) is an optional hardware-specific variant,
 not a requirement.
 
-## What the status means
+## What the legacy integration status means
 
 - **Endpoint enabled** means the CRM can reach OpenClaw's chat endpoint.
 - **Chat verified** means OpenClaw returned a real chat completion.
@@ -81,6 +95,13 @@ Use `python3 scripts/doctor.py` for a read-only local check. Use
 running to repeat both live checks.
 
 ## What happens when you ask for a change
+
+The native **Propose lead** mode supports a name and optional email/phone.
+Review and edit its proposal in **Pending approvals** before approving. Use **CRM reads** for an
+unfiltered count and the first 25 leads. See the [native guide](NATIVE-CREATE-LEAD.md)
+for status checks, explicit closure, replay, and restart recovery.
+
+The broader actions below describe the legacy general-agent workflow.
 
 Ask naturally, for example:
 
@@ -119,6 +140,9 @@ you configure them.
 
 ## Optional Discord
 
+This binding flow applies to the legacy general agent with `OHI_AGENT_API_TOKEN`
+unset. It does not configure the native capability-mode agents.
+
 The dashboard is the primary chat experience. To use the same dedicated agent
 in Discord, bind an account during setup:
 
@@ -136,12 +160,15 @@ agent configuration and the same review-before-apply CRM rules.
   follow OpenClaw's restart instructions.
 - **OpenClaw gateway unauthorized:** put its matching token in
   `AGENT_GATEWAY_TOKEN` in `.env`, then restart `bash scripts/serve.sh`.
-- **CRM API unauthorized:** make `OHI_API_TOKEN` and `VITE_API_TOKEN` match in
-  `.env`. Rerun `python3 scripts/setup_openclaw.py`, then restart the app. Direct
-  API commands must also send that value in `X-API-Token`.
-- **Chat verified but CRM not verified:** rerun `python3 scripts/setup_openclaw.py`.
-  It checks the dedicated agent, eligible `crm-db-operations` skill, and its
-  restricted tool access. See [recovery steps](LOCAL-AI.md#recovery).
+- **CRM API unauthorized:** unlock the dashboard with the human
+  `OHI_API_TOKEN`; the credential stays in browser memory only. Native plugins
+  use the restricted `OHI_AGENT_API_TOKEN` in capability mode. Direct API commands
+  must send the matching credential in `X-API-Token`.
+- **Chat verified but CRM not verified (legacy mode only):** rerun
+  `python3 scripts/setup_openclaw.py`. It checks the dedicated agent, eligible
+  `crm-db-operations` skill, and restricted tool access. See
+  [legacy recovery](LOCAL-AI.md#recovery). For capability mode, follow
+  [native recovery](NATIVE-CREATE-LEAD.md) instead.
 - **OpenClaw unreachable:** check that the gateway is running on port 18789
   and that `AGENT_GATEWAY_URL` in `.env` is correct.
 - **Voice transcription failed:** run the exact command in
