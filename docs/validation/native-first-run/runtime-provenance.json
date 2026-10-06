@@ -1,0 +1,36 @@
+{
+  "checked_at": "2026-10-06T01:57:28.946940+00:00",
+  "artifacts": [
+    {
+      "name": "openclaw",
+      "url": "https://registry.npmjs.org/openclaw/-/openclaw-2026.8.1-beta.3.tgz",
+      "algorithm": "sha512",
+      "expected": "8v+2Knr+0i1qzWXgJmtcBg78VaoMENahLxcuThOqyCmVaCGPj++mI9yv0R440wMv9Siv4fysd5e0YmBVftDvuQ==",
+      "actual": "8v+2Knr+0i1qzWXgJmtcBg78VaoMENahLxcuThOqyCmVaCGPj++mI9yv0R440wMv9Siv4fysd5e0YmBVftDvuQ==",
+      "bytes": 56723625,
+      "verified": true
+    },
+    {
+      "name": "node",
+      "url": "https://nodejs.org/dist/v24.15.0/node-v24.15.0-linux-x64.tar.xz",
+      "algorithm": "sha256",
+      "expected": "472655581fb851559730c48763e0c9d3bc25975c59d518003fc0849d3e4ba0f6",
+      "actual": "472655581fb851559730c48763e0c9d3bc25975c59d518003fc0849d3e4ba0f6",
+      "bytes": 31164460,
+      "verified": true
+    },
+    {
+      "name": "ollama",
+      "url": "https://github.com/ollama/ollama/releases/download/v0.32.15/ollama-linux-amd64.tar.zst",
+      "algorithm": "sha256",
+      "expected": "50539c5fe9bf85887733355098dcdb266b433cb8c73fa180713417e9ed6e42bb",
+      "actual": "50539c5fe9bf85887733355098dcdb266b433cb8c73fa180713417e9ed6e42bb",
+      "bytes": 1422416084,
+      "verified": true
+    }
+  ],
+  "openclaw_node_engines": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0",
+  "fresh_install_verified": false,
+  "lock_generator": "uv 0.12.23 (46b84fd0b 2026-10-03 x86_64-apple-darwin)",
+  "readiness_probe": "openclaw --profile PROFILE gateway call health --port PORT --json --timeout 1500 (token from private profile; no token CLI argument)"
+}

@@ -1,5 +1,8 @@
 # OpenHouse Intelligence
 
+> New Ubuntu 24.04 / WSL2 installation candidate: [native first-run guide](docs/NATIVE-FIRST-RUN.md). Uses one persistent empty CRM and two private OpenClaw profiles. Independent clean-install and live fault acceptance are pending; previous fixture results do not certify this setup.
+
+
 OpenHouse Intelligence is a local-first CRM for real-estate agents. Add a
 lead, record a voice note, write a note, schedule a follow-up, or book a tour
 in plain language. Before an agent-created CRM change is saved, you review it

@@ -2,31 +2,33 @@ name: ci
 on: [push, pull_request]
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - run: pip install -r backend/requirements.txt
+      - run: pip install --require-hashes -r backend/requirements-native.lock
       - run: python -m pytest backend/tests/ -q
   native-plugin:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: 20}
+        with: {node-version: '24.15.0'}
       - run: node --test openclaw-plugins/openhouse-read/test.mjs openclaw-plugins/openhouse-proposals/test.mjs
   dashboard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: 20}
+        with: {node-version: '24.15.0'}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - run: pip install -r backend/requirements.txt
+      - run: pip install --require-hashes -r backend/requirements-native.lock
       - run: cd dashboard && npm ci && npx tsc -b && npm run build
+      - name: Actual Vite build ignores ambient and repository API overrides
+        run: python scripts/test_native_build_isolation.py
       - run: cd dashboard && npx playwright install --with-deps chromium
       - name: Read browser boundary (no model)
         run: python scripts/test_native_read_browser.py --suite read
@@ -34,3 +36,6 @@ jobs:
         run: python scripts/test_native_read_browser.py --suite auth
       - name: Proposal browser boundary (simulated inference, disposable credentials)
         run: python scripts/test_native_read_browser.py --suite proposals
+
+      - name: Native-only UI (simulated inference)
+        run: python scripts/test_native_read_browser.py --suite native-mode

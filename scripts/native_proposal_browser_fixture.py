@@ -27,3 +27,18 @@ async def synthetic_completion(request_id, message, config):
 
 
 native_proposals.complete_native = synthetic_completion
+
+
+# Native-mode presentation fixture: model selection is simulated; directory
+# records still come through the real capability-protected CRM endpoint.
+if os.environ.get('OHI_NATIVE_ONLY') == '1':
+    import secrets
+    from app.native_read import ReadReceipt, NativeReadError, supports_request
+    from app.routers import native_read as read_router
+    async def synthetic_read(message):
+        if not supports_request(message):raise NativeReadError('unsupported_request')
+        async with httpx.AsyncClient(trust_env=False,follow_redirects=False,timeout=5) as client:
+            response=await client.get(os.environ['CRM_FIXTURE_URL']+'/api/leads',headers={'X-API-Token':os.environ['OHI_AGENT_API_TOKEN']})
+            response.raise_for_status()
+        return ReadReceipt(request_id=secrets.token_hex(16),operation='list_lead_directory',result={'total':len(response.json()),'offset':0,'limit':25,'leads':[{k:lead[k] for k in ('id','name','status')} for lead in response.json()[:25]]})
+    read_router.read_directory=synthetic_read

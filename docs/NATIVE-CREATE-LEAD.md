@@ -1,5 +1,8 @@
 # Native lead proposals and recovery
 
+> New Ubuntu 24.04 / WSL2 installation candidate: [native first-run guide](NATIVE-FIRST-RUN.md). Uses one persistent empty CRM and two private OpenClaw profiles. Independent clean-install and live fault acceptance are pending; previous fixture results do not certify this setup.
+
+
 Use **Propose lead** in the dashboard chat rail to request a name and optional
 email/phone through the dedicated native agent. The existing **Pending approvals**
 dialog shows the queued fields. Edit them and approve to create a lead, or deny

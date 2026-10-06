@@ -1,3 +1,4 @@
+import { useRuntimeMode } from '../runtimeMode'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from '../components/Toast'
@@ -20,6 +21,7 @@ const STATUS_STYLE: Record<string, string> = {
 const urgency = (l: Lead) => daysIdle(l) * ((l.score ?? 30) / 100)
 
 export function Inbox() {
+  const native = useRuntimeMode() === 'native'
   const [leads, setLeads] = useState<Lead[]>([])
   const [loaded, setLoaded] = useState(false)
   const [note, setNote] = useState('')
@@ -38,7 +40,7 @@ export function Inbox() {
   }, [])
 
   const addLead = async () => {
-    if (!note.trim()) return
+    if (native || !note.trim()) return
     setAdding(true)
     try {
       const lead = await api.createLead(note)
@@ -82,7 +84,7 @@ export function Inbox() {
         </section>
       )}
 
-      <div className="flex gap-2">
+      {native ? <p className="text-sm text-sub">Note intake is not configured in native setup. Use Propose lead.</p> : <div className="flex gap-2">
         <input
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -109,7 +111,7 @@ export function Inbox() {
         >
           <CameraIcon size={18} />
         </Link>
-      </div>
+      </div>}
 
       <table className="w-full text-sm">
         <thead>
@@ -139,7 +141,7 @@ export function Inbox() {
           {loaded && !leads.length && (
             <tr>
               <td colSpan={7} className="py-12 text-center text-sub/60">
-                No leads yet — paste a note above and let the agent extract the details.
+                {native ? 'No leads yet — use Propose lead and review the request before approval.' : 'No leads yet — paste a note above and let the agent extract the details.'}
               </td>
             </tr>
           )}

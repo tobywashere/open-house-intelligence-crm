@@ -26,3 +26,12 @@ dashboard/tsconfig.tsbuildinfo
 .superpowers/
 .claude/
 .worktrees/
+
+# Native installation build environment and private build locks
+.venv-native/
+.ohi-native-build-locks/
+.ohi-build-*/
+dashboard/dist.before-native-*/
+
+# Retained lock from early native setup development; never remove held locks.
+..ohi-native-build-locks/

@@ -32,12 +32,13 @@ def test_auth_status_reports_public_mode_and_trusted_role(monkeypatch, client_fa
     monkeypatch.delenv("OHI_API_TOKEN", raising=False)
     monkeypatch.delenv("OHI_AGENT_API_TOKEN", raising=False)
     local = client_factory()
-    assert local.get("/api/auth/status").json() == {"mode": "local", "role": "human"}
+    assert local.get("/api/auth/status").json() == {"workflow_mode": "standard", "mode": "local", "role": "human"}
 
     monkeypatch.setenv("OHI_API_TOKEN", "legacy-secret")
     token = client_factory()
-    assert token.get("/api/auth/status").json() == {"mode": "token", "role": None}
+    assert token.get("/api/auth/status").json() == {"workflow_mode": "standard", "mode": "token", "role": None}
     assert token.get("/api/auth/status", headers=_token("legacy-secret")).json() == {
+        "workflow_mode": "standard",
         "mode": "token",
         "role": "human",
     }
@@ -45,20 +46,23 @@ def test_auth_status_reports_public_mode_and_trusted_role(monkeypatch, client_fa
     _capabilities(monkeypatch)
     capabilities = client_factory()
     assert capabilities.get("/api/auth/status").json() == {
+        "workflow_mode": "standard",
         "mode": "capabilities",
         "role": None,
     }
     assert capabilities.get("/api/auth/status", headers=_token(HUMAN_TOKEN)).json() == {
+        "workflow_mode": "standard",
         "mode": "capabilities",
         "role": "human",
     }
     assert capabilities.get("/api/auth/status", headers=_token(AGENT_TOKEN)).json() == {
+        "workflow_mode": "standard",
         "mode": "capabilities",
         "role": "agent",
     }
     wrong = capabilities.get("/api/auth/status", headers=_token("wrong-token"))
     assert wrong.status_code == 200
-    assert wrong.json() == {"mode": "capabilities", "role": None}
+    assert wrong.json() == {"workflow_mode": "standard", "mode": "capabilities", "role": None}
     assert HUMAN_TOKEN not in wrong.text
     assert AGENT_TOKEN not in wrong.text
 
