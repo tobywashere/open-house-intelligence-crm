@@ -1,7 +1,7 @@
 # Native first-run setup and independent acceptance
 
-Status: proposed written specification, awaiting user review. The user approved
-its direction: WSL/Linux first, two isolated gateway profiles, one persistent CRM,
+Status: written specification approved by the user in this conversation.
+Approved direction: WSL/Linux first, two isolated gateway profiles, one persistent CRM,
 and a fresh-install acceptance run on the other computer. No implementation or
 live acceptance is implied by this document.
 
