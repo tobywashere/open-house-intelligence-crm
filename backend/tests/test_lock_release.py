@@ -1,3 +1,4 @@
+from tests.conftest import capability_client as client
 """Regression for the Critical fix (Task 1 review round 1): get_conn() now
 holds an exclusive BEGIN IMMEDIATE write lock for its whole block, so any
 Composio network call (15-30s in live mode) made while a get_conn() block is

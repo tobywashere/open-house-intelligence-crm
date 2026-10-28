@@ -3,11 +3,11 @@
 ## Dev setup
 
 ```bash
-bash scripts/dev.sh
+bash scripts/dev.sh --demo
 ```
 
 This creates a `.venv`, installs backend dependencies, seeds a local SQLite
-database, installs dashboard dependencies, and starts both the backend
+demo database (`backend/data/demo.db`), installs dashboard dependencies, and starts both the backend
 (`:8000`) and the dashboard (`:5173`). Ctrl-C stops both.
 
 ## Running tests

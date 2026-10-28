@@ -17,7 +17,7 @@ async def test_slow_hook_does_not_block_event_loop(monkeypatch):
 
     with patch.object(hooks, "on_lead_created", side_effect=slow_hook):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as ac:
             # t0 starts BEFORE the 0.3s settle sleep, not after: when the loop
             # is frozen by the blocking hook, that same `anyio.sleep(0.3)`
             # can't return until the freeze ends either, so a t0 taken after

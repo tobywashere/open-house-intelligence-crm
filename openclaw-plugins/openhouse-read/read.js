@@ -25,12 +25,17 @@ async function limitedJson(response) {
   } finally { await reader.cancel(); }
 }
 
-export function definition({ fetchImpl = fetch, now = Date.now } = {}) {
+export function definition({ fetchImpl = fetch, now = Date.now, env = process.env } = {}) {
   const pending = new Map();
   const prune = () => { for (const [id, row] of pending) if (row.expires <= now()) pending.delete(id); };
   return {
     id: 'openhouse-read', name: 'OpenHouse read-only directory',
     register(api) {
+      const crmToken = env.OHI_AGENT_API_TOKEN;
+      if (Object.hasOwn(env, 'OHI_API_TOKEN') || typeof crmToken !== 'string'
+          || crmToken.length < 32 || !/^[\x21-\x7e]+$/.test(crmToken)) {
+        throw new Error('Read plugin requires only an agent credential');
+      }
       const { agentId, crmApiUrl } = api.pluginConfig;
       const base = new URL(crmApiUrl);
       if (base.protocol !== 'http:' || !['localhost','127.0.0.1','[::1]'].includes(base.hostname)
@@ -78,8 +83,7 @@ export function definition({ fetchImpl = fetch, now = Date.now } = {}) {
           row.state = 'running';
           try {
             const headers = { 'X-Actor':'agent', 'X-OpenHouse-Read-Request':id };
-            const crmToken = process.env.OHI_AGENT_API_TOKEN || process.env.OHI_API_TOKEN;
-            if (crmToken) headers['X-API-Token'] = crmToken;
+            headers['X-API-Token'] = crmToken;
             const response = await fetchImpl(crmApiUrl.replace(/\/$/, '')+'/leads', {
               method:'GET', headers, redirect:'error', signal:AbortSignal.timeout(10_000),
             });

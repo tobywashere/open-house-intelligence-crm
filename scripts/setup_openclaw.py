@@ -1442,11 +1442,8 @@ def _parse_args(
 
 
 def main(argv: list[str] | None = None) -> int:
-    options = _parse_args(argv)
-    result = configure_openclaw(options, OpenClawCLI())
-    stream = sys.stdout if result.ok else sys.stderr
-    print(result.render(), file=stream)
-    return 0 if result.ok else 1
+    print('Legacy shared-key OpenClaw setup is disabled. Use docs/NATIVE-CREATE-LEAD.md for separate human and agent credentials.', file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

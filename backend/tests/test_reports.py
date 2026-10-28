@@ -164,7 +164,7 @@ def test_summary_storage_failure_returns_503_without_replacing_prior_report(
 
     monkeypatch.setattr(reports, "audit", unavailable_audit)
     changed = {**payload, "greeting": "This must not replace the saved report"}
-    with TestClient(app, raise_server_exceptions=False) as nonthrowing_client:
+    with TestClient(app, raise_server_exceptions=False, client=("127.0.0.1", 50000), base_url="http://localhost") as nonthrowing_client:
         response = nonthrowing_client.post("/api/summary", json=changed)
 
     assert response.status_code == 503

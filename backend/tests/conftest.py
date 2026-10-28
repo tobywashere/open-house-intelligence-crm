@@ -4,12 +4,16 @@ from pathlib import Path
 
 import pytest
 
+HUMAN_TOKEN = 'test-human-' + 'h' * 40
+AGENT_TOKEN = 'test-agent-' + 'a' * 40
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # backend/ importable
 
 TEST_DB = Path(__file__).resolve().parent / "test.db"
 os.environ["DB_PATH"] = str(TEST_DB)          # must be set BEFORE importing app
 os.environ["AGENT_MODE"] = "mock"
 os.environ["INTEGRATIONS_MODE"] = "off"   # hard-set: ambient live env must not leak into tests
+os.environ['OHI_DEMO_MODE'] = '1'  # Tests explicitly opt into the synthetic demo.
 os.environ.pop("COMPOSIO_API_KEY", None)  # scrub ambient key to prevent real API calls
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -27,7 +31,7 @@ def client():
         p = Path(str(TEST_DB) + suffix)
         if p.exists():
             p.unlink()
-    with TestClient(app) as c:  # startup event runs init_db()
+    with TestClient(app, client=('127.0.0.1', 50000), base_url='http://localhost') as c:  # startup event runs init_db()
         # Seed availability windows for testing
         from app.db import get_conn
         with get_conn() as conn:
@@ -53,7 +57,7 @@ def client_factory():
             p = Path(str(TEST_DB) + suffix)
             if p.exists():
                 p.unlink()
-        c = TestClient(app)
+        c = TestClient(app, client=('127.0.0.1', 50000), base_url='http://localhost')
         c.__enter__()  # run startup event (init_db())
         made.append(c)
         return c
@@ -61,6 +65,24 @@ def client_factory():
     yield _make
     for c in made:
         c.__exit__(None, None, None)
+
+
+@pytest.fixture()
+def capability_client(monkeypatch, client_factory):
+    """Integration tests authenticate as a human; agents never share this key."""
+    monkeypatch.setenv('OHI_API_TOKEN', HUMAN_TOKEN)
+    monkeypatch.setenv('OHI_AGENT_API_TOKEN', AGENT_TOKEN)
+    c = client_factory()
+    c.headers['X-API-Token'] = HUMAN_TOKEN
+    return c
+
+
+def queued_automation(operation, payload):
+    """Seed a real automation proposal, like the mailbox poller, without HTTP spoofing."""
+    import httpx
+    from app.approvals import queue_pending_change
+    result = queue_pending_change(operation, payload.get('lead_id'), payload, 'Test automation proposal')
+    return httpx.Response(result.status_code, content=result.body)
 
 
 def make_lead(client, **overrides) -> dict:

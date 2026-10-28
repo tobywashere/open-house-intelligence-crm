@@ -1,3 +1,4 @@
+from tests.conftest import capability_client as client
 from .conftest import make_lead
 from app.integrations import composio_client as cc
 

@@ -36,11 +36,11 @@ You need Git, Python 3.11 or newer, and Node.js 20 or newer.
 ```bash
 git clone https://github.com/tobywashere/open-house-intelligence-crm.git open-intelligence-crm
 cd open-intelligence-crm
-bash scripts/dev.sh
+bash scripts/dev.sh --demo
 ```
 
 Open [http://localhost:5173](http://localhost:5173). Demo mode creates
-clearly labeled sample data only in a new local database. It does not need a
+clearly labeled sample data in a separate `backend/data/demo.db` database. It does not need a
 model, GPU, or account. The first launch may download Python and Node packages;
 after they are installed, demo mode works without internet access.
 
@@ -63,7 +63,7 @@ agent credentials; unlock the dashboard at runtime with the human key.
 
 [Setup and operations](docs/SETUP.md) covers the legacy general-agent setup,
 mode-specific recovery, approval workflow, optional integrations, and backups.
-The legacy setup helper requires `OHI_AGENT_API_TOKEN` to be unset.
+The legacy shared-key agent workflow is disabled. See [authentication and migration](docs/AUTHENTICATION.md).
 
 A reachable endpoint is not enough: the live check must verify both a chat
 completion and an audited, read-only CRM tool call. The application labels

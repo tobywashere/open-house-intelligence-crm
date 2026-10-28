@@ -1,8 +1,9 @@
 def test_token_required_when_set(monkeypatch, client_factory):
-    monkeypatch.setenv("OHI_API_TOKEN", "s3cret")
+    monkeypatch.setenv("OHI_API_TOKEN", "h" * 40)
+    monkeypatch.setenv("OHI_AGENT_API_TOKEN", "a" * 40)
     client = client_factory()          # builds a fresh TestClient after env is set
     assert client.get("/api/leads").status_code == 401
-    assert client.get("/api/leads", headers={"X-API-Token": "s3cret"}).status_code == 200
+    assert client.get("/api/leads", headers={"X-API-Token": "h" * 40}).status_code == 200
     assert client.get("/api/health").status_code == 200   # probe stays open
 
 
@@ -17,7 +18,8 @@ def test_cors_preflight_bypasses_token_guard(monkeypatch, client_factory):
     # answer the preflight itself — with CORS headers — or the guard would
     # 401 it with no CORS headers and the browser would block the real
     # request that follows.
-    monkeypatch.setenv("OHI_API_TOKEN", "s3cret")
+    monkeypatch.setenv("OHI_API_TOKEN", "h" * 40)
+    monkeypatch.setenv("OHI_AGENT_API_TOKEN", "a" * 40)
     client = client_factory()
     res = client.options(
         "/api/leads",
@@ -37,7 +39,7 @@ def test_cors_rejects_foreign_origin(monkeypatch, client_factory):
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
     client = client_factory()
     res = client.get("/api/leads", headers={"Origin": "https://evil.example"})
-    assert res.status_code == 200  # request itself succeeds (no server-side origin check)
+    assert res.status_code == 403  # demo rejects foreign origins server-side
     assert "access-control-allow-origin" not in {k.lower() for k in res.headers.keys()}
 
 

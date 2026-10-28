@@ -1,3 +1,4 @@
+from tests.conftest import capability_client as client
 import json
 
 from .conftest import make_lead

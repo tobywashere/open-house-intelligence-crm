@@ -1,5 +1,10 @@
 # Mac mini setup
 
+> **Authentication migration:** The legacy `AGENT_MODE=openclaw` and single-token
+> commands retained below are historical and will now fail authentication preflight.
+> Use [native OpenClaw workflows](NATIVE-CREATE-LEAD.md) with separate credentials.
+> See [authentication](AUTHENTICATION.md) for current launch instructions.
+
 This is the practical path for running the CRM and local AI on one Mac mini.
 You should see a clear result after each step.
 

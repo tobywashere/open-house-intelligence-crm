@@ -1,3 +1,5 @@
+from tests.conftest import AGENT_TOKEN, queued_automation
+from tests.conftest import capability_client as client
 import json
 import logging
 import time
@@ -7,7 +9,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import make_lead
 
 
-AGENT = {"X-Actor": "agent"}
+AGENT = {"X-API-Token": AGENT_TOKEN, "X-Actor": "user"}
 
 
 def _wait_until(predicate, *, timeout=3.0):
@@ -247,15 +249,11 @@ def test_approval_enqueue_wakes_sleeping_worker(client, monkeypatch):
     hook_outbox.start_worker(batch_size=10, poll_seconds=30)
     time.sleep(0.05)
 
-    queued = client.post(
-        "/api/reminders",
-        json={
+    queued = queued_automation('schedule_followup', {
             "lead_id": lead["id"],
             "due_ts": "2026-08-22T09:00:00",
             "note": "Wake the worker",
-        },
-        headers=AGENT,
-    ).json()
+        }).json()
     before = time.monotonic()
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
     assert approved.status_code == 200, approved.text
@@ -378,15 +376,11 @@ def test_live_intent_waits_for_integrations_then_delivers(client, monkeypatch):
     _stop_worker()
     lead = make_lead(client, email=None)
     _configure_live(monkeypatch)
-    queued = client.post(
-        "/api/reminders",
-        json={
+    queued = queued_automation('schedule_followup', {
             "lead_id": lead["id"],
             "due_ts": "2026-08-23T09:00:00",
             "note": "Wait for credentials",
-        },
-        headers=AGENT,
-    ).json()
+        }).json()
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
     assert approved.status_code == 200, approved.text
     assert _outbox_rows()[0]["delivery_mode"] == "live"
@@ -433,15 +427,11 @@ def test_off_mode_approval_never_becomes_later_live_delivery(client, monkeypatch
         "execute",
         lambda *args: calls.append(args) or {"response_data": {"id": "unexpected"}},
     )
-    queued = client.post(
-        "/api/reminders",
-        json={
+    queued = queued_automation('schedule_followup', {
             "lead_id": lead["id"],
             "due_ts": "2026-08-24T09:00:00",
             "note": "Demo-only reminder",
-        },
-        headers=AGENT,
-    ).json()
+        }).json()
 
     approved = client.post(f"/api/pending-changes/{queued['id']}/approve")
     assert approved.status_code == 200, approved.text

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Match
 
-from .auth import CONFIG_ERROR, get_auth_config, identify
+from .auth import CONFIG_ERROR, demo_request_allowed, get_auth_config, identify
 from .db import init_db
 from .integrations import router as integrations
 from .routers import (calendar, chat, knowledge, leads, misc, pending_changes,
@@ -37,6 +37,8 @@ async def api_token_guard(request: Request, call_next):
             return await call_next(request)
         return JSONResponse({"detail": CONFIG_ERROR}, status_code=503)
 
+    if config.mode == 'local' and not demo_request_allowed(request):
+        return JSONResponse({'detail': 'Demo access requires a direct local client.'}, status_code=403)
     role = identify(config, request.headers.get("X-API-Token", ""))
     request.state.auth_mode = config.mode
     request.state.auth_role = role
@@ -111,10 +113,6 @@ def startup():
     # process-local instance and never holds SQLite across provider calls.
     from .integrations.hook_outbox import start_worker
     app.state.hook_outbox_thread = start_worker()
-    host = os.environ.get("HOST", "127.0.0.1")
-    if host not in ("127.0.0.1", "localhost") and not os.environ.get("OHI_API_TOKEN"):
-        print("WARNING: serving on a non-localhost interface with no OHI_API_TOKEN — "
-              "anyone on the network can read/write the CRM and use the agent.")
     from .integrations import composio_client as cc
     if cc.mode() == "live" and not cc.is_live():
         print(

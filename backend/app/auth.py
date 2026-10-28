@@ -1,51 +1,28 @@
-"""Request identity for local, legacy token, and capability-token installs."""
-
+"""Request identity for explicit demo and capability-token installs."""
 from __future__ import annotations
 
-import os
 import secrets
-from dataclasses import dataclass
-from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
-
-AuthMode = Literal["local", "token", "capabilities"]
-AuthRole = Literal["human", "agent"]
-CONFIG_ERROR = "invalid capability authentication configuration"
+from .auth_config import AuthConfig, AuthMode, AuthRole, CONFIG_ERROR, get_auth_config, is_loopback
 
 
-@dataclass(frozen=True)
-class AuthConfig:
-    mode: AuthMode
-    human_token: str
-    agent_token: str
-
-
-def _valid_capability_token(value: str) -> bool:
-    """Capability credentials are header-safe printable ASCII secrets."""
-    return len(value) >= 32 and all(33 <= ord(char) <= 126 for char in value)
-
-
-def get_auth_config() -> AuthConfig:
-    """Read and validate the current environment authentication settings.
-
-    Environment is read for every request so a bad runtime mutation fails
-    closed as well as being rejected during application startup.
-    """
-    human = os.environ.get("OHI_API_TOKEN", "")
-    agent = os.environ.get("OHI_AGENT_API_TOKEN", "")
-    if agent:
-        if (
-            not _valid_capability_token(human)
-            or not _valid_capability_token(agent)
-            or secrets.compare_digest(human, agent)
-        ):
-            raise RuntimeError(CONFIG_ERROR)
-        return AuthConfig("capabilities", human, agent)
-    if human:
-        return AuthConfig("token", human, "")
-    return AuthConfig("local", "", "")
+def demo_request_allowed(request: Request) -> bool:
+    """Tokenless demo is for direct loopback clients, never a remote proxy."""
+    if not request.client or not is_loopback(request.client.host):
+        return False
+    if not is_loopback(request.url.hostname or ''):
+        return False
+    origin = request.headers.get('origin')
+    if origin is not None:
+        try:
+            parsed = urlsplit(origin)
+            return parsed.scheme in ('http', 'https') and is_loopback(parsed.hostname or '')
+        except ValueError:
+            return False
+    return True
 
 
 def _matches(presented: str, expected: str) -> bool:

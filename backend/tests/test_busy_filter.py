@@ -1,3 +1,4 @@
+from tests.conftest import capability_client as client
 def test_busy_blocks_filter_slots(client, monkeypatch):
     monkeypatch.setenv("INTEGRATIONS_MODE", "live")
     monkeypatch.setenv("COMPOSIO_API_KEY", "k")

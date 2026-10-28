@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {definition} from './read.js';
+const agentToken='agent-'+'a'.repeat(40);
+const safeEnv={OHI_AGENT_API_TOKEN:agentToken};
 
 function setup({total=37,fail=false}={}) {
   let route, factory, reads=0, time=1000, requestHeaders;
   const api={pluginConfig:{agentId:'native-read',crmApiUrl:'http://127.0.0.1:18080/api'},
     registerHttpRoute:r=>route=r, registerTool:f=>factory=f, on:()=>{}};
-  definition({now:()=>time,fetchImpl:async(url,options)=>{
+  definition({env:safeEnv,now:()=>time,fetchImpl:async(url,options)=>{
     reads++; assert.equal(url,'http://127.0.0.1:18080/api/leads');assert.equal(options.method,'GET');
     requestHeaders=options.headers;
     if(fail)throw new Error('private backend information');
@@ -49,7 +51,7 @@ test('write or model-controlled URL arguments never reach backend',async()=>{
 });
 test('a late tool completion cannot resurrect a cancelled request',async()=>{
  let route,factory,release;
- definition({fetchImpl:async()=>{await new Promise(r=>release=r);return new Response('[]')}}).register({
+ definition({env:safeEnv,fetchImpl:async()=>{await new Promise(r=>release=r);return new Response('[]')}}).register({
   pluginConfig:{agentId:'native-read',crmApiUrl:'http://127.0.0.1:18080/api'},
   registerHttpRoute:r=>route=r,registerTool:f=>factory=f,on:()=>{},
  });
@@ -60,17 +62,15 @@ test('a late tool completion cannot resurrect a cancelled request',async()=>{
  await http('DELETE');release();await assert.rejects(running,/CRM read failed/);
  assert.equal(await http('GET'),404);
 });
-test('restricted agent credential is preferred with human-token fallback',async()=>{
- const priorHuman=process.env.OHI_API_TOKEN,priorAgent=process.env.OHI_AGENT_API_TOKEN;
- try {
-  process.env.OHI_API_TOKEN='human-credential';process.env.OHI_AGENT_API_TOKEN='restricted-agent-credential';
-  const restricted=setup();await restricted.http('POST');await restricted.tool().execute('1',args);
-  assert.equal(restricted.headers()['X-API-Token'],'restricted-agent-credential');
-  delete process.env.OHI_AGENT_API_TOKEN;
-  const legacy=setup();await legacy.http('POST');await legacy.tool().execute('1',args);
-  assert.equal(legacy.headers()['X-API-Token'],'human-credential');
- } finally {
-  priorHuman===undefined?delete process.env.OHI_API_TOKEN:process.env.OHI_API_TOKEN=priorHuman;
-  priorAgent===undefined?delete process.env.OHI_AGENT_API_TOKEN:process.env.OHI_AGENT_API_TOKEN=priorAgent;
- }
+test('CRM reads use only the restricted agent credential',async()=>{
+ const restricted=setup();await restricted.http('POST');await restricted.tool().execute('1',args);
+ assert.equal(restricted.headers()['X-API-Token'],agentToken);
 });
+for(const env of [{},{OHI_API_TOKEN:'human-'+'h'.repeat(40)},
+ {OHI_API_TOKEN:'human-'+'h'.repeat(40),OHI_AGENT_API_TOKEN:agentToken},
+ {OHI_AGENT_API_TOKEN:'short'}]){
+ test('read registration rejects unsafe credentials '+Object.keys(env).join(','),()=>{
+  assert.throws(()=>definition({env}).register({pluginConfig:{agentId:'native-read',crmApiUrl:'http://127.0.0.1:18080/api'},
+    registerHttpRoute(){},registerTool(){},on(){}}),/agent credential/);
+ });
+}

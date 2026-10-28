@@ -42,6 +42,7 @@ def main():
         server_env.update(
             DB_PATH=str(Path(directory) / "fixture.db"),
             AGENT_MODE="mock", INTEGRATIONS_MODE="off", INTEGRATIONS_POLLER="off",
+            OHI_DEMO_MODE="1",  # Explicitly select the synthetic read/auth fixture.
             PYTHONDONTWRITEBYTECODE="1",
         )
         app = "app.main:app"

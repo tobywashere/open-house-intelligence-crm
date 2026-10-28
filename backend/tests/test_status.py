@@ -1,3 +1,4 @@
+from tests.conftest import capability_client as client
 """Truthful configured-versus-verified integration status."""
 
 import pytest

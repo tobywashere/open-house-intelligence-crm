@@ -35,12 +35,8 @@ def test_auth_status_reports_public_mode_and_trusted_role(monkeypatch, client_fa
     assert local.get("/api/auth/status").json() == {"mode": "local", "role": "human"}
 
     monkeypatch.setenv("OHI_API_TOKEN", "legacy-secret")
-    token = client_factory()
-    assert token.get("/api/auth/status").json() == {"mode": "token", "role": None}
-    assert token.get("/api/auth/status", headers=_token("legacy-secret")).json() == {
-        "mode": "token",
-        "role": "human",
-    }
+    with pytest.raises(RuntimeError):
+        client_factory()
 
     _capabilities(monkeypatch)
     capabilities = client_factory()
@@ -140,7 +136,7 @@ def test_native_role_dependencies_require_capability_mode(monkeypatch):
     for dependency in (require_human, require_agent):
         with pytest.raises(HTTPException) as exc:
             dependency(_request("human", "token"))
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 503
 
 
 def test_native_role_dependencies_use_middleware_identity(monkeypatch):
@@ -158,7 +154,7 @@ def test_native_role_dependencies_use_middleware_identity(monkeypatch):
     assert agent_exc.value.status_code == 403
 
 
-def test_local_and_single_token_modes_keep_explicit_legacy_actor_behavior(
+def test_only_explicit_demo_keeps_simulated_legacy_actor_behavior(
     monkeypatch, client_factory
 ):
     monkeypatch.delenv("OHI_API_TOKEN", raising=False)
@@ -172,13 +168,8 @@ def test_local_and_single_token_modes_keep_explicit_legacy_actor_behavior(
     assert queued.status_code == 202
 
     monkeypatch.setenv("OHI_API_TOKEN", "legacy-short-secret")
-    token = client_factory()
-    queued = token.post(
-        "/api/leads",
-        headers={**_token("legacy-short-secret"), "X-Actor": "agent"},
-        json={"name": "Token Legacy", "source": "note"},
-    )
-    assert queued.status_code == 202
+    with pytest.raises(RuntimeError):
+        client_factory()
 
 
 @pytest.mark.parametrize(

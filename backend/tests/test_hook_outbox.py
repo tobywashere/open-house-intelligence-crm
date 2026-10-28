@@ -1,3 +1,5 @@
+from tests.conftest import AGENT_TOKEN, queued_automation
+from tests.conftest import capability_client as client
 import json
 import threading
 import time
@@ -7,20 +9,16 @@ import pytest
 from tests.conftest import make_lead
 
 
-AGENT = {"X-Actor": "agent"}
+AGENT = {"X-API-Token": AGENT_TOKEN, "X-Actor": "user"}
 
 
 def _queue_reminder(client):
     lead = make_lead(client)
-    queued = client.post(
-        "/api/reminders",
-        json={
+    queued = queued_automation('schedule_followup', {
             "lead_id": lead["id"],
             "due_ts": "2026-08-21T09:00:00",
             "note": "Durable follow-up",
-        },
-        headers=AGENT,
-    )
+        })
     assert queued.status_code == 202, queued.text
     return lead, queued.json()
 
@@ -220,8 +218,9 @@ def test_exhausted_hook_sanitizes_error_and_terminal_audit(
 
     _, queued = _queue_reminder(client)
     _approve_then_crash_before_dispatch(client, monkeypatch, queued["id"])
-    secret = "top-secret-provider-token"
+    secret = "top-secret-provider-token-" + "s" * 32
     monkeypatch.setenv("OHI_API_TOKEN", secret)
+    client.headers["X-API-Token"] = secret
 
     def fail_with_secret(_reminder, **_kwargs):
         raise RuntimeError(f"provider rejected {secret}")
@@ -611,15 +610,11 @@ def test_lead_created_retry_resumes_after_calendar_when_gmail_failed(
 ):
     from app.integrations import hook_outbox, hooks
 
-    queued = client.post(
-        "/api/leads",
-        json={
+    queued = queued_automation('create_lead', {
             "name": "Partial Delivery",
             "email": "partial@example.com",
             "source": "form",
-        },
-        headers=AGENT,
-    )
+        })
     assert queued.status_code == 202, queued.text
     _approve_then_crash_before_dispatch(client, monkeypatch, queued.json()["id"])
 
@@ -798,16 +793,12 @@ def test_merged_appointment_hook_delivers_for_surviving_lead(client, monkeypatch
 
     primary = make_lead(client, name="Primary", email="primary@example.com")
     duplicate = make_lead(client, name="Duplicate", email="duplicate@example.com")
-    queued = client.post(
-        "/api/appointments",
-        json={
+    queued = queued_automation('book_appointment', {
             "lead_id": duplicate["id"],
             "start_ts": "2026-08-22T10:00:00",
             "end_ts": "2026-08-22T10:45:00",
             "location": "Kirkland",
-        },
-        headers=AGENT,
-    )
+        })
     assert queued.status_code == 202, queued.text
     _approve_then_crash_before_dispatch(client, monkeypatch, queued.json()["id"])
 
@@ -839,11 +830,7 @@ def test_merged_away_lead_created_hook_is_cancelled_not_retried(client, monkeypa
     from app.integrations import hook_outbox, hooks
 
     primary = make_lead(client, name="Primary", email="primary@example.com")
-    queued = client.post(
-        "/api/leads",
-        json={"name": "Duplicate", "email": "duplicate@example.com", "source": "form"},
-        headers=AGENT,
-    )
+    queued = queued_automation('create_lead', {"name": "Duplicate", "email": "duplicate@example.com", "source": "form"})
     assert queued.status_code == 202, queued.text
     _approve_then_crash_before_dispatch(client, monkeypatch, queued.json()["id"])
     approved = _approved(client, queued.json()["id"])[0]
